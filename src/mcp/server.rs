@@ -356,7 +356,7 @@ fn check_cognitive_proactive(project_hash: &str, agent_id: &str) {
         Err(_) => return,
     };
 
-    let messages = match CognitiveInbox::read_pending(&conn, agent_id) {
+    let messages = match CognitiveInbox::peek_pending(&conn, agent_id) {
         Ok(m) => m,
         Err(_) => return,
     };
