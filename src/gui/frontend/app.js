@@ -220,7 +220,7 @@ document.querySelectorAll('.tab:not(.tab-debug)').forEach(tab => {
         tab.classList.add('active');
         document.getElementById(tab.dataset.tab).classList.add('active');
 
-        if (tab.dataset.tab === 'threads') loadThreads();
+        if (tab.dataset.tab === 'threads') loadThreadAgentTabs();
         if (tab.dataset.tab === 'settings') loadSettings();
         if (tab.dataset.tab === 'agents') loadAgents();
     });
@@ -341,9 +341,9 @@ document.querySelectorAll('.search-tab').forEach(tab => {
 });
 
 async function loadLabelOptions() {
-    if (!projectHash) return;
+    if (!projectHash || !threadAgentId) return;
     try {
-        const labels = await invoke('list_all_labels', { projectHash, agentId });
+        const labels = await invoke('list_all_labels', { projectHash, agentId: threadAgentId });
         const sel = document.getElementById('label-select');
         sel.innerHTML = '';
         for (const l of labels) {
@@ -356,9 +356,9 @@ async function loadLabelOptions() {
 }
 
 async function loadTopicOptions() {
-    if (!projectHash) return;
+    if (!projectHash || !threadAgentId) return;
     try {
-        const topics = await invoke('list_all_topics', { projectHash, agentId });
+        const topics = await invoke('list_all_topics', { projectHash, agentId: threadAgentId });
         const sel = document.getElementById('topic-select');
         sel.innerHTML = '';
         for (const t of topics) {
@@ -375,7 +375,7 @@ document.getElementById('btn-search-labels')?.addEventListener('click', async ()
     const labels = Array.from(sel.selectedOptions).map(o => o.value);
     if (labels.length === 0) return;
     try {
-        const threads = await invoke('search_threads_by_label', { projectHash, agentId, labels });
+        const threads = await invoke('search_threads_by_label', { projectHash, agentId: threadAgentId, labels });
         renderThreads(threads);
     } catch (e) { console.error('Label search error:', e); }
 });
@@ -385,7 +385,7 @@ document.getElementById('btn-search-topics')?.addEventListener('click', async ()
     const topics = Array.from(sel.selectedOptions).map(o => o.value);
     if (topics.length === 0) return;
     try {
-        const threads = await invoke('search_threads_by_topic', { projectHash, agentId, topics });
+        const threads = await invoke('search_threads_by_topic', { projectHash, agentId: threadAgentId, topics });
         renderThreads(threads);
     } catch (e) { console.error('Topic search error:', e); }
 });
@@ -799,24 +799,66 @@ function renderAgentBridges(bridges) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// THREADS
+// THREADS — agent tabs + thread listing
 // ═══════════════════════════════════════════════════════════════
 
-async function loadThreads() {
+let threadAgentId = '';  // Currently selected agent in Threads tab
+
+async function loadThreadAgentTabs() {
     if (!projectHash) return;
+    const container = document.getElementById('thread-agent-tabs');
+    container.innerHTML = '';
+    try {
+        const agents = await invoke('list_agents', { projectHash });
+        if (agents.length === 0) {
+            container.innerHTML = '<span style="color:var(--text-dim);font-size:13px;padding:6px">No agents</span>';
+            return;
+        }
+        for (const a of agents) {
+            const btn = document.createElement('button');
+            btn.textContent = `${a.name || a.id} (${a.role || '?'})`;
+            btn.dataset.agentId = a.id;
+            btn.style.cssText = 'padding:6px 16px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim,#888);cursor:pointer;font-size:13px;white-space:nowrap';
+            btn.addEventListener('click', () => selectThreadAgent(a.id));
+            container.appendChild(btn);
+        }
+        // Auto-select first agent
+        selectThreadAgent(agents[0].id);
+    } catch (e) {
+        console.error('Thread agent tabs error:', e);
+    }
+}
+
+function selectThreadAgent(selectedId) {
+    threadAgentId = selectedId;
+    const container = document.getElementById('thread-agent-tabs');
+    container.querySelectorAll('button').forEach(btn => {
+        if (btn.dataset.agentId === selectedId) {
+            btn.style.borderBottomColor = 'var(--accent,#6cf)';
+            btn.style.color = 'var(--text,#eee)';
+        } else {
+            btn.style.borderBottomColor = 'transparent';
+            btn.style.color = 'var(--text-dim,#888)';
+        }
+    });
+    loadThreads();
+}
+
+async function loadThreads() {
+    if (!projectHash || !threadAgentId) return;
     const filter = document.getElementById('thread-filter').value;
     try {
         const threads = await invoke('get_threads', {
-            projectHash, agentId, statusFilter: filter
+            projectHash, agentId: threadAgentId, statusFilter: filter
         });
         renderThreads(threads);
     } catch (e) { console.error('Threads error:', e); }
 }
 
 async function searchThreads(query) {
-    if (!projectHash) return;
+    if (!projectHash || !threadAgentId) return;
     try {
-        const threads = await invoke('search_threads', { projectHash, agentId, query });
+        const threads = await invoke('search_threads', { projectHash, agentId: threadAgentId, query });
         renderThreads(threads);
     } catch (e) { console.error('Search error:', e); }
 }
@@ -1540,7 +1582,7 @@ document.getElementById('btn-reindex')?.addEventListener('click', async () => {
     const btn = document.getElementById('btn-reindex');
     if (btn) btn.textContent = 'Reindexing...';
     try {
-        const result = await invoke('reindex_agent', { projectHash, agentId, resetWeights });
+        const result = await invoke('reindex_agent', { projectHash, agentId: threadAgentId || agentId, resetWeights });
         alert(`Reindex complete: ${result.reindexed}/${result.total} threads updated`);
     } catch (e) {
         alert('Reindex error: ' + e);
@@ -1579,7 +1621,7 @@ let currentDetailAgentId = null;
 // Make thread rows clickable (delegated on both thread-body and agent-threads-body)
 document.getElementById('thread-body')?.addEventListener('click', (e) => {
     const tr = e.target.closest('tr[data-thread-id]');
-    if (tr) openThreadDetail(tr.dataset.threadId, agentId);
+    if (tr) openThreadDetail(tr.dataset.threadId, threadAgentId || agentId);
 });
 
 document.getElementById('agent-threads-body')?.addEventListener('click', (e) => {

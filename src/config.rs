@@ -531,30 +531,44 @@ pub enum ThreadMatchingMode {
 // GOSSIP CONFIG (embedding-based bridge discovery)
 // ============================================================================
 
-/// Gossip configuration — bridge discovery by similarity.
+/// Gossip v2 configuration — concept-based bridge discovery.
 ///
-/// 3-level fallback:
-///   1. ONNX cosine (best, threshold 0.75)
-///   2. TF-IDF cosine (offline, threshold 0.55)
-///   3. Topic overlap heuristic (zero-cost, threads sharing N+ topics)
+/// Pipeline:
+///   1. ConceptIndex inverted index → find overlaps
+///   2. Weight scoring → bridge creation
+///   3. Merge candidate collection (score >= merge_evaluation_threshold)
+///   4. Legacy topic overlap fallback for threads without concepts
 ///
-/// Frequency: LOW — called in prune loop every 15 min.
+/// Frequency: LOW — called in prune loop every 5 min.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GossipConfig {
     pub embedding: EmbeddingSystemConfig,
-    pub topic_overlap_enabled: bool,            // default: true
-    pub topic_overlap_min_shared: usize,        // default: 2
-    pub topic_overlap_initial_weight: f64,      // default: 0.5
-    pub batch_size: usize,                      // default: 50
-    pub yield_ms: u64,                          // default: 10
-    pub strong_bridge_threshold: f64,           // default: 0.80
+    // Concept gossip v2
+    #[serde(default = "default_concept_overlap_min_shared")]
+    pub concept_overlap_min_shared: usize,       // default: 3
+    #[serde(default = "default_concept_min_bridge_weight")]
+    pub concept_min_bridge_weight: f64,          // default: 0.20
+    #[serde(default = "default_merge_evaluation_threshold")]
+    pub merge_evaluation_threshold: f64,         // default: 0.60
+    #[serde(default = "default_merge_auto_threshold")]
+    pub merge_auto_threshold: f64,               // default: 0.85
+    #[serde(default = "default_true")]
+    pub concept_gossip_enabled: bool,            // default: true
+    // Legacy (fallback for threads without concepts)
+    pub topic_overlap_enabled: bool,             // default: true
+    pub topic_overlap_min_shared: usize,         // default: 2
     /// Min bridges per thread (clamp floor for dynamic_limits).
-    pub min_bridges_per_thread: usize,          // default: 3
+    pub min_bridges_per_thread: usize,           // default: 3
     /// Max bridges per thread (clamp ceiling for dynamic_limits).
-    pub max_bridges_per_thread: usize,          // default: 10
+    pub max_bridges_per_thread: usize,           // default: 10
     /// Target ratio bridges/threads for dynamic limit calculation.
-    pub target_bridge_ratio: f64,               // default: 3.0
+    pub target_bridge_ratio: f64,                // default: 3.0
 }
+
+fn default_concept_overlap_min_shared() -> usize { 3 }
+fn default_concept_min_bridge_weight() -> f64 { 0.20 }
+fn default_merge_evaluation_threshold() -> f64 { 0.60 }
+fn default_merge_auto_threshold() -> f64 { 0.85 }
 
 impl Default for GossipConfig {
     fn default() -> Self {
@@ -564,12 +578,13 @@ impl Default for GossipConfig {
                 onnx_threshold: 0.75,
                 tfidf_threshold: 0.55,
             },
+            concept_overlap_min_shared: 3,
+            concept_min_bridge_weight: 0.20,
+            merge_evaluation_threshold: 0.60,
+            merge_auto_threshold: 0.85,
+            concept_gossip_enabled: true,
             topic_overlap_enabled: true,
             topic_overlap_min_shared: 2,
-            topic_overlap_initial_weight: 0.5,
-            batch_size: 50,
-            yield_ms: 10,
-            strong_bridge_threshold: 0.80,
             min_bridges_per_thread: 3,
             max_bridges_per_thread: 10,
             target_bridge_ratio: 3.0,
@@ -629,11 +644,15 @@ pub struct ValidatorWeights {
     pub decayed_relevance: f64,      // V6 — weight × importance (default: 0.5)
     pub label_coherence: f64,        // V7 — label matching (default: 0.4)
     pub focus_alignment: f64,        // V8 — ai_focus boost (default: 0.8)
+    #[serde(default = "default_concept_coherence_weight")]
+    pub concept_coherence: f64,      // V9 — concept overlap (default: 0.7)
 }
+
+fn default_concept_coherence_weight() -> f64 { 0.7 }
 
 impl ValidatorWeights {
     /// Convert to array for indexed access by validator.
-    pub fn to_array(&self) -> [f64; 8] {
+    pub fn to_array(&self) -> [f64; 9] {
         [
             self.semantic_similarity,
             self.topic_overlap,
@@ -643,6 +662,7 @@ impl ValidatorWeights {
             self.decayed_relevance,
             self.label_coherence,
             self.focus_alignment,
+            self.concept_coherence,
         ]
     }
 }
@@ -658,6 +678,7 @@ impl Default for ValidatorWeights {
             decayed_relevance: 0.5,
             label_coherence: 0.4,
             focus_alignment: 0.8,
+            concept_coherence: 0.7,
         }
     }
 }
@@ -1201,20 +1222,35 @@ impl GuardianConfig {
 
             // --- Embedding-based system configs ---
 
-            // Gossip config
+            // Gossip v2 config
             if let Some(g) = s.get("gossip").and_then(|v| v.as_object()) {
                 if let Some(emb) = g.get("embedding").and_then(|v| v.as_object()) {
                     parse_embedding_config(emb, &mut gc.gossip.embedding);
                 }
+                // Concept gossip v2
+                if let Some(v) = g.get("concept_overlap_min_shared").and_then(|v| v.as_u64()) {
+                    gc.gossip.concept_overlap_min_shared = v as usize;
+                }
+                if let Some(v) = g.get("concept_min_bridge_weight").and_then(|v| v.as_f64()) {
+                    gc.gossip.concept_min_bridge_weight = v;
+                }
+                if let Some(v) = g.get("merge_evaluation_threshold").and_then(|v| v.as_f64()) {
+                    gc.gossip.merge_evaluation_threshold = v;
+                }
+                if let Some(v) = g.get("merge_auto_threshold").and_then(|v| v.as_f64()) {
+                    gc.gossip.merge_auto_threshold = v;
+                }
+                if let Some(v) = g.get("concept_gossip_enabled").and_then(|v| v.as_bool()) {
+                    gc.gossip.concept_gossip_enabled = v;
+                }
+                // Legacy
                 if let Some(v) = g.get("topic_overlap_enabled").and_then(|v| v.as_bool()) {
                     gc.gossip.topic_overlap_enabled = v;
                 }
                 if let Some(v) = g.get("topic_overlap_min_shared").and_then(|v| v.as_u64()) {
                     gc.gossip.topic_overlap_min_shared = v as usize;
                 }
-                if let Some(v) = g.get("batch_size").and_then(|v| v.as_u64()) {
-                    gc.gossip.batch_size = v as usize;
-                }
+                // Bridge limits
                 if let Some(v) = g.get("min_bridges_per_thread").and_then(|v| v.as_u64()) {
                     gc.gossip.min_bridges_per_thread = v as usize;
                 }
@@ -1280,6 +1316,7 @@ impl GuardianConfig {
                     if let Some(v) = w.get("decayed_relevance").and_then(|v| v.as_f64()) { vw.decayed_relevance = v; }
                     if let Some(v) = w.get("label_coherence").and_then(|v| v.as_f64()) { vw.label_coherence = v; }
                     if let Some(v) = w.get("focus_alignment").and_then(|v| v.as_f64()) { vw.focus_alignment = v; }
+                    if let Some(v) = w.get("concept_coherence").and_then(|v| v.as_f64()) { vw.concept_coherence = v; }
                 }
             }
 

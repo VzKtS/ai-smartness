@@ -59,7 +59,7 @@ impl Decayer {
             }
 
             let decay_factor = 0.5f64.powf(age_days / BRIDGE_HALF_LIFE);
-            let new_weight = bridge.confidence * decay_factor;
+            let new_weight = bridge.weight * decay_factor;
 
             if new_weight < BRIDGE_DEATH_THRESHOLD {
                 BridgeStorage::update_status(conn, &bridge.id, BridgeStatus::Invalid)?;

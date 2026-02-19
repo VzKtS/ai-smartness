@@ -1,6 +1,6 @@
 [package]
 name = "ai-smartness"
-version = "0.1.8-alpha"
+version = "0.2.0-alpha"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -49,6 +49,11 @@ libc = "0.2"
 
 # Hashing
 sha2 = "0.10"
+
+# ONNX Runtime (semantic embeddings)
+ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "load-dynamic", "ndarray", "copy-dylibs"] }
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+ndarray = "0.16"
 
 # GUI (optional — needs system webkit2gtk-4.1-dev, libgtk-3-dev, libsoup-3.0-dev)
 tauri = { version = "2", features = ["devtools"], optional = true }

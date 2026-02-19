@@ -65,12 +65,19 @@ pub fn process_capture(
         _ => ExtractionSource::Prompt,
     };
 
+    // Build agent context from PendingContext (recent activity) for importance scoring
+    let agent_context = pending
+        .as_ref()
+        .filter(|p| !p.is_expired())
+        .map(|ctx| ctx.content.as_str());
+
     let extraction = extractor::extract(
         &cleaned,
         source,
         &guardian.extraction,
         &guardian.label_suggestion,
         &guardian.importance_rating,
+        agent_context,
     )?;
     tracing::debug!(
         title = %extraction.title,

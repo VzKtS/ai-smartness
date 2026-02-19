@@ -1,126 +1,225 @@
-//! Gossip -- bridge discovery via similarity.
+//! Gossip v2 — concept-based bridge discovery.
 //!
-//! 3-phase pipeline:
-//!   1. Embedding similarity (TF-IDF cosine)
-//!   2. Topic overlap complement
-//!   3. Gossip propagation A-B + B-C -> A-C
+//! Pipeline:
+//!   1. ConceptIndex inverted index → find_overlaps(min_shared)
+//!   2. Score: weight = overlap_ratio × 0.5 + richness × 0.5
+//!   3. Create bridges, collect merge candidates (weight >= 0.60)
+//!   4. Legacy topic overlap fallback for threads without concepts
+//!
+//! Replaces v1 (TF-IDF embedding + topic/label overlap + propagation).
 
 use crate::{id_gen, time_utils};
 use crate::bridge::{BridgeStatus, BridgeType, ThinkBridge};
 use crate::config::GossipConfig;
-use crate::constants::*;
 use crate::thread::Thread;
 use crate::AiResult;
-use crate::processing::embeddings::EmbeddingManager;
 use crate::storage::bridges::BridgeStorage;
+use crate::storage::concept_index::ConceptIndex;
 use crate::storage::threads::ThreadStorage;
 use rusqlite::Connection;
 
-#[allow(dead_code)]
-const MAX_PROPAGATION_DEPTH: usize = 1;
-const PROPAGATION_THRESHOLD_FACTOR: f64 = 0.9;
-const PROPAGATION_CONFIDENCE_FACTOR: f64 = 0.9;
+/// Merge candidate produced by gossip when overlap score >= threshold.
+#[derive(Debug, Clone)]
+pub struct MergeCandidate {
+    pub thread_a: String,
+    pub thread_b: String,
+    pub overlap_score: f64,
+    pub shared_concepts: Vec<String>,
+    pub bridge_id: String,
+}
 
 pub struct Gossip {
-    similarity_threshold: f64,
+    concept_index: ConceptIndex,
 }
 
 impl Gossip {
-    pub fn new() -> Self {
-        Self {
-            similarity_threshold: GOSSIP_TFIDF_THRESHOLD,
-        }
+    /// Build gossip engine with ConceptIndex loaded from DB.
+    pub fn new(conn: &Connection) -> AiResult<Self> {
+        let concept_index = ConceptIndex::build_from_db(conn)?;
+        Ok(Self { concept_index })
     }
 
-    /// Main gossip cycle -- called by daemon prune loop.
-    /// Config-driven bridge limits from GossipConfig.
-    /// Returns number of bridges created.
-    pub fn run_cycle(&self, conn: &Connection, config: &GossipConfig) -> AiResult<u32> {
+    /// Main gossip cycle — concept-based bridge discovery.
+    /// Returns (bridges_created, merge_candidates).
+    pub fn run_cycle(
+        &self,
+        conn: &Connection,
+        config: &GossipConfig,
+    ) -> AiResult<(u32, Vec<MergeCandidate>)> {
+        // One-time v1 bridge migration (idempotent — 0 rows after first run)
+        Self::migrate_v1_bridges(conn)?;
+
         let active = ThreadStorage::list_active(conn)?;
         if active.len() < 2 {
-            tracing::debug!(active_threads = active.len(), "Gossip skipped: not enough threads");
-            return Ok(0);
+            tracing::debug!(active_threads = active.len(), "Gossip v2 skipped: not enough threads");
+            return Ok((0, vec![]));
         }
 
-        tracing::info!(active_threads = active.len(), threshold = self.similarity_threshold, "Gossip cycle starting");
+        let thread_count = active.len();
+        let concept_count = self.concept_index.concept_count();
+        let indexed_count = self.concept_index.thread_count();
+        tracing::info!(
+            active_threads = thread_count,
+            indexed_threads = indexed_count,
+            concepts = concept_count,
+            "Gossip v2 cycle starting"
+        );
 
-        let (max_per, _max_total) = Self::dynamic_limits(active.len(), config);
-        let embeddings = EmbeddingManager::global();
+        let (max_per, _max_total) = Self::dynamic_limits(thread_count, config);
         let mut created = 0u32;
+        let mut merge_candidates = Vec::new();
 
-        // Phase 1: Embedding similarity
-        for source in &active {
-            let source_emb = match &source.embedding {
-                Some(e) if !e.is_empty() => e,
-                _ => continue,
-            };
+        // Phase 1: Concept overlap discovery via inverted index
+        let min_shared = config.concept_overlap_min_shared;
+        let min_weight = config.concept_min_bridge_weight;
+        let merge_threshold = config.merge_evaluation_threshold;
 
-            let existing = BridgeStorage::list_for_thread(conn, &source.id)?;
-            if existing.len() >= max_per {
-                continue;
-            }
+        if indexed_count >= 2 && config.concept_gossip_enabled {
+            let overlaps = self.concept_index.find_overlaps(min_shared);
+            tracing::info!(
+                pairs = overlaps.len(),
+                min_shared = min_shared,
+                "Gossip v2 P1: concept overlap pairs found"
+            );
 
-            for target in &active {
-                if target.id == source.id {
+            for (thread_a, thread_b, shared_count, shared_concepts) in &overlaps {
+                // Check bridge limits
+                let existing_a = BridgeStorage::list_for_thread(conn, thread_a)?;
+                if existing_a.len() >= max_per {
                     continue;
                 }
 
-                // Skip if bridge already exists
-                if existing
+                // Skip if bridge already exists — reinforce if stronger
+                let existing_bridge = existing_a.iter().find(|b| {
+                    b.source_id == *thread_b || b.target_id == *thread_b
+                });
+
+                if let Some(existing) = existing_bridge {
+                    // Reinforce if gossip bridge and new overlap is stronger
+                    if existing.created_by.starts_with("gossip") {
+                        let (_, overlap_ratio, _) =
+                            self.concept_index.overlap_score(thread_a, thread_b);
+                        let new_weight = Self::compute_weight(*shared_count, overlap_ratio);
+                        if new_weight > existing.weight {
+                            BridgeStorage::update_weight(conn, &existing.id, new_weight)?;
+                            tracing::debug!(
+                                bridge = %&existing.id[..8.min(existing.id.len())],
+                                old_weight = format!("{:.3}", existing.weight).as_str(),
+                                new_weight = format!("{:.3}", new_weight).as_str(),
+                                "Gossip v2 P1: reinforced existing bridge"
+                            );
+                        }
+                    }
+                    continue;
+                }
+
+                let existing_b = BridgeStorage::list_for_thread(conn, thread_b)?;
+                if existing_b.len() >= max_per {
+                    continue;
+                }
+
+                // Compute weight
+                let (_, overlap_ratio, _) =
+                    self.concept_index.overlap_score(thread_a, thread_b);
+                let weight = Self::compute_weight(*shared_count, overlap_ratio);
+
+                if weight < min_weight {
+                    continue;
+                }
+
+                // Determine relation type
+                let relation = active
                     .iter()
-                    .any(|b| b.source_id == target.id || b.target_id == target.id)
-                {
-                    continue;
-                }
+                    .find(|t| t.id == *thread_a)
+                    .and_then(|ta| {
+                        active.iter().find(|t| t.id == *thread_b).map(|tb| {
+                            Self::determine_relation(ta, tb, weight)
+                        })
+                    })
+                    .unwrap_or(BridgeType::Sibling);
 
-                let target_emb = match &target.embedding {
-                    Some(e) if !e.is_empty() => e,
-                    _ => continue,
+                let bridge_id = id_gen::bridge_id();
+                let bridge = ThinkBridge {
+                    id: bridge_id.clone(),
+                    source_id: thread_a.clone(),
+                    target_id: thread_b.clone(),
+                    relation_type: relation,
+                    reason: format!(
+                        "gossip:concept_overlap({},ratio={:.2})",
+                        shared_count, overlap_ratio
+                    ),
+                    shared_concepts: shared_concepts.clone(),
+                    weight,
+                    confidence: weight,
+                    status: BridgeStatus::Active,
+                    propagated_from: None,
+                    propagation_depth: 0,
+                    created_by: "gossip_v2".to_string(),
+                    use_count: 0,
+                    created_at: time_utils::now(),
+                    last_reinforced: None,
                 };
 
-                let sim = embeddings.similarity(source_emb, target_emb);
-                tracing::debug!(
-                    source = %&source.id[..8.min(source.id.len())],
-                    target = %&target.id[..8.min(target.id.len())],
-                    similarity = format!("{:.3}", sim).as_str(),
-                    "Gossip P1: embedding comparison"
-                );
-                if sim >= self.similarity_threshold {
-                    let relation = Self::determine_relation(source, target, sim);
+                if BridgeStorage::insert(conn, &bridge).is_ok() {
                     tracing::info!(
-                        source = %&source.id[..8.min(source.id.len())],
-                        target = %&target.id[..8.min(target.id.len())],
-                        relation = ?relation,
-                        weight = format!("{:.3}", sim).as_str(),
-                        "Gossip P1: bridge created (embedding)"
+                        source = %&thread_a[..8.min(thread_a.len())],
+                        target = %&thread_b[..8.min(thread_b.len())],
+                        shared = *shared_count,
+                        weight = format!("{:.3}", weight).as_str(),
+                        "Gossip v2 P1: bridge created (concept overlap)"
                     );
-                    let bridge = ThinkBridge {
-                        id: id_gen::bridge_id(),
-                        source_id: source.id.clone(),
-                        target_id: target.id.clone(),
-                        relation_type: relation,
-                        reason: format!("gossip:embedding(sim={:.2})", sim),
-                        shared_concepts: Self::shared_topics(source, target),
-                        weight: sim,
-                        confidence: sim,
-                        status: BridgeStatus::Active,
-                        propagated_from: None,
-                        propagation_depth: 0,
-                        created_by: "gossip".to_string(),
-                        use_count: 0,
-                        created_at: time_utils::now(),
-                        last_reinforced: None,
-                    };
-                    if BridgeStorage::insert(conn, &bridge).is_ok() {
-                        created += 1;
+                    created += 1;
+
+                    // Collect merge candidate if above threshold
+                    if weight >= merge_threshold {
+                        merge_candidates.push(MergeCandidate {
+                            thread_a: thread_a.clone(),
+                            thread_b: thread_b.clone(),
+                            overlap_score: weight,
+                            shared_concepts: shared_concepts.clone(),
+                            bridge_id,
+                        });
                     }
                 }
             }
         }
 
-        // Phase 2: Topic overlap complement
-        for source in &active {
-            if source.topics.is_empty() {
+        // Phase 2: Legacy topic overlap for threads WITHOUT concepts
+        if config.topic_overlap_enabled {
+            let legacy_created =
+                Self::run_legacy_topic_overlap(conn, &active, config, max_per)?;
+            created += legacy_created;
+        }
+
+        tracing::info!(
+            bridges_created = created,
+            merge_candidates = merge_candidates.len(),
+            "Gossip v2 cycle complete"
+        );
+
+        Ok((created, merge_candidates))
+    }
+
+    /// Compute bridge weight from concept overlap metrics.
+    /// weight = overlap_ratio × 0.5 + richness × 0.5
+    fn compute_weight(shared_count: usize, overlap_ratio: f64) -> f64 {
+        let richness = (shared_count as f64 / 5.0).min(1.0);
+        overlap_ratio * 0.5 + richness * 0.5
+    }
+
+    /// Legacy topic overlap for threads without concepts (backward compat).
+    /// Only processes threads that have topics but NO concepts.
+    fn run_legacy_topic_overlap(
+        conn: &Connection,
+        active: &[Thread],
+        config: &GossipConfig,
+        max_per: usize,
+    ) -> AiResult<u32> {
+        let mut created = 0u32;
+
+        for source in active {
+            // Only legacy threads: has topics but no concepts
+            if source.topics.is_empty() || !source.concepts.is_empty() {
                 continue;
             }
 
@@ -129,8 +228,13 @@ impl Gossip {
                 continue;
             }
 
-            for target in &active {
+            for target in active {
                 if target.id == source.id {
+                    continue;
+                }
+
+                // Skip if target has concepts (handled by Phase 1)
+                if !target.concepts.is_empty() {
                     continue;
                 }
 
@@ -142,15 +246,7 @@ impl Gossip {
                 }
 
                 let shared = Self::shared_topics(source, target);
-                let shared_count = shared.len();
-                tracing::debug!(
-                    source = %&source.id[..8.min(source.id.len())],
-                    target = %&target.id[..8.min(target.id.len())],
-                    shared_count,
-                    shared_topics = ?shared,
-                    "Gossip P2: topic overlap check"
-                );
-                if shared_count >= GOSSIP_TOPIC_OVERLAP_MIN {
+                if shared.len() >= config.topic_overlap_min_shared {
                     let bridge = ThinkBridge {
                         id: id_gen::bridge_id(),
                         source_id: source.id.clone(),
@@ -163,7 +259,7 @@ impl Gossip {
                         status: BridgeStatus::Active,
                         propagated_from: None,
                         propagation_depth: 0,
-                        created_by: "gossip".to_string(),
+                        created_by: "gossip_v2".to_string(),
                         use_count: 0,
                         created_at: time_utils::now(),
                         last_reinforced: None,
@@ -172,188 +268,43 @@ impl Gossip {
                         tracing::info!(
                             source = %&source.id[..8.min(source.id.len())],
                             target = %&target.id[..8.min(target.id.len())],
-                            shared_count,
-                            "Gossip P2: bridge created (topic overlap)"
+                            shared = bridge.shared_concepts.len(),
+                            "Gossip v2 P2: bridge created (legacy topic overlap)"
                         );
                         created += 1;
                     }
                 }
             }
         }
-
-        // Phase 2B: Label overlap complement
-        for source in &active {
-            if source.labels.is_empty() {
-                continue;
-            }
-
-            let existing = BridgeStorage::list_for_thread(conn, &source.id)?;
-            if existing.len() >= max_per {
-                continue;
-            }
-
-            for target in &active {
-                if target.id == source.id || target.labels.is_empty() {
-                    continue;
-                }
-
-                if existing
-                    .iter()
-                    .any(|b| b.source_id == target.id || b.target_id == target.id)
-                {
-                    continue;
-                }
-
-                let shared = Self::shared_labels(source, target);
-                let shared_count = shared.len();
-                if shared_count >= GOSSIP_LABEL_OVERLAP_MIN {
-                    let bridge = ThinkBridge {
-                        id: id_gen::bridge_id(),
-                        source_id: source.id.clone(),
-                        target_id: target.id.clone(),
-                        relation_type: BridgeType::Sibling,
-                        reason: format!("gossip:label_overlap({})", shared_count),
-                        shared_concepts: shared,
-                        weight: 0.55,
-                        confidence: 0.65,
-                        status: BridgeStatus::Active,
-                        propagated_from: None,
-                        propagation_depth: 0,
-                        created_by: "gossip".to_string(),
-                        use_count: 0,
-                        created_at: time_utils::now(),
-                        last_reinforced: None,
-                    };
-                    if BridgeStorage::insert(conn, &bridge).is_ok() {
-                        tracing::info!(
-                            source = %&source.id[..8.min(source.id.len())],
-                            target = %&target.id[..8.min(target.id.len())],
-                            shared_count,
-                            "Gossip P2B: bridge created (label overlap)"
-                        );
-                        created += 1;
-                    }
-                }
-            }
-        }
-
-        // Phase 3: Propagation A-B + B-C -> A-C
-        for source in &active {
-            let bridges = BridgeStorage::list_for_thread(conn, &source.id)?;
-            if bridges.len() >= max_per {
-                continue;
-            }
-            for bridge in &bridges {
-                if bridge.propagation_depth >= 1 {
-                    continue;
-                }
-
-                let neighbor_id = if bridge.source_id == source.id {
-                    &bridge.target_id
-                } else {
-                    &bridge.source_id
-                };
-
-                let neighbor_bridges = BridgeStorage::list_for_thread(conn, neighbor_id)?;
-                for nb in &neighbor_bridges {
-                    let transitive_id = if nb.source_id == *neighbor_id {
-                        &nb.target_id
-                    } else {
-                        &nb.source_id
-                    };
-
-                    if transitive_id == &source.id {
-                        continue;
-                    }
-
-                    // Skip if bridge already exists
-                    if bridges
-                        .iter()
-                        .any(|b| b.source_id == *transitive_id || b.target_id == *transitive_id)
-                    {
-                        continue;
-                    }
-
-                    let prop_sim = bridge.confidence * PROPAGATION_THRESHOLD_FACTOR;
-                    if prop_sim >= self.similarity_threshold * PROPAGATION_THRESHOLD_FACTOR {
-                        let prop_bridge = ThinkBridge {
-                            id: id_gen::bridge_id(),
-                            source_id: source.id.clone(),
-                            target_id: transitive_id.clone(),
-                            relation_type: BridgeType::Sibling,
-                            reason: format!("gossip:propagation(via={})", neighbor_id),
-                            shared_concepts: vec![],
-                            weight: prop_sim * PROPAGATION_CONFIDENCE_FACTOR,
-                            confidence: bridge.confidence * PROPAGATION_CONFIDENCE_FACTOR,
-                            status: BridgeStatus::Active,
-                            propagated_from: Some(bridge.id.clone()),
-                            propagation_depth: bridge.propagation_depth + 1,
-                            created_by: "gossip".to_string(),
-                            use_count: 0,
-                            created_at: time_utils::now(),
-                            last_reinforced: None,
-                        };
-                        if BridgeStorage::insert(conn, &prop_bridge).is_ok() {
-                            tracing::info!(
-                                source = %&source.id[..8.min(source.id.len())],
-                                target = %&transitive_id[..8.min(transitive_id.len())],
-                                via = %&neighbor_id[..8.min(neighbor_id.len())],
-                                confidence = format!("{:.3}", bridge.confidence * PROPAGATION_CONFIDENCE_FACTOR).as_str(),
-                                "Gossip P3: bridge created (propagation)"
-                            );
-                            created += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        tracing::info!(bridges_created = created, "Gossip cycle complete");
 
         Ok(created)
     }
 
-    /// Dynamic bridge limits based on current thread count and config.
+    /// Dynamic bridge limits based on thread count and config.
     fn dynamic_limits(n_threads: usize, config: &GossipConfig) -> (usize, usize) {
         let n = n_threads.max(1);
         let max_total = (n as f64 * config.target_bridge_ratio) as usize;
-        let max_per = (max_total / n).clamp(config.min_bridges_per_thread, config.max_bridges_per_thread);
+        let max_per =
+            (max_total / n).clamp(config.min_bridges_per_thread, config.max_bridges_per_thread);
         (max_per, max_total)
     }
 
-    /// Strengthen bridges between co-accessed threads.
-    pub fn strengthen_used_bridges(conn: &Connection, thread_ids: &[&str]) -> AiResult<()> {
-        for (i, a) in thread_ids.iter().enumerate() {
-            for b in thread_ids.iter().skip(i + 1) {
-                let bridges = BridgeStorage::list_for_thread(conn, a)?;
-                for bridge in &bridges {
-                    if bridge.source_id == *b || bridge.target_id == *b {
-                        BridgeStorage::increment_use(conn, &bridge.id)?;
-                        let new_weight = (bridge.weight + BRIDGE_USE_BOOST).min(1.0);
-                        BridgeStorage::update_weight(conn, &bridge.id, new_weight)?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Determine bridge relation type based on thread relationships.
-    fn determine_relation(source: &Thread, target: &Thread, similarity: f64) -> BridgeType {
+    fn determine_relation(source: &Thread, target: &Thread, weight: f64) -> BridgeType {
         if source.parent_id.as_deref() == Some(&*target.id) {
             BridgeType::ChildOf
         } else if target.parent_id.as_deref() == Some(&*source.id) {
             BridgeType::Extends
         } else if source.parent_id.is_some() && source.parent_id == target.parent_id {
             BridgeType::Sibling
-        } else if similarity >= GOSSIP_STRONG_BRIDGE && source.created_at > target.created_at {
+        } else if weight >= 0.80 && source.created_at > target.created_at {
             BridgeType::Extends
         } else {
             BridgeType::Sibling
         }
     }
 
-    /// Find shared topics between two threads.
+    /// Shared topics between two threads.
     fn shared_topics(a: &Thread, b: &Thread) -> Vec<String> {
         a.topics
             .iter()
@@ -366,22 +317,21 @@ impl Gossip {
             .collect()
     }
 
-    /// Find shared labels between two threads.
-    fn shared_labels(a: &Thread, b: &Thread) -> Vec<String> {
-        a.labels
-            .iter()
-            .filter(|l| {
-                b.labels
-                    .iter()
-                    .any(|bl| bl.to_lowercase() == l.to_lowercase())
-            })
-            .cloned()
-            .collect()
-    }
-}
-
-impl Default for Gossip {
-    fn default() -> Self {
-        Self::new()
+    /// One-time migration: invalidate v1 propagation bridges.
+    /// Idempotent — affects 0 rows after first run.
+    pub fn migrate_v1_bridges(conn: &Connection) -> AiResult<usize> {
+        let affected = conn
+            .execute(
+                "UPDATE bridges SET status = 'invalid' WHERE reason LIKE 'gossip:propagation%' AND status != 'invalid'",
+                [],
+            )
+            .map_err(|e| crate::AiError::Storage(format!("V1 bridge migration failed: {}", e)))?;
+        if affected > 0 {
+            tracing::info!(
+                invalidated = affected,
+                "Gossip v2: migrated v1 propagation bridges to invalid"
+            );
+        }
+        Ok(affected)
     }
 }

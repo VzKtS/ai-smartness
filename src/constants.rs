@@ -20,14 +20,9 @@ pub const BRIDGE_HALF_LIFE: f64 = 2.0;
 pub const BRIDGE_DEATH_THRESHOLD: f64 = 0.05;
 pub const BRIDGE_USE_BOOST: f64 = 0.1;
 
-// === Gossip defaults (overridable via GossipConfig) ===
-pub const GOSSIP_BATCH_SIZE: usize = 50;
-pub const GOSSIP_YIELD_MS: u64 = 10;
-pub const GOSSIP_SIMILARITY_THRESHOLD: f64 = 0.75; // ONNX default (aligned with Python)
-pub const GOSSIP_TFIDF_THRESHOLD: f64 = 0.55;      // TF-IDF default (lower: different distribution)
-pub const GOSSIP_STRONG_BRIDGE: f64 = 0.80;         // high similarity → extends relation
-pub const GOSSIP_TOPIC_OVERLAP_MIN: usize = 2;      // min shared topics for topic overlap bridge
-pub const GOSSIP_LABEL_OVERLAP_MIN: usize = 2;      // min shared labels for label overlap bridge
+// === Gossip v2 ===
+pub const GOSSIP_MERGE_MAX_PER_CYCLE: usize = 3;    // max auto merges per gossip cycle
+pub const GOSSIP_MERGE_REJECTION_PENALTY: f64 = 0.2; // confidence reduction on merge reject
 
 // === Retrieval ===
 pub const RETRIEVAL_ACTIVE_MIN: f64 = 0.05;

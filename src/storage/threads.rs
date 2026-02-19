@@ -18,6 +18,7 @@ fn thread_from_row(row: &Row) -> rusqlite::Result<Thread> {
     let topics_json: String = row.get("topics")?;
     let tags_json: String = row.get("tags")?;
     let labels_json: String = row.get("labels")?;
+    let concepts_json: String = row.get("concepts")?;
     let drift_json: String = row.get("drift_history")?;
     let ratings_json: String = row.get("ratings")?;
     let work_context_json: Option<String> = row.get("work_context")?;
@@ -48,6 +49,7 @@ fn thread_from_row(row: &Row) -> rusqlite::Result<Thread> {
         topics: serde_json::from_str(&topics_json).unwrap_or_default(),
         tags: serde_json::from_str(&tags_json).unwrap_or_default(),
         labels: serde_json::from_str(&labels_json).unwrap_or_default(),
+        concepts: serde_json::from_str(&concepts_json).unwrap_or_default(),
         drift_history: serde_json::from_str(&drift_json).unwrap_or_default(),
         ratings: serde_json::from_str(&ratings_json).unwrap_or_default(),
         work_context: work_context_json
@@ -96,16 +98,16 @@ impl ThreadStorage {
                 id, title, status, summary, origin_type, parent_id, child_ids,
                 weight, importance, importance_manually_set, relevance_score,
                 activation_count, split_locked, split_locked_until,
-                topics, tags, labels, drift_history,
+                topics, tags, labels, concepts, drift_history,
                 work_context, ratings, injection_stats, embedding,
                 created_at, last_active
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11,
                 ?12, ?13, ?14,
-                ?15, ?16, ?17, ?18,
-                ?19, ?20, ?21, ?22,
-                ?23, ?24
+                ?15, ?16, ?17, ?18, ?19,
+                ?20, ?21, ?22, ?23,
+                ?24, ?25
             )",
             params![
                 thread.id,
@@ -127,6 +129,7 @@ impl ThreadStorage {
                 serde_json::to_string(&thread.topics).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&thread.tags).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&thread.labels).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&thread.concepts).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&thread.drift_history).unwrap_or_else(|_| "[]".into()),
                 thread
                     .work_context
@@ -174,9 +177,10 @@ impl ThreadStorage {
                 weight = ?8, importance = ?9, importance_manually_set = ?10,
                 relevance_score = ?11, activation_count = ?12,
                 split_locked = ?13, split_locked_until = ?14,
-                topics = ?15, tags = ?16, labels = ?17, drift_history = ?18,
-                work_context = ?19, ratings = ?20, injection_stats = ?21,
-                embedding = ?22, last_active = ?23
+                topics = ?15, tags = ?16, labels = ?17, concepts = ?18,
+                drift_history = ?19,
+                work_context = ?20, ratings = ?21, injection_stats = ?22,
+                embedding = ?23, last_active = ?24
             WHERE id = ?1",
             params![
                 thread.id,
@@ -198,6 +202,7 @@ impl ThreadStorage {
                 serde_json::to_string(&thread.topics).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&thread.tags).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&thread.labels).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&thread.concepts).unwrap_or_else(|_| "[]".into()),
                 serde_json::to_string(&thread.drift_history).unwrap_or_else(|_| "[]".into()),
                 thread
                     .work_context

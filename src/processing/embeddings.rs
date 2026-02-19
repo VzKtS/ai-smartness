@@ -1,47 +1,77 @@
-//! Embedding Manager — TF-IDF hash-based implementation.
+//! Embedding Manager — ONNX all-MiniLM-L6-v2 with TF-IDF hash fallback.
 //!
-//! SCOPE: calcule des embeddings (vecteurs numeriques) pour la
-//! similarite vectorielle (cosine). NE fait PAS d'analyse semantique.
-//! Les decisions semantiques sont TOUJOURS faites par le LLM (Guardian).
+//! Produces 384-dim embeddings for semantic similarity.
+//! Tries ONNX first (high quality), falls back to TF-IDF hash (zero-dep).
 //!
-//! Utilise par: gossip, thread matching, memory retrieval, reactivation.
-//! ONNX Runtime support deferred — TF-IDF hash provides good baseline.
+//! Model location: {data_dir}/models/all-MiniLM-L6-v2/
+//!   - model.onnx
+//!   - tokenizer.json
 
 use md5::{Digest, Md5};
-use std::sync::OnceLock;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
-/// Dimension du vecteur TF-IDF hash (fixed size).
-const TFIDF_DIM: usize = 384;
+/// Dimension of embedding vectors (all-MiniLM-L6-v2 native dim).
+const EMBED_DIM: usize = 384;
+
+/// Max token length for ONNX model input.
+const MAX_TOKENS: usize = 128;
 
 static GLOBAL: OnceLock<EmbeddingManager> = OnceLock::new();
 
-/// Gestionnaire d'embeddings — singleton global.
+/// Embedding manager — ONNX + TF-IDF fallback singleton.
 pub struct EmbeddingManager {
     pub use_onnx: bool,
+    onnx_session: Mutex<Option<ort::session::Session>>,
+    tokenizer: Option<tokenizers::Tokenizer>,
 }
 
 impl EmbeddingManager {
-    /// Initialise le manager — TF-IDF only for now.
+    /// Initialize: try ONNX, fall back to TF-IDF.
     pub fn new() -> Self {
-        Self { use_onnx: false }
+        match Self::try_init_onnx() {
+            Ok((session, tokenizer)) => {
+                tracing::info!("ONNX embedding engine loaded (all-MiniLM-L6-v2)");
+                Self {
+                    use_onnx: true,
+                    onnx_session: Mutex::new(Some(session)),
+                    tokenizer: Some(tokenizer),
+                }
+            }
+            Err(e) => {
+                tracing::warn!("ONNX unavailable, using TF-IDF fallback: {}", e);
+                Self {
+                    use_onnx: false,
+                    onnx_session: Mutex::new(None),
+                    tokenizer: None,
+                }
+            }
+        }
     }
 
-    /// Singleton global (initialise une seule fois).
+    /// Global singleton (initialized once).
     pub fn global() -> &'static Self {
-        GLOBAL.get_or_init(|| Self::new())
+        GLOBAL.get_or_init(Self::new)
     }
 
-    /// Calcule l'embedding d'un texte via TF-IDF hash.
+    /// Embed a single text.
     pub fn embed(&self, text: &str) -> Vec<f32> {
-        self.embed_tfidf(text)
+        if self.use_onnx {
+            self.embed_onnx(text).unwrap_or_else(|e| {
+                tracing::warn!("ONNX embed failed, TF-IDF fallback: {}", e);
+                self.embed_tfidf(text)
+            })
+        } else {
+            self.embed_tfidf(text)
+        }
     }
 
-    /// Calcule les embeddings en batch.
+    /// Embed a batch of texts.
     pub fn embed_batch(&self, texts: &[&str]) -> Vec<Vec<f32>> {
         texts.iter().map(|t| self.embed(t)).collect()
     }
 
-    /// Cosine similarity entre deux vecteurs.
+    /// Cosine similarity between two vectors.
     pub fn similarity(&self, a: &[f32], b: &[f32]) -> f64 {
         cosine_similarity(a, b)
     }
@@ -63,15 +93,131 @@ impl EmbeddingManager {
             }
         }
 
-        tracing::debug!(best_idx = best_idx, best_similarity = best_sim, candidates = candidates.len(), "Most similar found");
-
         Some((best_idx, best_sim))
     }
 
-    /// TF-IDF hash embedding: hash each n-gram to a fixed-dimension vector.
-    /// Uses MD5 hash to deterministically map terms to vector positions.
+    /// Returns the dimension of embeddings produced.
+    pub fn dimension(&self) -> usize {
+        EMBED_DIM
+    }
+
+    // ── ONNX ──
+
+    fn model_dir() -> PathBuf {
+        crate::storage::path_utils::data_dir()
+            .join("models")
+            .join("all-MiniLM-L6-v2")
+    }
+
+    fn try_init_onnx() -> Result<(ort::session::Session, tokenizers::Tokenizer), String> {
+        let model_dir = Self::model_dir();
+        let model_path = model_dir.join("model.onnx");
+        let tokenizer_path = model_dir.join("tokenizer.json");
+
+        if !model_path.exists() {
+            return Err(format!("model.onnx not found at {}", model_path.display()));
+        }
+        if !tokenizer_path.exists() {
+            return Err(format!("tokenizer.json not found at {}", tokenizer_path.display()));
+        }
+
+        let session = ort::session::Session::builder()
+            .map_err(|e| format!("ONNX session builder: {}", e))?
+            .with_intra_threads(1)
+            .map_err(|e| format!("ONNX set threads: {}", e))?
+            .commit_from_file(&model_path)
+            .map_err(|e| format!("ONNX load model: {}", e))?;
+
+        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+            .map_err(|e| format!("Tokenizer load: {}", e))?;
+
+        Ok((session, tokenizer))
+    }
+
+    fn embed_onnx(&self, text: &str) -> Result<Vec<f32>, String> {
+        use ort::value::Tensor;
+
+        let mut guard = self.onnx_session.lock().map_err(|e| format!("Mutex poisoned: {}", e))?;
+        let session = guard.as_mut().ok_or("No ONNX session")?;
+        let tokenizer = self.tokenizer.as_ref().ok_or("No tokenizer")?;
+
+        // Tokenize
+        let encoding = tokenizer.encode(text, true)
+            .map_err(|e| format!("Tokenize failed: {}", e))?;
+
+        let mut input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+        let mut attention_mask: Vec<i64> = encoding.get_attention_mask().iter().map(|&m| m as i64).collect();
+        let mut token_type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&t| t as i64).collect();
+
+        // Truncate to max tokens
+        if input_ids.len() > MAX_TOKENS {
+            input_ids.truncate(MAX_TOKENS);
+            attention_mask.truncate(MAX_TOKENS);
+            token_type_ids.truncate(MAX_TOKENS);
+        }
+
+        let seq_len = input_ids.len();
+
+        // Create ort Tensor inputs [1, seq_len]
+        let input_ids_tensor = Tensor::from_array(([1, seq_len], input_ids))
+            .map_err(|e| format!("input_ids tensor: {}", e))?;
+        let attention_mask_tensor = Tensor::from_array(([1, seq_len], attention_mask.clone()))
+            .map_err(|e| format!("attention_mask tensor: {}", e))?;
+        let token_type_ids_tensor = Tensor::from_array(([1, seq_len], token_type_ids))
+            .map_err(|e| format!("token_type_ids tensor: {}", e))?;
+
+        // Run inference
+        let outputs = session.run(ort::inputs! {
+            "input_ids" => input_ids_tensor,
+            "attention_mask" => attention_mask_tensor,
+            "token_type_ids" => token_type_ids_tensor,
+        })
+        .map_err(|e| format!("ONNX run: {}", e))?;
+
+        // Extract output: [1, seq_len, 384]
+        let (shape, raw_data) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| format!("Extract tensor: {}", e))?;
+
+        // shape should be [1, seq_len, EMBED_DIM]
+        let dim2 = if shape.len() >= 3 { shape[2] as usize } else { EMBED_DIM };
+
+        // Mean pooling with attention mask
+        let mut pooled = vec![0.0f32; EMBED_DIM];
+        let mut mask_sum = 0.0f32;
+
+        for t in 0..seq_len {
+            let mask_val = attention_mask[t] as f32;
+            if mask_val > 0.0 {
+                let offset = t * dim2;
+                for d in 0..EMBED_DIM.min(dim2) {
+                    pooled[d] += raw_data[offset + d] * mask_val;
+                }
+                mask_sum += mask_val;
+            }
+        }
+
+        if mask_sum > 0.0 {
+            for d in 0..EMBED_DIM {
+                pooled[d] /= mask_sum;
+            }
+        }
+
+        // L2 normalize
+        let norm: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for v in pooled.iter_mut() {
+                *v /= norm;
+            }
+        }
+
+        Ok(pooled)
+    }
+
+    // ── TF-IDF hash fallback ──
+
     fn embed_tfidf(&self, text: &str) -> Vec<f32> {
-        let mut vector = vec![0.0f32; TFIDF_DIM];
+        let mut vector = vec![0.0f32; EMBED_DIM];
 
         let lower = text.to_lowercase();
         let words: Vec<&str> = lower.split_whitespace().collect();
@@ -123,12 +269,10 @@ fn hash_term_into(vector: &mut [f32], term: &str, weight: f32) {
     hasher.update(term.as_bytes());
     let hash = hasher.finalize();
 
-    // Use first 4 bytes as index, next 4 bytes for sign
     let idx = u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]]) as usize % vector.len();
     let sign = if hash[4] & 1 == 0 { 1.0f32 } else { -1.0f32 };
     vector[idx] += sign * weight;
 
-    // Second hash position for better distribution
     let idx2 = u32::from_le_bytes([hash[5], hash[6], hash[7], hash[8]]) as usize % vector.len();
     let sign2 = if hash[9] & 1 == 0 { 1.0f32 } else { -1.0f32 };
     vector[idx2] += sign2 * weight * 0.5;
@@ -156,8 +300,7 @@ mod tests {
     fn test_embed_produces_vector() {
         let mgr = EmbeddingManager::new();
         let v = mgr.embed("hello world");
-        assert_eq!(v.len(), TFIDF_DIM);
-        // Not all zeros
+        assert_eq!(v.len(), EMBED_DIM);
         assert!(v.iter().any(|x| *x != 0.0));
     }
 
@@ -169,7 +312,6 @@ mod tests {
         let c = mgr.embed("french cooking recipes");
         let sim_ab = mgr.similarity(&a, &b);
         let sim_ac = mgr.similarity(&a, &c);
-        // Similar texts should have higher similarity
         assert!(sim_ab > sim_ac, "sim_ab={} should be > sim_ac={}", sim_ab, sim_ac);
     }
 

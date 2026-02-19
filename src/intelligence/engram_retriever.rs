@@ -1,14 +1,14 @@
 //! Engram Retriever — multi-validator consensus for memory injection.
 //!
 //! Inspired by DeepSeek Engram (Conditional Memory via Scalable Lookup).
-//! Replaces single-signal cosine scoring with 8-validator voting.
+//! Replaces single-signal cosine scoring with 9-validator voting.
 //!
 //! Pipeline:
-//!   Phase 1: TopicIndex hash lookup O(1) → candidate pre-filter
-//!   Phase 2: 8 validators vote (pass/fail + confidence)
+//!   Phase 1: TopicIndex + ConceptIndex hash lookup O(1) → candidate pre-filter
+//!   Phase 2: 9 validators vote (pass/fail + confidence)
 //!   Phase 3: Consensus → StrongInject / WeakInject / Skip
 //!
-//! 7/8 validators are zero-cost (memory lookup).
+//! 8/9 validators are zero-cost (memory lookup).
 //! Only V1 (SemanticSimilarity) costs compute.
 
 use std::collections::HashMap;
@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use crate::thread::{Thread, ThreadStatus, OriginType, WorkContext, InjectionStats};
 use crate::config::EngramConfig;
 use crate::AiResult;
+use crate::processing::embeddings::EmbeddingManager;
+use crate::storage::concept_index::ConceptIndex;
 use crate::storage::topic_index::TopicIndex;
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
@@ -26,6 +28,7 @@ use crate::intelligence::validators::{
     TemporalProximityValidator, GraphConnectivityValidator,
     InjectionHistoryValidator, DecayedRelevanceValidator,
     LabelCoherenceValidator, FocusAlignmentValidator,
+    ConceptCoherenceValidator,
 };
 
 /// Injection decision after multi-validator consensus.
@@ -51,12 +54,13 @@ pub struct EngramScore {
 
 /// Engram Retriever — replaces MemoryRetriever.
 ///
-/// Uses TopicIndex (hash-based O(1) lookup) + 8 independent validators
+/// Uses TopicIndex + ConceptIndex (hash-based O(1) lookup) + 9 independent validators
 /// for multi-signal consensus on memory injection decisions.
 pub struct EngramRetriever {
     validators: Vec<Box<dyn Validator>>,
-    validator_weights: [f64; 8],
+    validator_weights: [f64; 9],
     topic_index: TopicIndex,
+    concept_index: ConceptIndex,
     config: EngramConfig,
     strong_inject_min: u8,
     weak_inject_min: u8,
@@ -64,12 +68,14 @@ pub struct EngramRetriever {
 
 impl EngramRetriever {
     /// Create a new EngramRetriever from config.
-    /// Builds the TopicIndex from the database and initializes all 8 validators.
+    /// Builds the TopicIndex + ConceptIndex from the database and initializes all 9 validators.
     pub fn new(conn: &Connection, config: EngramConfig) -> AiResult<Self> {
         let topic_index = TopicIndex::build_from_db(conn)?;
+        let concept_index = ConceptIndex::build_from_db(conn)?;
 
-        // V1 threshold: use tfidf by default, ONNX when available
-        let embedding_threshold = config.embedding.tfidf_threshold;
+        // V1 threshold: use active threshold based on ONNX availability
+        let use_onnx = EmbeddingManager::global().use_onnx;
+        let embedding_threshold = config.embedding.active_threshold(use_onnx);
 
         let validators: Vec<Box<dyn Validator>> = vec![
             Box::new(SemanticSimilarityValidator { threshold: embedding_threshold }),
@@ -80,6 +86,7 @@ impl EngramRetriever {
             Box::new(DecayedRelevanceValidator { min_score: 0.1 }),
             Box::new(LabelCoherenceValidator),
             Box::new(FocusAlignmentValidator),
+            Box::new(ConceptCoherenceValidator { min_shared: 2 }),  // V9
         ];
 
         let validator_weights = config.validator_weights.to_array();
@@ -90,32 +97,43 @@ impl EngramRetriever {
             validators,
             validator_weights,
             topic_index,
+            concept_index,
             strong_inject_min: strong,
             weak_inject_min: weak,
             config,
         })
     }
 
-    /// Refresh the topic index from the database.
+    /// Refresh topic and concept indexes from the database.
     /// Called periodically by the daemon prune loop.
     pub fn refresh_index(&mut self, conn: &Connection) -> AiResult<()> {
         self.topic_index = TopicIndex::build_from_db(conn)?;
+        self.concept_index = ConceptIndex::build_from_db(conn)?;
         Ok(())
     }
 
-    /// Notify the index of a thread change (insert/update/remove).
+    /// Notify the indexes of a thread change (insert/update/remove).
     /// More efficient than full refresh for single-thread changes.
-    pub fn notify_thread_change(&mut self, thread_id: &str, topics: Option<&[String]>) {
+    pub fn notify_thread_change(
+        &mut self,
+        thread_id: &str,
+        topics: Option<&[String]>,
+        concepts: Option<&[String]>,
+    ) {
         match topics {
             Some(t) => self.topic_index.update(thread_id, t),
             None => self.topic_index.remove(thread_id),
+        }
+        match concepts {
+            Some(c) => self.concept_index.update(thread_id, c),
+            None => self.concept_index.remove(thread_id),
         }
     }
 
     /// Main retrieval — Engram-inspired 3-phase pipeline.
     ///
-    /// Phase 1: Hash Index pre-filter (O(1) TopicIndex lookup)
-    /// Phase 2: 8 validators vote on each candidate
+    /// Phase 1: TopicIndex + ConceptIndex hash lookup O(1) → candidate pre-filter
+    /// Phase 2: 9 validators vote on each candidate
     /// Phase 3: Consensus → StrongInject / WeakInject / Skip
     pub fn get_relevant_context(
         &self,
@@ -125,11 +143,17 @@ impl EngramRetriever {
     ) -> AiResult<Vec<Thread>> {
         tracing::info!(query_len = user_message.len(), limit = limit, "Engram retrieval starting");
 
-        // === Phase 1: Topic extraction + hash index pre-filter ===
+        // === Phase 1: Topic + concept extraction + hash index pre-filter ===
         let query_topics = self.topic_index.extract_matching_topics(user_message);
+        let query_concepts = self.concept_index.extract_matching_concepts(user_message);
 
-        let candidate_ids = if self.config.hash_index_enabled && !query_topics.is_empty() {
-            let ids = self.topic_index.lookup(&query_topics);
+        let candidate_ids = if self.config.hash_index_enabled
+            && (!query_topics.is_empty() || !query_concepts.is_empty())
+        {
+            // Union of TopicIndex and ConceptIndex candidates
+            let mut ids = self.topic_index.lookup(&query_topics);
+            let concept_ids = self.concept_index.lookup(&query_concepts);
+            ids.extend(concept_ids);
             // Cap candidates to avoid scanning too many threads
             if ids.len() > self.config.max_candidates {
                 ids.into_iter().take(self.config.max_candidates).collect()
@@ -141,7 +165,12 @@ impl EngramRetriever {
             load_active_thread_ids(conn, self.config.max_candidates)?
         };
 
-        tracing::debug!(candidates = candidate_ids.len(), query_topics = ?query_topics, "Phase 1 pre-filter complete");
+        tracing::debug!(
+            candidates = candidate_ids.len(),
+            query_topics = ?query_topics,
+            query_concepts = ?query_concepts,
+            "Phase 1 pre-filter complete"
+        );
 
         if candidate_ids.is_empty() {
             tracing::debug!("No candidates found, returning empty");
@@ -160,13 +189,14 @@ impl EngramRetriever {
             user_message: user_message.to_string(),
             query_embedding,
             query_topics,
+            query_concepts,
             active_thread_id,
             focus_topics: load_focus_topics(conn),
             label_hint: None,
             bridge_connections,
         };
 
-        // === Phase 2: Score each candidate with 8 validators ===
+        // === Phase 2: Score each candidate with 9 validators ===
         let mut scores: Vec<EngramScore> = candidates.iter()
             .filter_map(|t| self.score_thread_engram(t, &ctx))
             .collect();
@@ -253,11 +283,14 @@ impl EngramRetriever {
         limit: usize,
     ) -> AiResult<Vec<Thread>> {
         let query_topics = self.topic_index.extract_matching_topics(query);
+        let query_concepts = self.concept_index.extract_matching_concepts(query);
 
-        let candidate_ids = if !query_topics.is_empty() {
-            self.topic_index.lookup(&query_topics)
+        let candidate_ids = if !query_topics.is_empty() || !query_concepts.is_empty() {
+            let mut ids = self.topic_index.lookup(&query_topics);
+            ids.extend(self.concept_index.lookup(&query_concepts));
+            ids
         } else {
-            // No topic match — fall back to text search
+            // No topic/concept match — fall back to text search
             return search_threads_by_text(conn, query, limit);
         };
 
@@ -272,6 +305,7 @@ impl EngramRetriever {
             user_message: query.to_string(),
             query_embedding,
             query_topics,
+            query_concepts,
             active_thread_id: None,
             focus_topics: Vec::new(),
             label_hint: None,
@@ -293,9 +327,14 @@ impl EngramRetriever {
         Ok(result)
     }
 
-    /// Get the current topic index statistics.
-    pub fn index_stats(&self) -> (usize, usize) {
-        (self.topic_index.topic_count(), self.topic_index.thread_count())
+    /// Get the current index statistics: (topics, topic_threads, concepts, concept_threads).
+    pub fn index_stats(&self) -> (usize, usize, usize, usize) {
+        (
+            self.topic_index.topic_count(),
+            self.topic_index.thread_count(),
+            self.concept_index.concept_count(),
+            self.concept_index.thread_count(),
+        )
     }
 }
 
@@ -346,7 +385,7 @@ fn load_threads_by_ids(
         "SELECT id, title, status, weight, importance, importance_manually_set, \
          created_at, last_active, activation_count, split_locked, split_locked_until, \
          origin_type, drift_history, parent_id, child_ids, summary, topics, tags, labels, \
-         embedding, relevance_score, ratings, work_context, injection_stats \
+         concepts, embedding, relevance_score, ratings, work_context, injection_stats \
          FROM threads WHERE id IN ({})",
         placeholders
     );
@@ -425,8 +464,11 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
     let labels_json: String = row.get(18)?;
     let labels: Vec<String> = serde_json::from_str(&labels_json).unwrap_or_default();
 
+    let concepts_json: String = row.get(19)?;
+    let concepts: Vec<String> = serde_json::from_str(&concepts_json).unwrap_or_default();
+
     // Embedding: stored as BLOB (raw little-endian f32 bytes)
-    let embedding_blob: Option<Vec<u8>> = row.get(19)?;
+    let embedding_blob: Option<Vec<u8>> = row.get(20)?;
     let embedding = embedding_blob.and_then(|blob| {
         if blob.len() % 4 != 0 || blob.is_empty() {
             return None;
@@ -436,13 +478,13 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
             .collect())
     });
 
-    let ratings_json: String = row.get(21)?;
+    let ratings_json: String = row.get(22)?;
     let ratings: Vec<serde_json::Value> = serde_json::from_str(&ratings_json).unwrap_or_default();
 
-    let wc_json: Option<String> = row.get(22)?;
+    let wc_json: Option<String> = row.get(23)?;
     let work_context: Option<WorkContext> = wc_json.and_then(|s| serde_json::from_str(&s).ok());
 
-    let is_json: Option<String> = row.get(23)?;
+    let is_json: Option<String> = row.get(24)?;
     let injection_stats: Option<InjectionStats> = is_json.and_then(|s| serde_json::from_str(&s).ok());
 
     Ok(Thread {
@@ -465,8 +507,9 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
         topics,
         tags,
         labels,
+        concepts,
         embedding,
-        relevance_score: row.get(20)?,
+        relevance_score: row.get(21)?,
         ratings,
         work_context,
         injection_stats,
@@ -523,11 +566,9 @@ fn load_bridge_connections(
     Ok(connections)
 }
 
-/// Compute query embedding from text.
-/// TODO: Use EmbeddingManager::global().embed(text) when implemented.
-/// For now returns empty vec — V1 will vote neutral (pass=true, confidence=0.3).
-fn compute_query_embedding(_text: &str) -> Vec<f32> {
-    Vec::new()
+/// Compute query embedding from text using EmbeddingManager (ONNX or TF-IDF fallback).
+fn compute_query_embedding(text: &str) -> Vec<f32> {
+    EmbeddingManager::global().embed(text)
 }
 
 /// Load focus topics from the database.
@@ -546,7 +587,7 @@ fn search_threads_by_text(
     let sql = "SELECT id, title, status, weight, importance, importance_manually_set, \
                created_at, last_active, activation_count, split_locked, split_locked_until, \
                origin_type, drift_history, parent_id, child_ids, summary, topics, tags, labels, \
-               embedding, relevance_score, ratings, work_context, injection_stats \
+               concepts, embedding, relevance_score, ratings, work_context, injection_stats \
                FROM threads WHERE (title LIKE ?1 OR summary LIKE ?1 OR topics LIKE ?1) \
                ORDER BY last_active DESC LIMIT ?2";
 

@@ -197,6 +197,8 @@ pub struct Thread {
     pub topics: Vec<String>,
     pub tags: Vec<String>,
     pub labels: Vec<String>,
+    /// Semantic explosion concepts (LLM-generated synonyms, hypernyms, related domains).
+    pub concepts: Vec<String>,
     /// Embedding vector (f32) — ONNX all-MiniLM-L6-v2 or TF-IDF hash vector.
     pub embedding: Option<Vec<f32>>,
     pub relevance_score: f64,

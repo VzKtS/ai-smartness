@@ -1,4 +1,4 @@
-//! Engram Validators — 8 independent signals for injection consensus.
+//! Engram Validators — 9 independent signals for injection consensus.
 //!
 //! Each validator implements the Validator trait, returning a binary vote
 //! (pass/fail) with a confidence score (0.0-1.0).
@@ -13,6 +13,7 @@
 //! | 6 | DecayedRelevance      | weight × importance                 | zero     |
 //! | 7 | LabelCoherence        | Label matching (action→action)      | zero     |
 //! | 8 | FocusAlignment        | ai_focus weight boost               | zero     |
+//! | 9 | ConceptCoherence      | Shared concepts via ConceptIndex    | zero     |
 
 use std::collections::HashMap;
 use crate::thread::Thread;
@@ -31,6 +32,8 @@ pub struct QueryContext {
     pub user_message: String,
     pub query_embedding: Vec<f32>,
     pub query_topics: Vec<String>,
+    /// Concepts extracted from user message via ConceptIndex (V9).
+    pub query_concepts: Vec<String>,
     pub active_thread_id: Option<String>,
     pub focus_topics: Vec<(String, f64)>,  // (topic, weight)
     pub label_hint: Option<String>,
@@ -223,6 +226,33 @@ impl Validator for FocusAlignmentValidator {
         ValidatorVote {
             pass: max_match > 0.0,
             confidence: max_match,
+        }
+    }
+}
+
+// --- V9: Concept Coherence (shared concepts via ConceptIndex) ---
+
+pub struct ConceptCoherenceValidator {
+    pub min_shared: usize,
+}
+
+impl Validator for ConceptCoherenceValidator {
+    fn name(&self) -> &'static str { "concept_coherence" }
+    fn validate(&self, thread: &Thread, ctx: &QueryContext) -> ValidatorVote {
+        if ctx.query_concepts.is_empty() || thread.concepts.is_empty() {
+            // No concepts to compare — neutral vote
+            return ValidatorVote { pass: true, confidence: 0.3 };
+        }
+        let shared = thread.concepts.iter()
+            .filter(|c| {
+                let c_lower = c.to_lowercase();
+                ctx.query_concepts.iter().any(|qc| qc.to_lowercase() == c_lower)
+            })
+            .count();
+        let ratio = shared as f64 / ctx.query_concepts.len().max(1) as f64;
+        ValidatorVote {
+            pass: shared >= self.min_shared,
+            confidence: ratio.min(1.0),
         }
     }
 }

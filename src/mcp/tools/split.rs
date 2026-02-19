@@ -85,6 +85,7 @@ pub fn handle_split(
             topics: thread.topics.clone(),
             tags: vec![],
             labels: thread.labels.clone(),
+            concepts: thread.concepts.clone(),
             drift_history: vec![],
             ratings: vec![],
             work_context: None,

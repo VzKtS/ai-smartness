@@ -41,6 +41,7 @@ pub fn handle_thread_create(
         topics,
         tags: vec![],
         labels: vec![],
+        concepts: vec![],
         drift_history: vec![],
         ratings: vec![],
         work_context: None,

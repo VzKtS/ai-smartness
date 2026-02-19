@@ -14,6 +14,7 @@ use ai_smartness::config::GuardianConfig;
 use ai_smartness::intelligence::archiver::Archiver;
 use ai_smartness::intelligence::decayer::Decayer;
 use ai_smartness::intelligence::gossip::Gossip;
+use ai_smartness::intelligence::merge_evaluator::MergeEvaluator;
 use ai_smartness::storage::backup::{BackupConfig, BackupManager};
 use ai_smartness::storage::beat::BeatState;
 use ai_smartness::storage::cognitive_inbox::CognitiveInbox;
@@ -195,13 +196,48 @@ pub fn run_prune_loop(
 
 /// Single prune cycle for one agent — runs all 8 tasks sequentially.
 fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig) {
-    // 1. Gossip: discover new bridges via TF-IDF similarity (config-driven limits)
+    // 1. Gossip v2: concept-based bridge discovery (config-driven limits)
     run_task("gossip", || {
-        let gossip = Gossip::new();
+        let gossip = match Gossip::new(conn) {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!("Gossip init error: {}", e);
+                return;
+            }
+        };
         match gossip.run_cycle(conn, &guardian.gossip) {
-            Ok(n) => {
+            Ok((n, merge_candidates)) => {
                 if n > 0 {
-                    tracing::info!("Gossip: created {} bridges", n);
+                    tracing::info!("Gossip v2: created {} bridges", n);
+                }
+                // Evaluate merge candidates
+                if !merge_candidates.is_empty() {
+                    tracing::info!(
+                        "Gossip v2: {} merge candidates (scores: {})",
+                        merge_candidates.len(),
+                        merge_candidates.iter()
+                            .map(|c| format!("{:.2}", c.overlap_score))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    let max_per_cycle = ai_smartness::constants::GOSSIP_MERGE_MAX_PER_CYCLE;
+                    let auto_threshold = guardian.gossip.merge_auto_threshold;
+                    for candidate in merge_candidates.iter().take(max_per_cycle) {
+                        if candidate.overlap_score >= auto_threshold {
+                            match MergeEvaluator::evaluate_and_execute(conn, candidate) {
+                                Ok(true) => tracing::info!(
+                                    "MergeEvaluator: auto-merged (score={:.2})",
+                                    candidate.overlap_score
+                                ),
+                                Ok(false) => tracing::info!(
+                                    "MergeEvaluator: rejected (score={:.2})",
+                                    candidate.overlap_score
+                                ),
+                                Err(e) => tracing::warn!("MergeEvaluator error: {}", e),
+                            }
+                        }
+                        // 0.60-0.85: stored for HealthGuard suggestion (future)
+                    }
                 }
             }
             Err(e) => tracing::warn!("Gossip error: {}", e),

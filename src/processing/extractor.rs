@@ -16,6 +16,8 @@ pub struct Extraction {
     pub summary: String,
     pub confidence: f64,
     pub labels: Vec<String>,
+    #[serde(default)]
+    pub concepts: Vec<String>,
     pub importance: f64,
 }
 
@@ -44,27 +46,31 @@ impl ExtractionSource {
         }
     }
 
-    fn guidance(&self) -> &'static str {
+    fn description(&self) -> &'static str {
         match self {
-            Self::Prompt => "This is a user prompt/message. Focus on the intent and requested action.",
-            Self::FileRead => "This is file content that was read. Focus on what the file implements, its purpose, and key structures.",
-            Self::FileWrite => "This is file content being written/modified. Focus on what changed and why.",
-            Self::Task => "This is a delegated task result. Focus on the outcome and findings.",
-            Self::Fetch => "This is fetched web content. Focus on the key information retrieved.",
-            Self::Response => "This is an AI response. Focus on decisions made and actions taken.",
-            Self::Command => "This is command output (shell/terminal). Focus on the result and any errors or significant output.",
+            Self::Prompt => "user message or prompt",
+            Self::FileRead => "file content that was read",
+            Self::FileWrite => "file content being written or modified",
+            Self::Task => "delegated task result",
+            Self::Fetch => "web content fetched from a URL",
+            Self::Response => "AI assistant response",
+            Self::Command => "terminal/shell command output",
         }
     }
 }
 
 /// Extract structured data from content using LLM subprocess.
 /// Falls back to heuristic extraction if LLM call fails.
+///
+/// `agent_context` — optional recent context from the agent's activity.
+/// Used ONLY for importance scoring (Step 2), never for classification (Step 1).
 pub fn extract(
     content: &str,
     source: ExtractionSource,
     extraction_cfg: &ExtractionConfig,
     label_cfg: &LabelSuggestionConfig,
     importance_cfg: &ImportanceRatingConfig,
+    agent_context: Option<&str>,
 ) -> AiResult<Extraction> {
     if !extraction_cfg.llm.enabled {
         let extraction = extract_heuristic(content);
@@ -72,7 +78,7 @@ pub fn extract(
         return Ok(extraction);
     }
 
-    match extract_via_llm(content, source, extraction_cfg, label_cfg, importance_cfg) {
+    match extract_via_llm(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context) {
         Ok(extraction) => {
             tracing::info!(mode = "llm", title = %extraction.title, confidence = extraction.confidence, "Extraction complete");
             Ok(extraction)
@@ -92,8 +98,9 @@ fn extract_via_llm(
     extraction_cfg: &ExtractionConfig,
     label_cfg: &LabelSuggestionConfig,
     importance_cfg: &ImportanceRatingConfig,
+    agent_context: Option<&str>,
 ) -> AiResult<Extraction> {
-    let prompt = build_extraction_prompt(content, source, extraction_cfg, label_cfg, importance_cfg);
+    let prompt = build_extraction_prompt(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context);
     let model = extraction_cfg.llm.model.as_cli_flag();
 
     match super::llm_subprocess::call_claude_with_model(&prompt, model) {
@@ -143,6 +150,7 @@ fn extract_heuristic(content: &str) -> Extraction {
         summary,
         confidence: 0.3,
         labels: vec![],
+        concepts: vec![],
         importance,
     }
 }
@@ -153,6 +161,7 @@ fn build_extraction_prompt(
     extraction_cfg: &ExtractionConfig,
     label_cfg: &LabelSuggestionConfig,
     importance_cfg: &ImportanceRatingConfig,
+    agent_context: Option<&str>,
 ) -> String {
     let max_chars = extraction_cfg.max_content_chars;
     let truncated = if content.len() > max_chars {
@@ -161,69 +170,106 @@ fn build_extraction_prompt(
         content
     };
 
-    let label_vocab: Vec<&str> = label_cfg.label_vocabulary.iter().map(|s| s.as_str()).collect();
     let noise_words: Vec<&str> = extraction_cfg.topic_noise_words.iter().map(|s| s.as_str()).collect();
     let score_map = &importance_cfg.score_map;
 
+    // Label hint: only if vocabulary is non-empty
+    let label_hint = if label_cfg.label_vocabulary.is_empty() {
+        String::new()
+    } else {
+        let vocab: Vec<&str> = label_cfg.label_vocabulary.iter().map(|s| s.as_str()).collect();
+        format!("\nOptional vocabulary hints (use ONLY if they genuinely match): [{}]", vocab.join(", "))
+    };
+
+    // Context block for Step 2 — only if agent_context is provided
+    let context_block = match agent_context {
+        Some(ctx) if !ctx.is_empty() => format!(
+            r#"
+
+The agent was recently working on:
+---
+{}
+---
+Use this context to judge how aligned the classified content is with the agent's current activity.
+Higher alignment = higher importance. No alignment does NOT mean low importance — content may be independently valuable."#,
+            ctx
+        ),
+        _ => String::from("\nNo additional context available. Score based on acquisition source and content richness alone."),
+    };
+
     format!(
-        r#"You are a memory extraction system. Analyze this {source_type} content and return structured metadata as JSON only.
+        r#"You are a memory classification system. Your role: analyze content and produce structured metadata.
+IMPORTANT: Process this in strict order. Generate each JSON field sequentially.
 
-## Source context
-{guidance}
+## STEP 1 — Classification (analyze the content below, with NO external context)
 
-## Output format (JSON only, no markdown, no explanation)
-{{"title":"...","subjects":["..."],"summary":"...","confidence":0.0-1.0,"labels":["..."],"importance":0.0-1.0}}
+### title (max 50 chars)
+Specific, descriptive title capturing the core subject of the content.
+Never use generic prefixes ("Content:", "File:", "Analysis:", "Output:").
 
-## Rules
+### subjects (2-5 items)
+Concrete topics, concepts, or entities present in the content.
+Prefer specific terms over vague ones.
+Exclude noise words: {noise_words}
 
-### Title (max 50 chars)
-- Be SPECIFIC and descriptive. Capture the core subject.
-- Never start with generic prefixes like "Content:", "File:", "Analysis:", "Code:", "Output:".
-- Good: "SQLite bridge storage insert logic", "Gossip cycle embedding similarity phase"
-- Bad: "Code analysis", "File content", "Output review"
+### summary (max 200 chars)
+Concise description of what this content contains.
 
-### Subjects (topics, 2-5 items)
-- Extract concrete technical topics, concepts, or entities.
-- Exclude noise words: {noise_words}
-- Prefer specific terms (e.g. "rusqlite", "TF-IDF cosine") over generic ones ("code", "data").
+### confidence (0.0-1.0)
+Your self-assessment of how well YOU understood this content.
+- 1.0 = fully understood, clear and coherent
+- 0.7-0.9 = mostly understood, some ambiguity
+- 0.4-0.6 = partially understood, fragmented or incomplete
+- 0.1-0.3 = barely legible, very noisy
+- 0.0 = NOT humanly comprehensible (binary data, encoded content, empty, gibberish)
+Confidence measures YOUR comprehension, not content quality or relevance.
+A perfectly clear text about any subject = high confidence.
 
-### Confidence (0.0-1.0)
-- Set 0.0 for noise that should NOT become a memory thread:
-  build logs, test runner output, binary/encoded content, boilerplate < 3 meaningful phrases,
-  repetitive output, dependency lists, lock files, auto-generated content.
-- 0.3-0.5: low-value but potentially useful (short exchanges, routine operations).
-- 0.6-0.8: substantial content worth remembering (implementations, decisions, debugging).
-- 0.9-1.0: critical content (architecture decisions, bug root causes, key insights).
-
-### Labels (content-descriptive)
-Labels MUST describe WHAT the content is about, not what type of action it represents.
-Good: "rust-configuration", "thread-lifecycle", "sqlite-storage", "hook-dispatcher"
+### labels (1-4 items)
+Describe WHAT the content covers. Must reflect the subject matter.
 Bad: "action", "decision", "metadata", "code-snippet"
-Vocabulary hints: [{label_vocab}]
-You may use custom labels. Prefer specific over generic.
+Good: labels that name the actual topic (e.g. "goldfish-care", "sqlite-storage", "recipe-cooking"){label_hint}
 
-### Importance (0.0-1.0)
-- {critical:.1} = critical (architecture decisions, blockers, breaking changes)
-- {high:.1} = high (implementation details, bug fixes, configuration)
-- {normal:.1} = normal (exploration, questions, learning)
-- {low:.1} = low (chit-chat, meta-discussion, routine)
-- {disposable:.1} = disposable (one-off debug, transient logs, ephemeral)
+## STEP 1B — Semantic explosion
 
-### Summary (max 200 chars)
-Concise description of what this content contains and why it matters.
+From the title, subjects, and labels you produced in Step 1, generate an associative concept cloud.
+Include: synonyms, related domains, hypernyms, hyponyms, adjacent technologies/tools.
+Single lowercase words only, **in English only**. No duplicates. Do NOT repeat subjects or labels.
+Between 5 and 25 items.
 
-## Content ({source_type}):
-{content}"#,
-        source_type = source.as_str(),
-        guidance = source.guidance(),
+Example: subjects=["airbus","a320"], labels=["aviation"]
+→ concepts: ["airplane","aeronautics","piloting","boeing","glider","flight","turbine","transport","toulouse"]
+
+## Content to classify ({source_type}: {source_desc}):
+
+{content}
+
+## STEP 2 — Importance scoring
+
+Now that you have classified the content above, assess its importance.
+Acquisition source: {source_type}
+{context_block}
+
+### importance (0.0-1.0)
+- {critical:.1} = critical, must be retained long-term
+- {high:.1} = significant, strong retention value
+- {normal:.1} = standard, normal retention
+- {low:.1} = minor, weak retention
+- {disposable:.1} = ephemeral, minimal value
+
+## Output (JSON only, no markdown, no explanation)
+{{"title":"...","subjects":["..."],"summary":"...","confidence":0.0,"labels":["..."],"concepts":["..."],"importance":0.0}}"#,
         noise_words = noise_words.join(", "),
-        label_vocab = label_vocab.join(", "),
+        label_hint = label_hint,
+        source_type = source.as_str(),
+        source_desc = source.description(),
+        content = truncated,
+        context_block = context_block,
         critical = score_map.critical,
         high = score_map.high,
         normal = score_map.normal,
         low = score_map.low,
         disposable = score_map.disposable,
-        content = truncated,
     )
 }
 

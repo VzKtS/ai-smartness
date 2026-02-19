@@ -174,6 +174,7 @@ impl ThreadManager {
             topics: extraction.subjects.clone(),
             tags: vec![],
             labels: filter_blocked_labels(&extraction.labels),
+            concepts: extraction.concepts.clone(),
             embedding: Some(embedding),
             relevance_score,
             ratings: vec![],

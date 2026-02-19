@@ -2,7 +2,7 @@ use crate::{AiError, AiResult};
 use rusqlite::Connection;
 
 /// Schema version actuelle
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 /// Retourne la version de schema actuelle (0 si table absente)
 pub fn get_schema_version(conn: &Connection) -> AiResult<u32> {
@@ -165,6 +165,14 @@ pub fn migrate_agent_db(conn: &Connection) -> AiResult<()> {
              ALTER TABLE dead_letters ADD COLUMN attachments TEXT DEFAULT '[]';"
         ).map_err(|e| AiError::Storage(format!("Agent DB V3 migration failed: {}", e)))?;
         set_schema_version(conn, 3)?;
+    }
+
+    // V4: add concepts column to threads (semantic explosion)
+    if version < 4 {
+        conn.execute_batch(
+            "ALTER TABLE threads ADD COLUMN concepts TEXT DEFAULT '[]';"
+        ).map_err(|e| AiError::Storage(format!("Agent DB V4 migration failed: {}", e)))?;
+        set_schema_version(conn, 4)?;
     }
 
     Ok(())
