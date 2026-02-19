@@ -1,6 +1,6 @@
 [package]
 name = "ai-smartness"
-version = "0.1.0-alpha"
+version = "0.1.1-alpha"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -45,6 +45,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "6.0"
 interprocess = "2.2"
 signal-hook = "0.3"
+libc = "0.2"
 
 # Hashing
 sha2 = "0.10"

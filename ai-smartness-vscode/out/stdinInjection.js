@@ -131,7 +131,7 @@ function readAgentPid(projHash, agentId) {
         }
         const content = fs.readFileSync(beatPath, 'utf8');
         const beat = JSON.parse(content);
-        return beat.pid ?? null;
+        return beat.cli_pid ?? beat.pid ?? null;
     }
     catch {
         return null;
@@ -173,13 +173,12 @@ function buildPayload(text) {
  */
 function buildPromptText(agentId, fromAgent, messageBody, mode) {
     if (mode === 'cognitive') {
-        return (`[automated] You are agent "${agentId}". ` +
-            `Call ai_agent_select with agent_id="${agentId}" then process your cognitive context naturally.`);
+        return (`[automated cognitive wake for ${agentId}] You have pending cognitive messages from "${fromAgent}" ` +
+            `about: "${messageBody}". Check your cognitive inbox context above and respond to the message. ` +
+            `Use ai_msg_ack to acknowledge after processing.`);
     }
-    return (`[AI Smartness AUTO-WAKE] You are agent "${agentId}". ` +
-        `FIRST call ai_agent_select with agent_id="${agentId}" to confirm your identity, ` +
-        `then call msg_inbox with agent_id="${agentId}" to read your messages and reply. ` +
-        `Message from ${fromAgent}: ${messageBody}. This is automated — no human triggered this.`);
+    return (`[automated inbox wake for ${agentId}] You have a message from "${fromAgent}": "${messageBody}". ` +
+        `Call msg_inbox to read your pending messages and reply.`);
 }
 // ─── Injection ───
 /**

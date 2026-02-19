@@ -30,6 +30,9 @@ pub struct BeatState {
     /// PID of the MCP server process owning this agent.
     #[serde(default)]
     pub pid: Option<u32>,
+    /// PID of the parent Claude CLI process (for extension injection targeting).
+    #[serde(default)]
+    pub cli_pid: Option<u32>,
     /// Scheduled self-wakes (beat_wake tool).
     #[serde(default)]
     pub scheduled_wakes: Vec<ScheduledWake>,
@@ -56,6 +59,7 @@ impl Default for BeatState {
             last_session_id: None,
             last_thread_id: None,
             pid: None,
+            cli_pid: None,
             scheduled_wakes: Vec::new(),
             context_tokens: None,
             context_percent: None,

@@ -249,6 +249,18 @@ impl McpServer {
 
 // ─── Background Heartbeat ───
 
+/// Get the parent process PID (Claude CLI) — cross-platform.
+#[cfg(unix)]
+fn get_cli_pid() -> Option<u32> {
+    let ppid = unsafe { libc::getppid() };
+    if ppid > 1 { Some(ppid as u32) } else { None }
+}
+
+#[cfg(not(unix))]
+fn get_cli_pid() -> Option<u32> {
+    None
+}
+
 const HEARTBEAT_TICK_SECS: u64 = 10;
 
 fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running: Arc<AtomicBool>) {
@@ -273,6 +285,7 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
                 let old_dir = path_utils::agent_data_dir(project_hash, &current_agent);
                 let mut old_beat = BeatState::load(&old_dir);
                 old_beat.pid = None;
+                old_beat.cli_pid = None;
                 old_beat.save(&old_dir);
                 tracing::info!(from = %current_agent, to = %agent_id, "Heartbeat: agent swapped");
             }
@@ -284,8 +297,14 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
         // 1. Update beat.json with PID and timestamp
         let mut beat = BeatState::load(&data_dir);
         beat.pid = Some(pid);
+        beat.cli_pid = get_cli_pid();
         beat.last_beat_at = chrono::Utc::now().to_rfc3339();
         beat.save(&data_dir);
+
+        // 1b. Maintain session_agents/{mcp_pid} for extension agent detection
+        let sa_dir = path_utils::session_agents_dir(project_hash);
+        std::fs::create_dir_all(&sa_dir).ok();
+        std::fs::write(sa_dir.join(pid.to_string()), &agent_id).ok();
 
         // 2. Check scheduled self-wakes
         check_scheduled_wakes(&agent_id, &data_dir);
@@ -300,12 +319,16 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
         }
     }
 
-    // Cleanup: remove PID from beat.json on exit
+    // Cleanup: remove PID from beat.json and session_agents on exit
     if !current_agent.is_empty() {
         let data_dir = path_utils::agent_data_dir(project_hash, &current_agent);
         let mut beat = BeatState::load(&data_dir);
         beat.pid = None;
+        beat.cli_pid = None;
         beat.save(&data_dir);
+
+        let sa_dir = path_utils::session_agents_dir(project_hash);
+        std::fs::remove_file(sa_dir.join(pid.to_string())).ok();
     }
 
     tracing::info!("Heartbeat thread stopped");

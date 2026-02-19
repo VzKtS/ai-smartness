@@ -2,7 +2,9 @@ use ai_smartness::{id_gen, time_utils};
 use ai_smartness::message::{Message, MessagePriority, MessageStatus};
 use ai_smartness::AiResult;
 use ai_smartness::storage::cognitive_inbox::CognitiveInbox;
+use ai_smartness::storage::database::{self, ConnectionRole};
 use ai_smartness::storage::mcp_messages::McpMessages;
+use ai_smartness::storage::migrations;
 use ai_smartness::storage::path_utils;
 use ai_smartness::registry::registry::AgentRegistry;
 
@@ -56,7 +58,12 @@ pub fn handle_msg_focus(
         acked_at: None,
     };
 
-    CognitiveInbox::send(ctx.agent_conn, &msg)?;
+    // Write to the TARGET agent's DB so the receiver's inject hook sees it
+    let target_db = path_utils::agent_db_path(ctx.project_hash, &target);
+    let target_conn = database::open_connection(&target_db, ConnectionRole::Mcp)?;
+    migrations::migrate_agent_db(&target_conn)?;
+    CognitiveInbox::send(&target_conn, &msg)?;
+
     emit_wake_signal(&target, &msg.from_agent, &msg.subject, "cognitive");
     Ok(serde_json::json!({"sent": true, "message_id": msg.id, "target": target}))
 }
