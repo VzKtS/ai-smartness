@@ -10,27 +10,25 @@
  *   pending    → signal detected, waiting for Claude process to be idle
  *   injecting  → writing to stdin (instant, non-blocking)
  *   cooldown   → debounce period after successful injection
- *   failed     → injection failed, waiting for retry or manual action
+ *   cooldown   → backoff between injection rounds (retries forever until delivered)
  */
-type State = 'idle' | 'pending' | 'cooldown' | 'failed';
+type State = 'idle' | 'pending' | 'cooldown';
 export declare class AgentController {
     readonly agentId: string;
     readonly projectHash: string | null;
     private state;
     private currentSignal;
     private attempts;
-    private retryRounds;
     private lastAttemptTime;
     private cooldownUntil;
     private processedSignalKeys;
     private communicationMode;
     private onLog;
     private onNotify;
-    private onWarn;
     constructor(agentId: string, projectHash: string | null, callbacks: {
         onLog: (msg: string) => void;
         onNotify: (msg: string) => void;
-        onWarn: (msg: string) => void;
+        onWarn?: (msg: string) => void;
     });
     setMode(mode: 'cognitive' | 'inbox'): void;
     /**

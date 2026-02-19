@@ -14,16 +14,15 @@ import type { WakeSignal } from './wakeSignals';
  *   pending    → signal detected, waiting for Claude process to be idle
  *   injecting  → writing to stdin (instant, non-blocking)
  *   cooldown   → debounce period after successful injection
- *   failed     → gave up after all retries, watching for new signals
+ *   cooldown   → backoff between injection rounds (retries forever until delivered)
  */
 
-type State = 'idle' | 'pending' | 'cooldown' | 'failed';
+type State = 'idle' | 'pending' | 'cooldown';
 
 const COOLDOWN_MS = 10_000;
 const RETRY_BACKOFF_MS = 15_000;
 const IDLE_CHECK_INTERVAL_MS = 1_000;
 const MAX_ATTEMPTS = 3;
-const MAX_RETRIES = 5;
 
 export class AgentController {
     readonly agentId: string;
@@ -31,14 +30,12 @@ export class AgentController {
     private state: State = 'idle';
     private currentSignal: WakeSignal | null = null;
     private attempts = 0;
-    private retryRounds = 0;
     private lastAttemptTime = 0;
     private cooldownUntil = 0;
     private processedSignalKeys = new Set<string>();
     private communicationMode: 'cognitive' | 'inbox' = 'cognitive';
     private onLog: (msg: string) => void;
     private onNotify: (msg: string) => void;
-    private onWarn: (msg: string) => void;
 
     constructor(
         agentId: string,
@@ -46,14 +43,13 @@ export class AgentController {
         callbacks: {
             onLog: (msg: string) => void;
             onNotify: (msg: string) => void;
-            onWarn: (msg: string) => void;
+            onWarn?: (msg: string) => void;
         }
     ) {
         this.agentId = agentId;
         this.projectHash = projectHash;
         this.onLog = callbacks.onLog;
         this.onNotify = callbacks.onNotify;
-        this.onWarn = callbacks.onWarn;
     }
 
     setMode(mode: 'cognitive' | 'inbox'): void {
@@ -74,18 +70,12 @@ export class AgentController {
                 break;
             case 'cooldown':
                 if (Date.now() >= this.cooldownUntil) {
-                    // If there's still a pending signal to deliver, retry injection
                     if (this.currentSignal) {
                         this.state = 'pending';
                     } else {
-                        this.retryRounds = 0;
                         this.state = 'idle';
                     }
                 }
-                break;
-            case 'failed':
-                // Stay failed until next signal or manual reset
-                this.checkForSignal(autoPrompt);
                 break;
         }
     }
@@ -134,7 +124,6 @@ export class AgentController {
 
         this.currentSignal = signal;
         this.attempts = 0;
-        this.retryRounds = 0;
         this.state = 'pending';
     }
 
@@ -167,31 +156,16 @@ export class AgentController {
             this.onLog(`Injected wake to ${this.agentId}`);
             wakeSignals.acknowledgeSignal(this.agentId);
             this.currentSignal = null;
-            this.retryRounds = 0;
             this.enterCooldown();
             return;
         }
 
         if (this.attempts >= MAX_ATTEMPTS) {
-            this.retryRounds++;
-            if (this.retryRounds >= MAX_RETRIES) {
-                // Final give-up after all retry rounds
-                this.onLog(`Injection failed for ${this.agentId} after ${MAX_RETRIES} retry rounds`);
-                this.onWarn(
-                    `AI Smartness: Could not inject to ${this.agentId} — no idle Claude process. ` +
-                    `Use "AI Smartness: Check Inbox" manually.`
-                );
-                wakeSignals.acknowledgeSignal(this.agentId);
-                this.currentSignal = null;
-                this.retryRounds = 0;
-                this.state = 'failed';
-            } else {
-                // Retry: backoff then re-enter pending state
-                this.onLog(`Injection round ${this.retryRounds}/${MAX_RETRIES} failed for ${this.agentId}, retrying in ${RETRY_BACKOFF_MS / 1000}s`);
-                this.attempts = 0;
-                this.cooldownUntil = Date.now() + RETRY_BACKOFF_MS;
-                this.state = 'cooldown';
-            }
+            // Backoff then retry — no give up, message must be delivered
+            this.onLog(`Injection round failed for ${this.agentId}, retrying in ${RETRY_BACKOFF_MS / 1000}s`);
+            this.attempts = 0;
+            this.cooldownUntil = Date.now() + RETRY_BACKOFF_MS;
+            this.state = 'cooldown';
         }
         // else: stay in 'pending', will retry next tick
     }
