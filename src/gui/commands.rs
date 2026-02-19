@@ -566,6 +566,9 @@ pub fn save_settings(settings: serde_json::Value) -> Result<serde_json::Value, S
     let content = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(&config_path, content).map_err(|e| e.to_string())?;
 
+    // Sync hook/capture settings to per-project guardian_config.json
+    ai_smartness::config_sync::sync_guardian_configs(&settings);
+
     // Sync MCP permissions to all project .claude/settings.json files
     sync_mcp_permissions(config.hooks.mcp_auto_allow);
 
@@ -574,7 +577,7 @@ pub fn save_settings(settings: serde_json::Value) -> Result<serde_json::Value, S
 
 /// Sync MCP auto-allow permissions to all registered projects' .claude/settings.json.
 fn sync_mcp_permissions(enabled: bool) {
-    let wildcards = ["mcp__ai-smartness__*", "mcp__mcp-smartness__*"];
+    let wildcards = ["mcp__ai-smartness__*"];
 
     let reg_path = path_utils::registry_db_path();
     let reg_conn = match open_connection(&reg_path, ConnectionRole::Cli) {

@@ -1,8 +1,8 @@
 pub mod agent;
 pub mod bridges;
+pub mod config;
 pub mod daemon;
 pub mod init;
-pub mod mode;
 pub mod project;
 pub mod search;
 pub mod status;

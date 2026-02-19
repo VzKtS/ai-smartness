@@ -1,6 +1,7 @@
 use ai_smartness::{id_gen, time_utils};
 use ai_smartness::thread::{OriginType, Thread, ThreadMessage, ThreadStatus};
 use ai_smartness::AiResult;
+use ai_smartness::registry::registry::AgentRegistry;
 use ai_smartness::storage::threads::ThreadStorage;
 
 use super::{
@@ -91,7 +92,14 @@ pub fn handle_thread_list(
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
     let status_str = optional_str(params, "status").unwrap_or_else(|| "active".into());
-    let limit = optional_usize(params, "limit").unwrap_or(30);
+    let limit = optional_usize(params, "limit").unwrap_or_else(|| {
+        // Use the agent's thread_mode quota as default limit
+        AgentRegistry::get(ctx.registry_conn, ctx.agent_id, ctx.project_hash)
+            .ok()
+            .flatten()
+            .map(|a| a.thread_mode.quota())
+            .unwrap_or(50)
+    });
     let offset = optional_usize(params, "offset").unwrap_or(0);
     let status: ThreadStatus = status_str.parse().unwrap_or(ThreadStatus::Active);
 

@@ -70,10 +70,10 @@ enum Commands {
         /// Agent ID
         agent_id: Option<String>,
     },
-    /// Set memory mode
-    Mode {
-        /// Mode: standard, minimal, aggressive, custom
-        mode: String,
+    /// View or modify configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
     },
     /// Manage projects
     Project {
@@ -84,6 +84,24 @@ enum Commands {
     Agent {
         #[command(subcommand)]
         action: AgentAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Display the full configuration
+    Show,
+    /// Get a config value (dot notation: hooks.guard_write_enabled)
+    Get {
+        /// Config key (dot notation)
+        key: String,
+    },
+    /// Set a config value and propagate to projects
+    Set {
+        /// Config key (dot notation)
+        key: String,
+        /// Value (JSON: true, false, 42, "string")
+        value: String,
     },
 }
 
@@ -276,9 +294,13 @@ fn main() {
             cli::search::run(&query, project_hash.as_deref(), agent_id.as_deref())
                 .unwrap_or_else(|e| eprintln!("Error: {}", e));
         }
-        Some(Commands::Mode { mode }) => {
-            cli::mode::run(&mode)
-                .unwrap_or_else(|e| eprintln!("Error: {}", e));
+        Some(Commands::Config { action }) => {
+            let result = match action {
+                ConfigAction::Show => cli::config::run_show(),
+                ConfigAction::Get { key } => cli::config::run_get(&key),
+                ConfigAction::Set { key, value } => cli::config::run_set(&key, &value),
+            };
+            result.unwrap_or_else(|e| eprintln!("Error: {}", e));
         }
         Some(Commands::Project { action }) => match action {
             ProjectAction::Add { path, name } => {

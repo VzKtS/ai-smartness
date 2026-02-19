@@ -46,9 +46,7 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str) {
     }
 
     // 3. Skip AI Smartness system tools (prevent cycle)
-    if tool_name.starts_with("mcp__ai-smartness__")
-        || tool_name.starts_with("mcp__mcp-smartness")
-    {
+    if tool_name.starts_with("mcp__ai-smartness__") {
         tracing::info!(tool = tool_name, "Capture: skipping AI Smartness tool");
         print_continue();
         return;

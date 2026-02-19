@@ -31,6 +31,7 @@ pub mod admin;
 pub mod network;
 pub mod tracing_init;
 pub mod hook_setup;
+pub mod config_sync;
 
 // Re-exports for convenience
 pub use error::{AiError, AiResult};

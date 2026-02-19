@@ -96,11 +96,9 @@ pub fn install_claude_hooks(project_path: &Path, project_hash: &str) -> Result<(
         *allowed = serde_json::json!([]);
     }
     let tools = allowed.as_array_mut().unwrap();
-    // Add wildcards for both naming conventions (ai-smartness and mcp-smartness)
-    for wildcard in &["mcp__ai-smartness__*", "mcp__mcp-smartness__*"] {
-        if !tools.iter().any(|t| t.as_str() == Some(wildcard)) {
-            tools.push(serde_json::json!(wildcard));
-        }
+    let wildcard = "mcp__ai-smartness__*";
+    if !tools.iter().any(|t| t.as_str() == Some(wildcard)) {
+        tools.push(serde_json::json!(wildcard));
     }
 
     // Write back
@@ -122,7 +120,7 @@ pub fn install_claude_hooks(project_path: &Path, project_hash: &str) -> Result<(
 /// Claude Code uses `permissions.allow` (not `allowedTools`) in this file.
 fn install_local_permissions(claude_dir: &Path) -> Result<()> {
     let local_path = claude_dir.join("settings.local.json");
-    let wildcards = ["mcp__ai-smartness__*", "mcp__mcp-smartness__*"];
+    let wildcards = ["mcp__ai-smartness__*"];
 
     let mut local: serde_json::Value = if local_path.exists() {
         let content = std::fs::read_to_string(&local_path)
