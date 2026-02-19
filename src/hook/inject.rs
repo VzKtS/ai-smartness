@@ -317,6 +317,13 @@ fn build_cognitive_inbox(conn: &Connection, agent_id: &str, consume: bool) -> Op
             "- From {}: [{}] {}\n",
             msg.from_agent, msg.subject, msg.content
         ));
+        // Render file attachments inline
+        for att in &msg.attachments {
+            ctx.push_str(&format!(
+                "  [Attached: {}]\n```\n{}\n```\n",
+                att.filename, att.content
+            ));
+        }
     }
     if messages.len() > MAX_COGNITIVE_MESSAGES {
         ctx.push_str(&format!(

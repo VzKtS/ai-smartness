@@ -1,5 +1,5 @@
 use crate::time_utils;
-use crate::message::{Message, MessagePriority, MessageStatus};
+use crate::message::{Attachment, Message, MessagePriority, MessageStatus};
 use crate::{AiError, AiResult};
 use rusqlite::{params, Connection, Row};
 
@@ -12,6 +12,12 @@ fn message_from_row(row: &Row) -> rusqlite::Result<Message> {
     let ttl_str: Option<String> = row.get("ttl_expiry")?;
     let read_str: Option<String> = row.get("read_at")?;
     let acked_str: Option<String> = row.get("acked_at")?;
+
+    // Backward-compatible: column may not exist pre-V3
+    let attachments_str: Option<String> = row.get("attachments").unwrap_or(None);
+    let attachments: Vec<Attachment> = attachments_str
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
 
     Ok(Message {
         id: row.get("id")?,
@@ -31,15 +37,19 @@ fn message_from_row(row: &Row) -> rusqlite::Result<Message> {
             .unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::hours(24)),
         read_at: read_str.and_then(|s| time_utils::from_sqlite(&s).ok()),
         acked_at: acked_str.and_then(|s| time_utils::from_sqlite(&s).ok()),
+        attachments,
     })
 }
 
 impl CognitiveInbox {
     /// Insert un message dans la cognitive inbox de l'agent
     pub fn send(conn: &Connection, msg: &Message) -> AiResult<()> {
+        let attachments_json = serde_json::to_string(&msg.attachments)
+            .unwrap_or_else(|_| "[]".to_string());
+
         conn.execute(
-            "INSERT INTO cognitive_inbox (id, from_agent, to_agent, subject, content, priority, ttl_expiry, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO cognitive_inbox (id, from_agent, to_agent, subject, content, priority, ttl_expiry, status, created_at, attachments)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 msg.id,
                 msg.from_agent,
@@ -50,6 +60,7 @@ impl CognitiveInbox {
                 time_utils::to_sqlite(&msg.ttl_expiry),
                 msg.status.as_str(),
                 time_utils::to_sqlite(&msg.created_at),
+                attachments_json,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Send cognitive message failed: {}", e)))?;
@@ -125,11 +136,11 @@ impl CognitiveInbox {
     pub fn expire_stale(conn: &Connection) -> AiResult<usize> {
         let now = time_utils::to_sqlite(&time_utils::now());
 
-        // Move expired to dead_letters
+        // Move expired to dead_letters (including attachments)
         let count: usize = conn
             .execute(
-                "INSERT INTO dead_letters (id, from_agent, to_agent, subject, content, priority, original_ttl, expired_at, created_at)
-                 SELECT id, from_agent, to_agent, subject, content, priority, ttl_expiry, ?1, created_at
+                "INSERT INTO dead_letters (id, from_agent, to_agent, subject, content, priority, original_ttl, expired_at, created_at, attachments)
+                 SELECT id, from_agent, to_agent, subject, content, priority, ttl_expiry, ?1, created_at, attachments
                  FROM cognitive_inbox
                  WHERE ttl_expiry IS NOT NULL AND ttl_expiry < ?1 AND status != 'acked'",
                 params![now],
@@ -157,7 +168,7 @@ impl CognitiveInbox {
             .prepare(
                 "SELECT id, from_agent, to_agent, subject, content, priority,
                         original_ttl as ttl_expiry, 'expired' as status,
-                        created_at, NULL as read_at, NULL as acked_at
+                        created_at, NULL as read_at, NULL as acked_at, attachments
                  FROM dead_letters ORDER BY expired_at DESC",
             )
             .map_err(|e| AiError::Storage(e.to_string()))?;

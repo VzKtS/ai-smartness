@@ -1,5 +1,5 @@
 use crate::time_utils;
-use crate::message::{Message, MessagePriority, MessageStatus};
+use crate::message::{Attachment, Message, MessagePriority, MessageStatus};
 use crate::{AiError, AiResult};
 use rusqlite::{params, Connection, Row};
 
@@ -12,6 +12,12 @@ fn mcp_msg_from_row(row: &Row) -> rusqlite::Result<Message> {
     let created_str: String = row.get("created_at")?;
     let expires_str: Option<String> = row.get("expires_at")?;
     let read_str: Option<String> = row.get("read_at")?;
+
+    // Backward-compatible: column may not exist pre-V3
+    let attachments_str: Option<String> = row.get("attachments").unwrap_or(None);
+    let attachments: Vec<Attachment> = attachments_str
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
 
     Ok(Message {
         id: row.get("id")?,
@@ -34,14 +40,18 @@ fn mcp_msg_from_row(row: &Row) -> rusqlite::Result<Message> {
             .unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::hours(24)),
         read_at: read_str.and_then(|s| time_utils::from_sqlite(&s).ok()),
         acked_at: None,
+        attachments,
     })
 }
 
 impl McpMessages {
     pub fn send(conn: &Connection, msg: &Message) -> AiResult<()> {
+        let attachments_json = serde_json::to_string(&msg.attachments)
+            .unwrap_or_else(|_| "[]".to_string());
+
         conn.execute(
-            "INSERT INTO mcp_messages (id, from_agent, to_agent, msg_type, subject, payload, priority, status, created_at, expires_at)
-             VALUES (?1, ?2, ?3, 'request', ?4, ?5, ?6, 'pending', ?7, ?8)",
+            "INSERT INTO mcp_messages (id, from_agent, to_agent, msg_type, subject, payload, priority, status, created_at, expires_at, attachments)
+             VALUES (?1, ?2, ?3, 'request', ?4, ?5, ?6, 'pending', ?7, ?8, ?9)",
             params![
                 msg.id,
                 msg.from_agent,
@@ -51,6 +61,7 @@ impl McpMessages {
                 msg.priority.as_str(),
                 time_utils::to_sqlite(&msg.created_at),
                 time_utils::to_sqlite(&msg.ttl_expiry),
+                attachments_json,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Send MCP message failed: {}", e)))?;
@@ -76,9 +87,12 @@ impl McpMessages {
     }
 
     pub fn reply(conn: &Connection, reply_to: &str, msg: &Message) -> AiResult<()> {
+        let attachments_json = serde_json::to_string(&msg.attachments)
+            .unwrap_or_else(|_| "[]".to_string());
+
         conn.execute(
-            "INSERT INTO mcp_messages (id, from_agent, to_agent, msg_type, subject, payload, priority, status, reply_to, created_at, expires_at)
-             VALUES (?1, ?2, ?3, 'response', ?4, ?5, ?6, 'pending', ?7, ?8, ?9)",
+            "INSERT INTO mcp_messages (id, from_agent, to_agent, msg_type, subject, payload, priority, status, reply_to, created_at, expires_at, attachments)
+             VALUES (?1, ?2, ?3, 'response', ?4, ?5, ?6, 'pending', ?7, ?8, ?9, ?10)",
             params![
                 msg.id,
                 msg.from_agent,
@@ -89,6 +103,7 @@ impl McpMessages {
                 reply_to,
                 time_utils::to_sqlite(&msg.created_at),
                 time_utils::to_sqlite(&msg.ttl_expiry),
+                attachments_json,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Reply MCP message failed: {}", e)))?;
@@ -96,9 +111,12 @@ impl McpMessages {
     }
 
     pub fn broadcast(conn: &Connection, msg: &Message) -> AiResult<()> {
+        let attachments_json = serde_json::to_string(&msg.attachments)
+            .unwrap_or_else(|_| "[]".to_string());
+
         conn.execute(
-            "INSERT INTO mcp_messages (id, from_agent, to_agent, msg_type, subject, payload, priority, status, created_at, expires_at)
-             VALUES (?1, ?2, '*', 'broadcast', ?3, ?4, ?5, 'pending', ?6, ?7)",
+            "INSERT INTO mcp_messages (id, from_agent, to_agent, msg_type, subject, payload, priority, status, created_at, expires_at, attachments)
+             VALUES (?1, ?2, '*', 'broadcast', ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
             params![
                 msg.id,
                 msg.from_agent,
@@ -107,6 +125,7 @@ impl McpMessages {
                 msg.priority.as_str(),
                 time_utils::to_sqlite(&msg.created_at),
                 time_utils::to_sqlite(&msg.ttl_expiry),
+                attachments_json,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Broadcast MCP message failed: {}", e)))?;

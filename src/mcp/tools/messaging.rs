@@ -1,6 +1,9 @@
+use std::path::Path;
+
 use ai_smartness::{id_gen, time_utils};
-use ai_smartness::message::{Message, MessagePriority, MessageStatus};
-use ai_smartness::AiResult;
+use ai_smartness::constants::{MAX_ATTACHMENT_SIZE_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_TOTAL_ATTACHMENT_BYTES};
+use ai_smartness::message::{Attachment, Message, MessagePriority, MessageStatus};
+use ai_smartness::{AiError, AiResult};
 use ai_smartness::storage::cognitive_inbox::CognitiveInbox;
 use ai_smartness::storage::database::{self, ConnectionRole};
 use ai_smartness::storage::mcp_messages::McpMessages;
@@ -8,7 +11,7 @@ use ai_smartness::storage::migrations;
 use ai_smartness::storage::path_utils;
 use ai_smartness::registry::registry::AgentRegistry;
 
-use super::{optional_str, optional_usize, required_str, ToolContext};
+use super::{optional_array, optional_str, optional_usize, required_str, ToolContext};
 
 /// Write a wake signal file so the VSCode extension can wake the target agent.
 /// `mode`: "cognitive" or "inbox" — tells the extension which prompt to inject.
@@ -27,6 +30,75 @@ pub(crate) fn emit_wake_signal(target_agent: &str, from_agent: &str, subject: &s
     let _ = std::fs::write(&signal_path, signal.to_string());
 }
 
+/// Resolve file paths into inlined attachments.
+/// Graceful: skips files that fail (not found, binary, too large) with warnings.
+/// Returns (valid_attachments, warning_lines).
+fn resolve_attachments(paths: &[String]) -> AiResult<(Vec<Attachment>, Vec<String>)> {
+    if paths.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(AiError::InvalidInput(format!(
+            "Too many attachments: {} (max {})",
+            paths.len(), MAX_ATTACHMENTS_PER_MESSAGE
+        )));
+    }
+
+    let mut attachments = Vec::with_capacity(paths.len());
+    let mut warnings = Vec::new();
+    let mut total_bytes: usize = 0;
+
+    for path_str in paths {
+        let path = Path::new(path_str);
+
+        if !path.exists() {
+            warnings.push(format!("[Attachment skipped: {} — file not found]", path_str));
+            continue;
+        }
+        if !path.is_file() {
+            warnings.push(format!("[Attachment skipped: {} — not a file]", path_str));
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                warnings.push(format!("[Attachment skipped: {} — {}]", path_str, e));
+                continue;
+            }
+        };
+
+        let size = content.len();
+
+        if size > MAX_ATTACHMENT_SIZE_BYTES {
+            warnings.push(format!(
+                "[Attachment skipped: {} — too large ({} bytes, max {})]",
+                path_str, size, MAX_ATTACHMENT_SIZE_BYTES
+            ));
+            continue;
+        }
+
+        if total_bytes + size > MAX_TOTAL_ATTACHMENT_BYTES {
+            warnings.push(format!(
+                "[Attachment skipped: {} — total size limit exceeded ({})]",
+                path_str, MAX_TOTAL_ATTACHMENT_BYTES
+            ));
+            continue;
+        }
+
+        total_bytes += size;
+
+        let filename = path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path_str.clone());
+
+        attachments.push(Attachment {
+            filename,
+            content,
+            original_size: size,
+        });
+    }
+
+    Ok((attachments, warnings))
+}
+
 // ── Cognitive inbox (ai-smartness) ──
 
 pub fn handle_msg_focus(
@@ -36,14 +108,28 @@ pub fn handle_msg_focus(
     let target = required_str(params, "target_agent_id")?;
     let from = required_str(params, "from_agent")?;
     let subject = required_str(params, "subject")?;
-    let content = required_str(params, "content")?;
+    let mut content = required_str(params, "content")?;
     let priority_str = optional_str(params, "priority").unwrap_or_else(|| "normal".into());
     let ttl_minutes = optional_usize(params, "ttl_minutes").unwrap_or(1440);
+
+    // Resolve file attachments
+    let attachment_paths = optional_array(params, "attachments").unwrap_or_default();
+    let (attachments, warnings) = if attachment_paths.is_empty() {
+        (vec![], vec![])
+    } else {
+        resolve_attachments(&attachment_paths)?
+    };
+    // Append warnings to content so receiver sees skipped files
+    for w in &warnings {
+        content.push('\n');
+        content.push_str(w);
+    }
 
     let priority: MessagePriority = priority_str.parse().unwrap_or(MessagePriority::Normal);
     let now = time_utils::now();
     let ttl = now + chrono::Duration::minutes(ttl_minutes as i64);
 
+    let att_count = attachments.len();
     let msg = Message {
         id: id_gen::message_id(),
         from_agent: from,
@@ -56,6 +142,7 @@ pub fn handle_msg_focus(
         ttl_expiry: ttl,
         read_at: None,
         acked_at: None,
+        attachments,
     };
 
     // Write to the TARGET agent's DB so the receiver's inject hook sees it
@@ -65,7 +152,7 @@ pub fn handle_msg_focus(
     CognitiveInbox::send(&target_conn, &msg)?;
 
     emit_wake_signal(&target, &msg.from_agent, &msg.subject, "cognitive");
-    Ok(serde_json::json!({"sent": true, "message_id": msg.id, "target": target}))
+    Ok(serde_json::json!({"sent": true, "message_id": msg.id, "target": target, "attachments": att_count}))
 }
 
 pub fn handle_msg_ack(
@@ -91,14 +178,27 @@ pub fn handle_msg_send(
 ) -> AiResult<serde_json::Value> {
     let to = required_str(params, "to")?;
     let subject = required_str(params, "subject")?;
-    let payload = optional_str(params, "payload").unwrap_or_default();
+    let mut payload = optional_str(params, "payload").unwrap_or_default();
     let priority_str = optional_str(params, "priority").unwrap_or_else(|| "normal".into());
     let effective_agent = optional_str(params, "agent_id")
         .unwrap_or_else(|| ctx.agent_id.to_string());
 
+    // Resolve file attachments
+    let attachment_paths = optional_array(params, "attachments").unwrap_or_default();
+    let (attachments, warnings) = if attachment_paths.is_empty() {
+        (vec![], vec![])
+    } else {
+        resolve_attachments(&attachment_paths)?
+    };
+    for w in &warnings {
+        payload.push('\n');
+        payload.push_str(w);
+    }
+
     let priority: MessagePriority = priority_str.parse().unwrap_or(MessagePriority::Normal);
     let now = time_utils::now();
 
+    let att_count = attachments.len();
     let msg = Message {
         id: id_gen::message_id(),
         from_agent: effective_agent,
@@ -111,11 +211,12 @@ pub fn handle_msg_send(
         ttl_expiry: now + chrono::Duration::hours(24),
         read_at: None,
         acked_at: None,
+        attachments,
     };
 
     McpMessages::send(ctx.shared_conn, &msg)?;
     emit_wake_signal(&to, &msg.from_agent, &msg.subject, "inbox");
-    Ok(serde_json::json!({"sent": true, "message_id": msg.id}))
+    Ok(serde_json::json!({"sent": true, "message_id": msg.id, "attachments": att_count}))
 }
 
 pub fn handle_msg_broadcast(
@@ -123,8 +224,20 @@ pub fn handle_msg_broadcast(
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
     let subject = required_str(params, "subject")?;
-    let payload = optional_str(params, "payload").unwrap_or_default();
+    let mut payload = optional_str(params, "payload").unwrap_or_default();
     let priority_str = optional_str(params, "priority").unwrap_or_else(|| "normal".into());
+
+    // Resolve file attachments
+    let attachment_paths = optional_array(params, "attachments").unwrap_or_default();
+    let (attachments, warnings) = if attachment_paths.is_empty() {
+        (vec![], vec![])
+    } else {
+        resolve_attachments(&attachment_paths)?
+    };
+    for w in &warnings {
+        payload.push('\n');
+        payload.push_str(w);
+    }
 
     let priority: MessagePriority = priority_str.parse().unwrap_or(MessagePriority::Normal);
     let now = time_utils::now();
@@ -141,6 +254,7 @@ pub fn handle_msg_broadcast(
         ttl_expiry: now + chrono::Duration::hours(24),
         read_at: None,
         acked_at: None,
+        attachments,
     };
 
     McpMessages::broadcast(ctx.shared_conn, &msg)?;
@@ -169,14 +283,26 @@ pub fn handle_msg_inbox(
     let results: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "id": m.id,
                 "from": m.from_agent,
                 "subject": m.subject,
                 "content": m.content,
                 "priority": m.priority.as_str(),
                 "created_at": m.created_at.to_rfc3339(),
-            })
+            });
+            if !m.attachments.is_empty() {
+                obj["attachments"] = serde_json::json!(
+                    m.attachments.iter().map(|a| {
+                        serde_json::json!({
+                            "filename": a.filename,
+                            "content": a.content,
+                            "size": a.original_size,
+                        })
+                    }).collect::<Vec<_>>()
+                );
+            }
+            obj
         })
         .collect();
 
@@ -195,7 +321,7 @@ pub fn handle_msg_reply(
     let message_id = required_str(params, "message_id")?;
     let effective_agent = optional_str(params, "agent_id")
         .unwrap_or_else(|| ctx.agent_id.to_string());
-    let payload = params
+    let mut payload = params
         .get("payload")
         .map(|v| serde_json::to_string(v).unwrap_or_default())
         .unwrap_or_default();
@@ -206,6 +332,18 @@ pub fn handle_msg_reply(
         rusqlite::params![message_id],
         |row| row.get(0),
     ).map_err(|_| ai_smartness::AiError::InvalidInput(format!("Original message {} not found", message_id)))?;
+
+    // Resolve file attachments for reply
+    let attachment_paths = optional_array(params, "attachments").unwrap_or_default();
+    let (attachments, warnings) = if attachment_paths.is_empty() {
+        (vec![], vec![])
+    } else {
+        resolve_attachments(&attachment_paths)?
+    };
+    for w in &warnings {
+        payload.push('\n');
+        payload.push_str(w);
+    }
 
     let now = time_utils::now();
     let reply = Message {
@@ -220,6 +358,7 @@ pub fn handle_msg_reply(
         ttl_expiry: now + chrono::Duration::hours(24),
         read_at: None,
         acked_at: None,
+        attachments,
     };
 
     McpMessages::reply(ctx.shared_conn, &message_id, &reply)?;

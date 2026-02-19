@@ -77,6 +77,14 @@ impl Default for MessageStatus {
     }
 }
 
+/// File attachment inlined at send-time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub filename: String,
+    pub content: String,
+    pub original_size: usize,
+}
+
 /// Message cognitif (cognitive inbox) ou MCP
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -91,4 +99,5 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
     pub read_at: Option<DateTime<Utc>>,
     pub acked_at: Option<DateTime<Utc>>,
+    pub attachments: Vec<Attachment>,
 }

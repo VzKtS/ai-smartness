@@ -68,6 +68,11 @@ pub const POOL_MAX_IDLE_SECS: u64 = 1800;           // 30 min before eviction
 pub const POOL_MAX_CONNECTIONS: usize = 50;          // max simultaneous agent connections
 pub const POOL_EVICTION_CHECK_SECS: u64 = 300;      // check for idle connections every 5 min
 
+// === Attachments ===
+pub const MAX_ATTACHMENT_SIZE_BYTES: usize = 32_768;     // 32 KB per file
+pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 5;
+pub const MAX_TOTAL_ATTACHMENT_BYTES: usize = 131_072;   // 128 KB total
+
 // === Messaging ===
 pub const DEFAULT_MESSAGE_TTL_MINUTES: u64 = 1_440;  // 24h
 pub const HIGH_PRIORITY_TTL_MINUTES: u64 = 2_880;    // 48h

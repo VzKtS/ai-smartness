@@ -2,7 +2,7 @@ use crate::{AiError, AiResult};
 use rusqlite::Connection;
 
 /// Schema version actuelle
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Retourne la version de schema actuelle (0 si table absente)
 pub fn get_schema_version(conn: &Connection) -> AiResult<u32> {
@@ -158,6 +158,15 @@ pub fn migrate_agent_db(conn: &Connection) -> AiResult<()> {
         set_schema_version(conn, 2)?;
     }
 
+    // V3: add attachments column to cognitive_inbox and dead_letters
+    if version < 3 {
+        conn.execute_batch(
+            "ALTER TABLE cognitive_inbox ADD COLUMN attachments TEXT DEFAULT '[]';
+             ALTER TABLE dead_letters ADD COLUMN attachments TEXT DEFAULT '[]';"
+        ).map_err(|e| AiError::Storage(format!("Agent DB V3 migration failed: {}", e)))?;
+        set_schema_version(conn, 3)?;
+    }
+
     Ok(())
 }
 
@@ -227,6 +236,14 @@ pub fn migrate_shared_db(conn: &Connection) -> AiResult<()> {
     // Shared DB has no V2 changes — just bump version marker
     if version < 2 {
         set_schema_version(conn, 2)?;
+    }
+
+    // V3: add attachments column to mcp_messages
+    if version < 3 {
+        conn.execute_batch(
+            "ALTER TABLE mcp_messages ADD COLUMN attachments TEXT DEFAULT '[]';"
+        ).map_err(|e| AiError::Storage(format!("Shared DB V3 migration failed: {}", e)))?;
+        set_schema_version(conn, 3)?;
     }
 
     Ok(())
