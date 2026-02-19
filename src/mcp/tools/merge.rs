@@ -1,7 +1,7 @@
 use ai_smartness::AiResult;
 use ai_smartness::storage::threads::ThreadStorage;
 
-use super::{required_str, ToolContext};
+use super::{parse_object_array, required_str, ToolContext};
 
 pub fn handle_merge(
     params: &serde_json::Value,
@@ -52,12 +52,12 @@ pub fn handle_merge_batch(
 ) -> AiResult<serde_json::Value> {
     let ops = params
         .get("operations")
-        .and_then(|v| v.as_array())
+        .and_then(|v| parse_object_array(v))
         .ok_or_else(|| ai_smartness::AiError::InvalidInput("Missing operations".into()))?;
 
     let mut merged = 0;
     let mut errors = Vec::new();
-    for op in ops {
+    for op in &ops {
         let sid = op.get("survivor_id").and_then(|v| v.as_str()).unwrap_or("");
         let aid = op.get("absorbed_id").and_then(|v| v.as_str()).unwrap_or("");
         if sid.is_empty() || aid.is_empty() {

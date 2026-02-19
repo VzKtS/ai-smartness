@@ -650,6 +650,60 @@ fn sync_mcp_permissions(enabled: bool) {
         if let Ok(out) = serde_json::to_string_pretty(&settings) {
             let _ = std::fs::write(&settings_path, out);
         }
+
+        // Also sync settings.local.json (permissions.allow)
+        let local_path = std::path::Path::new(&project.path)
+            .join(".claude")
+            .join("settings.local.json");
+        sync_local_permissions(&local_path, enabled, &wildcards);
+    }
+}
+
+/// Sync MCP wildcards into a project's `settings.local.json` (`permissions.allow`).
+fn sync_local_permissions(local_path: &std::path::Path, enabled: bool, wildcards: &[&str]) {
+    let mut local: serde_json::Value = if local_path.exists() {
+        match std::fs::read_to_string(local_path).ok().and_then(|c| serde_json::from_str(&c).ok()) {
+            Some(v) => v,
+            None => return,
+        }
+    } else if enabled {
+        serde_json::json!({})
+    } else {
+        return;
+    };
+
+    if !local.is_object() {
+        local = serde_json::json!({});
+    }
+
+    if enabled {
+        let permissions = local
+            .as_object_mut()
+            .unwrap()
+            .entry("permissions")
+            .or_insert_with(|| serde_json::json!({}));
+        if !permissions.is_object() { *permissions = serde_json::json!({}); }
+        let allow = permissions
+            .as_object_mut()
+            .unwrap()
+            .entry("allow")
+            .or_insert_with(|| serde_json::json!([]));
+        if !allow.is_array() { *allow = serde_json::json!([]); }
+        let arr = allow.as_array_mut().unwrap();
+        for wc in wildcards {
+            if !arr.iter().any(|v| v.as_str() == Some(wc)) {
+                arr.push(serde_json::json!(wc));
+            }
+        }
+    } else if let Some(arr) = local
+        .pointer_mut("/permissions/allow")
+        .and_then(|a| a.as_array_mut())
+    {
+        arr.retain(|v| v.as_str().map(|s| !wildcards.contains(&s)).unwrap_or(true));
+    }
+
+    if let Ok(out) = serde_json::to_string_pretty(&local) {
+        let _ = std::fs::write(local_path, out);
     }
 }
 

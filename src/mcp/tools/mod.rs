@@ -154,6 +154,10 @@ fn route_plain_tool(
         // -- Beat / Self-wake --
         "beat_wake" => status::handle_beat_wake(params, ctx),
 
+        // -- ai-smartness aliases (defined in tool_definitions) --
+        "ai_recommend" => discover::handle_recommend(params, ctx),
+        "ai_topics" => status::handle_topics_network(params, ctx),
+
         _ => Err(ai_smartness::AiError::InvalidInput(format!(
             "Unknown tool: {}",
             name
@@ -181,40 +185,108 @@ pub fn optional_str(params: &serde_json::Value, key: &str) -> Option<String> {
 }
 
 pub fn optional_bool(params: &serde_json::Value, key: &str) -> Option<bool> {
-    params.get(key).and_then(|v| v.as_bool())
+    params.get(key).and_then(|v| {
+        v.as_bool().or_else(|| match v.as_str() {
+            Some("true" | "1" | "yes") => Some(true),
+            Some("false" | "0" | "no") => Some(false),
+            _ => None,
+        })
+    })
 }
 
 pub fn optional_f64(params: &serde_json::Value, key: &str) -> Option<f64> {
-    params.get(key).and_then(|v| v.as_f64())
+    params.get(key).and_then(|v| {
+        v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    })
 }
 
 pub fn optional_usize(params: &serde_json::Value, key: &str) -> Option<usize> {
-    params.get(key).and_then(|v| v.as_u64()).map(|v| v as usize)
+    params.get(key).and_then(|v| {
+        v.as_u64()
+            .map(|n| n as usize)
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    })
 }
 
 #[allow(dead_code)]
 pub fn optional_i64(params: &serde_json::Value, key: &str) -> Option<i64> {
-    params.get(key).and_then(|v| v.as_i64())
+    params.get(key).and_then(|v| {
+        v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    })
 }
 
 pub fn required_array(params: &serde_json::Value, key: &str) -> AiResult<Vec<String>> {
     params
         .get(key)
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
+        .and_then(|v| parse_string_or_array(v))
         .ok_or_else(|| {
             ai_smartness::AiError::InvalidInput(format!("Missing required array: {}", key))
         })
 }
 
 pub fn optional_array(params: &serde_json::Value, key: &str) -> Option<Vec<String>> {
-    params.get(key).and_then(|v| v.as_array()).map(|arr| {
-        arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect()
-    })
+    params.get(key).and_then(|v| parse_string_or_array(v))
+}
+
+/// Parse a value that may be a JSON array or a string containing a JSON array
+/// or comma-separated values. MCP tool schemas declare all params as "string",
+/// so array values arrive as strings that need parsing.
+pub fn parse_string_or_array(v: &serde_json::Value) -> Option<Vec<String>> {
+    // Case 1: native JSON array
+    if let Some(arr) = v.as_array() {
+        return Some(
+            arr.iter()
+                .filter_map(|item| item.as_str().map(String::from))
+                .collect(),
+        );
+    }
+    // Case 2: string — try JSON parse, then comma-separated
+    if let Some(s) = v.as_str() {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Some(vec![]);
+        }
+        // Try parsing as JSON array
+        if trimmed.starts_with('[') {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if let Some(arr) = parsed.as_array() {
+                    return Some(
+                        arr.iter()
+                            .map(|item| {
+                                item.as_str()
+                                    .map(String::from)
+                                    .unwrap_or_else(|| item.to_string())
+                            })
+                            .collect(),
+                    );
+                }
+            }
+        }
+        // Comma-separated fallback
+        return Some(
+            trimmed
+                .split(',')
+                .map(|part| part.trim().to_string())
+                .filter(|part| !part.is_empty())
+                .collect(),
+        );
+    }
+    None
+}
+
+/// Parse a JSON value that may be a native array or a string containing JSON array
+/// of objects. Used for batch operations (rename_batch, merge_batch).
+pub fn parse_object_array(v: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    // Case 1: native JSON array
+    if let Some(arr) = v.as_array() {
+        return Some(arr.clone());
+    }
+    // Case 2: string containing JSON array
+    if let Some(s) = v.as_str() {
+        let trimmed = s.trim();
+        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return Some(arr);
+        }
+    }
+    None
 }

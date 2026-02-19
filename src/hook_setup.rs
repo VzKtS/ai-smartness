@@ -109,6 +109,61 @@ pub fn install_claude_hooks(project_path: &Path, project_hash: &str) -> Result<(
     std::fs::write(&settings_path, formatted)
         .with_context(|| format!("Failed to write {}", settings_path.display()))?;
 
+    // Also write wildcards into settings.local.json (permissions.allow)
+    // This is the user-level permission file that Claude Code checks for tool approval.
+    install_local_permissions(&claude_dir)?;
+
+    Ok(())
+}
+
+/// Install MCP wildcards into `settings.local.json` (`permissions.allow`).
+///
+/// This file controls which tools are auto-approved without user prompts.
+/// Claude Code uses `permissions.allow` (not `allowedTools`) in this file.
+fn install_local_permissions(claude_dir: &Path) -> Result<()> {
+    let local_path = claude_dir.join("settings.local.json");
+    let wildcards = ["mcp__ai-smartness__*", "mcp__mcp-smartness__*"];
+
+    let mut local: serde_json::Value = if local_path.exists() {
+        let content = std::fs::read_to_string(&local_path)
+            .with_context(|| format!("Failed to read {}", local_path.display()))?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if !local.is_object() {
+        local = serde_json::json!({});
+    }
+
+    let permissions = local
+        .as_object_mut()
+        .unwrap()
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}));
+    if !permissions.is_object() {
+        *permissions = serde_json::json!({});
+    }
+    let allow = permissions
+        .as_object_mut()
+        .unwrap()
+        .entry("allow")
+        .or_insert_with(|| serde_json::json!([]));
+    if !allow.is_array() {
+        *allow = serde_json::json!([]);
+    }
+    let arr = allow.as_array_mut().unwrap();
+    for wc in &wildcards {
+        if !arr.iter().any(|v| v.as_str() == Some(wc)) {
+            arr.push(serde_json::json!(wc));
+        }
+    }
+
+    let formatted = serde_json::to_string_pretty(&local)
+        .context("Failed to serialize settings.local.json")?;
+    std::fs::write(&local_path, formatted)
+        .with_context(|| format!("Failed to write {}", local_path.display()))?;
+
     Ok(())
 }
 

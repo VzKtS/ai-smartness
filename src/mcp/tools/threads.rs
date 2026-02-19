@@ -4,8 +4,8 @@ use ai_smartness::AiResult;
 use ai_smartness::storage::threads::ThreadStorage;
 
 use super::{
-    optional_bool, optional_f64, optional_str, optional_usize, required_array, required_str,
-    ToolContext,
+    optional_bool, optional_f64, optional_str, optional_usize, parse_object_array,
+    parse_string_or_array, required_array, required_str, ToolContext,
 };
 
 pub fn handle_thread_create(
@@ -16,12 +16,7 @@ pub fn handle_thread_create(
     let content = required_str(params, "content")?;
     let topics: Vec<String> = params
         .get("topics")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
+        .and_then(|v| parse_string_or_array(v))
         .unwrap_or_default();
     let importance = optional_f64(params, "importance").unwrap_or(0.5);
     let now = time_utils::now();
@@ -264,10 +259,10 @@ pub fn handle_rename_batch(
 ) -> AiResult<serde_json::Value> {
     let ops = params
         .get("operations")
-        .and_then(|v| v.as_array())
+        .and_then(|v| parse_object_array(v))
         .ok_or_else(|| ai_smartness::AiError::InvalidInput("Missing operations".into()))?;
     let mut renamed = 0;
-    for op in ops {
+    for op in &ops {
         let id = op.get("thread_id").and_then(|v| v.as_str()).unwrap_or("");
         let title = op.get("new_title").and_then(|v| v.as_str()).unwrap_or("");
         if !id.is_empty() && !title.is_empty() {
