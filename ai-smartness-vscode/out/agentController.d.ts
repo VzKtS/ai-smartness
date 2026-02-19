@@ -19,6 +19,7 @@ export declare class AgentController {
     private state;
     private currentSignal;
     private attempts;
+    private retryRounds;
     private lastAttemptTime;
     private cooldownUntil;
     private processedSignalKeys;
