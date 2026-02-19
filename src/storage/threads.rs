@@ -517,6 +517,25 @@ impl ThreadStorage {
         Ok(count)
     }
 
+    /// Bulk delete all threads with a given status. Also removes their messages.
+    /// Returns the number of threads deleted.
+    pub fn delete_by_status(conn: &Connection, status: &ThreadStatus) -> AiResult<usize> {
+        // Delete messages for threads with this status first
+        conn.execute(
+            "DELETE FROM thread_messages WHERE thread_id IN (SELECT id FROM threads WHERE status = ?1)",
+            params![status.as_str()],
+        )
+        .map_err(|e| AiError::Storage(format!("Delete messages by status failed: {}", e)))?;
+        // Delete the threads
+        let deleted = conn
+            .execute(
+                "DELETE FROM threads WHERE status = ?1",
+                params![status.as_str()],
+            )
+            .map_err(|e| AiError::Storage(format!("Delete threads by status failed: {}", e)))?;
+        Ok(deleted)
+    }
+
     pub fn update_status_batch(
         conn: &Connection,
         ids: &[String],

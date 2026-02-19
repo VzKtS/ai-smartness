@@ -86,6 +86,34 @@ pub fn handle_bridge_scan_orphans(
     Ok(serde_json::json!({"deleted": deleted}))
 }
 
+pub fn handle_bridge_purge(
+    params: &serde_json::Value,
+    ctx: &ToolContext,
+) -> AiResult<serde_json::Value> {
+    let status_str = required_str(params, "status")?;
+    let confirm = optional_bool(params, "confirm").unwrap_or(false);
+    let status: ai_smartness::bridge::BridgeStatus = status_str
+        .parse()
+        .map_err(|e: String| ai_smartness::AiError::InvalidInput(e))?;
+
+    let count = BridgeStorage::count_by_status(ctx.agent_conn, &status)?;
+
+    if !confirm {
+        return Ok(serde_json::json!({
+            "dry_run": true,
+            "status": status.as_str(),
+            "count": count,
+            "message": format!("Would delete {} {} bridge(s). Pass confirm=true to execute.", count, status.as_str())
+        }));
+    }
+
+    let deleted = BridgeStorage::delete_by_status(ctx.agent_conn, &status)?;
+    Ok(serde_json::json!({
+        "purged": deleted,
+        "status": status.as_str()
+    }))
+}
+
 pub fn handle_bridge_kill(
     params: &serde_json::Value,
     ctx: &ToolContext,

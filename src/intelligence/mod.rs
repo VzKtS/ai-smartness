@@ -2,7 +2,6 @@ pub mod archiver;
 pub mod decayer;
 pub mod engram_retriever;
 pub mod gossip;
-pub mod healthguard;
 pub mod memory_retriever;
 pub mod merge_evaluator;
 pub mod reactivation_decider;

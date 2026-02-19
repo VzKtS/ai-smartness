@@ -236,6 +236,30 @@ impl BridgeStorage {
         Ok(count)
     }
 
+    /// Bulk delete all bridges with a given status.
+    /// Returns the number of bridges deleted.
+    pub fn delete_by_status(conn: &Connection, status: &BridgeStatus) -> AiResult<usize> {
+        let deleted = conn
+            .execute(
+                "DELETE FROM bridges WHERE status = ?1",
+                params![status.as_str()],
+            )
+            .map_err(|e| AiError::Storage(format!("Delete bridges by status failed: {}", e)))?;
+        Ok(deleted)
+    }
+
+    /// Count bridges with a given status (lightweight).
+    pub fn count_by_status(conn: &Connection, status: &BridgeStatus) -> AiResult<usize> {
+        let c: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bridges WHERE status = ?1",
+                params![status.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+        Ok(c)
+    }
+
     pub fn count(conn: &Connection) -> AiResult<usize> {
         let c: usize = conn
             .query_row("SELECT COUNT(*) FROM bridges", [], |r| r.get(0))

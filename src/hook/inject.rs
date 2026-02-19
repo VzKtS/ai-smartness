@@ -13,10 +13,13 @@
 //!   4.   Memory retrieval (similar threads)
 //!   5.   Agent identity (role, hierarchy)
 //!   5.5  User profile + rules (preferences, auto-detected behavior)
+//!   6.   HealthGuard (merge candidates, capacity alerts — imposed on agent)
 
 use std::path::Path;
 
+use ai_smartness::config::GuardianConfig;
 use ai_smartness::constants::{MAX_COGNITIVE_MESSAGES, MAX_CONTEXT_SIZE};
+use ai_smartness::healthguard::{self, HealthGuard};
 use ai_smartness::thread::ThreadStatus;
 use ai_smartness::intelligence::memory_retriever::MemoryRetriever;
 use ai_smartness::session::SessionState;
@@ -210,12 +213,27 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     if let Some(ctx) = profile.build_injection() {
         let layer = format!("<system-reminder>\n{}\n</system-reminder>", ctx);
         if layer.len() < budget {
-            let _ = budget;
+            budget -= layer.len();
             injections.push(layer);
             tracing::debug!("Layer 5.5: user profile injected");
         } else {
             tracing::debug!("Layer 5.5: exceeds budget, skipped");
         }
+    }
+
+    // Layer 6: HealthGuard — merge candidates, capacity alerts (imposed on agent)
+    match build_healthguard_injection(&conn, &agent_data, project_hash) {
+        Some(ctx) => {
+            let layer = format!("<system-reminder>\n{}\n</system-reminder>", ctx);
+            if layer.len() < budget {
+                let _ = budget;
+                injections.push(layer);
+                tracing::info!("Layer 6: HealthGuard injection");
+            } else {
+                tracing::debug!("Layer 6: exceeds budget, skipped");
+            }
+        }
+        None => tracing::debug!("Layer 6: HealthGuard clean or in cooldown"),
     }
 
     // 4. Output augmented prompt
@@ -596,4 +614,38 @@ fn build_session_context(session: &SessionState, beat: &BeatState) -> Option<Str
     ));
 
     Some(ctx)
+}
+
+/// Layer 6: HealthGuard — proactive memory maintenance injection.
+///
+/// Runs health analysis (capacity, fragmentation, merge candidates, etc.).
+/// Only High/Critical findings are injected (imposed on agent).
+/// Respects cooldown (default 30 min between injections).
+fn build_healthguard_injection(
+    conn: &Connection,
+    agent_data_dir: &Path,
+    project_hash: &str,
+) -> Option<String> {
+    let _ = project_hash; // available for future per-project config
+
+    // Load guardian config for thresholds
+    let cfg_path = path_utils::data_dir().join("config.json");
+    let guardian = std::fs::read_to_string(&cfg_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<GuardianConfig>(&s).ok())
+        .unwrap_or_default();
+
+    let hg = HealthGuard::new(guardian.healthguard.clone());
+
+    let findings = hg.analyze(conn, agent_data_dir, &guardian.gossip)?;
+
+    // Partition: High/Critical → inject, Low/Medium → skip (ai_suggestions handles those)
+    let (injectable, _suggestible) = healthguard::HealthGuard::partition_findings(&findings);
+
+    if injectable.is_empty() {
+        return None;
+    }
+
+    let owned: Vec<healthguard::HealthFinding> = injectable.into_iter().cloned().collect();
+    Some(healthguard::formatter::format_injection(&owned))
 }

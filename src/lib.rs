@@ -26,6 +26,7 @@ pub mod storage;
 pub mod processing;
 pub mod intelligence;
 pub mod guardcode;
+pub mod healthguard;
 pub mod registry;
 pub mod admin;
 pub mod network;

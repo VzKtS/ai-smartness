@@ -227,6 +227,186 @@ pub fn handle_label(
     Ok(serde_json::json!({"thread_id": id, "labels": thread.labels}))
 }
 
+pub fn handle_concepts(
+    params: &serde_json::Value,
+    ctx: &ToolContext,
+) -> AiResult<serde_json::Value> {
+    let id = required_str(params, "thread_id")?;
+    let concepts = required_array(params, "concepts")?;
+    let mode = optional_str(params, "mode").unwrap_or_else(|| "set".into());
+
+    let mut thread = ThreadStorage::get(ctx.agent_conn, &id)?
+        .ok_or_else(|| ai_smartness::AiError::ThreadNotFound(id.clone()))?;
+
+    // Normalize: lowercase, deduplicate
+    let normalize = |v: Vec<String>| -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        v.into_iter()
+            .map(|c| c.to_lowercase())
+            .filter(|c| seen.insert(c.clone()))
+            .collect()
+    };
+
+    match mode.as_str() {
+        "add" => {
+            let mut all = thread.concepts.clone();
+            all.extend(concepts);
+            thread.concepts = normalize(all);
+        }
+        "remove" => {
+            let to_remove: std::collections::HashSet<String> =
+                concepts.into_iter().map(|c| c.to_lowercase()).collect();
+            thread.concepts.retain(|c| !to_remove.contains(&c.to_lowercase()));
+        }
+        _ => {
+            // "set" (default) — replace entirely
+            thread.concepts = normalize(concepts);
+        }
+    }
+    ThreadStorage::update(ctx.agent_conn, &thread)?;
+    Ok(serde_json::json!({"thread_id": id, "concepts": thread.concepts}))
+}
+
+pub fn handle_backfill_concepts(
+    params: &serde_json::Value,
+    ctx: &ToolContext,
+) -> AiResult<serde_json::Value> {
+    let limit = optional_usize(params, "limit").unwrap_or(10);
+    let dry_run = optional_bool(params, "dry_run").unwrap_or(false);
+
+    // Find threads with empty concepts
+    let all = ThreadStorage::list_active(ctx.agent_conn)?;
+    let mut candidates: Vec<&Thread> = all.iter().filter(|t| t.concepts.is_empty()).collect();
+    // Prioritize by importance (higher first)
+    candidates.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+    let batch: Vec<&Thread> = candidates.into_iter().take(limit).collect();
+
+    if batch.is_empty() {
+        return Ok(serde_json::json!({
+            "status": "nothing_to_do",
+            "message": "All active threads already have concepts"
+        }));
+    }
+
+    if dry_run {
+        let preview: Vec<serde_json::Value> = batch.iter().map(|t| {
+            serde_json::json!({
+                "id": &t.id[..8.min(t.id.len())],
+                "title": &t.title,
+                "topics": &t.topics,
+                "labels": &t.labels,
+            })
+        }).collect();
+        return Ok(serde_json::json!({
+            "dry_run": true,
+            "candidates": batch.len(),
+            "total_missing": all.iter().filter(|t| t.concepts.is_empty()).count(),
+            "preview": preview
+        }));
+    }
+
+    let mut processed = 0usize;
+    let mut failed = 0usize;
+    let mut results = Vec::new();
+
+    for thread in &batch {
+        let prompt = format!(
+            r#"Generate a semantic concept cloud for this thread.
+
+Title: {}
+Topics: {}
+Labels: {}
+Summary: {}
+
+Rules:
+- Include: synonyms, related domains, hypernyms, hyponyms, adjacent technologies/tools
+- Single lowercase words only, in English only
+- No duplicates, do NOT repeat topics or labels
+- Between 5 and 25 items
+
+Output JSON only: {{"concepts":["word1","word2",...]}}"#,
+            thread.title,
+            serde_json::to_string(&thread.topics).unwrap_or_default(),
+            serde_json::to_string(&thread.labels).unwrap_or_default(),
+            thread.summary.as_deref().unwrap_or("(none)"),
+        );
+
+        match ai_smartness::processing::llm_subprocess::call_claude(&prompt) {
+            Ok(response) => {
+                // Parse concepts from response
+                if let Some(start) = response.find('{') {
+                    if let Some(end) = response.rfind('}') {
+                        let json_str = &response[start..=end];
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+                            if let Some(concepts) = parsed.get("concepts").and_then(|v| v.as_array()) {
+                                let concept_vec: Vec<String> = concepts.iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                                    .collect();
+                                if !concept_vec.is_empty() {
+                                    let mut t = (*thread).clone();
+                                    t.concepts = concept_vec.clone();
+                                    ThreadStorage::update(ctx.agent_conn, &t)?;
+                                    results.push(serde_json::json!({
+                                        "id": &thread.id[..8.min(thread.id.len())],
+                                        "title": &thread.title,
+                                        "concepts": concept_vec.len(),
+                                    }));
+                                    processed += 1;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+                failed += 1;
+            }
+            Err(_) => { failed += 1; }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "processed": processed,
+        "failed": failed,
+        "total_missing": all.iter().filter(|t| t.concepts.is_empty()).count() - processed,
+        "results": results
+    }))
+}
+
+pub fn handle_thread_purge(
+    params: &serde_json::Value,
+    ctx: &ToolContext,
+) -> AiResult<serde_json::Value> {
+    let status_str = required_str(params, "status")?;
+    let confirm = optional_bool(params, "confirm").unwrap_or(false);
+    let status: ThreadStatus = status_str
+        .parse()
+        .map_err(|e: String| ai_smartness::AiError::InvalidInput(e))?;
+
+    // Safety: never purge active threads
+    if status == ThreadStatus::Active {
+        return Err(ai_smartness::AiError::InvalidInput(
+            "Cannot purge active threads. Suspend them first.".into(),
+        ));
+    }
+
+    let count = ThreadStorage::count_by_status(ctx.agent_conn, &status)?;
+
+    if !confirm {
+        return Ok(serde_json::json!({
+            "dry_run": true,
+            "status": status.as_str(),
+            "count": count,
+            "message": format!("Would delete {} {} thread(s). Pass confirm=true to execute.", count, status.as_str())
+        }));
+    }
+
+    let deleted = ThreadStorage::delete_by_status(ctx.agent_conn, &status)?;
+    Ok(serde_json::json!({
+        "purged": deleted,
+        "status": status.as_str()
+    }))
+}
+
 pub fn handle_labels_suggest(
     params: &serde_json::Value,
     ctx: &ToolContext,

@@ -29,7 +29,7 @@ impl ConceptIndex {
         let mut idx = Self::default();
 
         let mut stmt = match conn.prepare(
-            "SELECT id, concepts FROM threads WHERE status IN ('Active', 'Suspended')"
+            "SELECT id, concepts FROM threads WHERE status IN ('active', 'suspended')"
         ) {
             Ok(s) => s,
             Err(_) => return Ok(idx),

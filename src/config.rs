@@ -929,7 +929,7 @@ pub struct GuardianConfig {
 
     // --- HealthGuard (proactive memory monitoring) ---
     #[serde(default)]
-    pub healthguard: crate::intelligence::healthguard::HealthGuardConfig,
+    pub healthguard: crate::healthguard::HealthGuardConfig,
 
     // --- Heartbeat (agent liveness thresholds) ---
     #[serde(default)]
@@ -977,7 +977,7 @@ impl Default for GuardianConfig {
             recall: RecallConfig::default(),
             engram: EngramConfig::default(),
             guardcode: GuardCodeConfig::default(),
-            healthguard: crate::intelligence::healthguard::HealthGuardConfig::default(),
+            healthguard: crate::healthguard::HealthGuardConfig::default(),
             heartbeat: crate::registry::heartbeat::HeartbeatConfig::default(),
             hooks: HooksConfig::default(),
             capture: CaptureConfig::default(),

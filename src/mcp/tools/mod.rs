@@ -73,6 +73,7 @@ fn route_plain_tool(
         "ai_thread_search" => threads::handle_thread_search(params, ctx),
         "ai_thread_activate" => threads::handle_thread_activate(params, ctx),
         "ai_thread_suspend" => threads::handle_thread_suspend(params, ctx),
+        "ai_thread_purge" => threads::handle_thread_purge(params, ctx),
         "ai_reactivate" => threads::handle_reactivate(params, ctx),
 
         // -- Thread operations --
@@ -84,6 +85,8 @@ fn route_plain_tool(
         // -- Thread metadata --
         "ai_label" => threads::handle_label(params, ctx),
         "ai_labels_suggest" => threads::handle_labels_suggest(params, ctx),
+        "ai_concepts" => threads::handle_concepts(params, ctx),
+        "ai_backfill_concepts" => threads::handle_backfill_concepts(params, ctx),
         "ai_rename" => threads::handle_rename(params, ctx),
         "ai_rename_batch" => threads::handle_rename_batch(params, ctx),
         "ai_rate_importance" => threads::handle_rate_importance(params, ctx),
@@ -93,6 +96,7 @@ fn route_plain_tool(
         "ai_bridges" => bridges::handle_bridges(params, ctx),
         "ai_bridge_analysis" => bridges::handle_bridge_analysis(params, ctx),
         "ai_bridge_scan_orphans" => bridges::handle_bridge_scan_orphans(params, ctx),
+        "ai_bridge_purge" => bridges::handle_bridge_purge(params, ctx),
         "ai_bridge_kill" => bridges::handle_bridge_kill(params, ctx),
         "ai_bridge_kill_batch" => bridges::handle_bridge_kill_batch(params, ctx),
 
