@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Smartness — Debug</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        .debug-toolbar {
+            display: flex; gap: 8px; padding: 10px 16px; background: var(--surface);
+            border-bottom: 1px solid var(--border); align-items: center; flex-shrink: 0;
+        }
+        .debug-toolbar h2 { font-size: 14px; flex: 1; white-space: nowrap; }
+        .debug-toolbar .status { font-size: 12px; color: var(--text-dim); }
+        .debug-toolbar .status.live { color: var(--accent); }
+        .filter-input {
+            background: var(--bg); border: 1px solid var(--border); color: var(--text);
+            padding: 4px 10px; border-radius: 4px; font-size: 12px; width: 200px;
+        }
+        .filter-input:focus { outline: none; border-color: var(--accent); }
+        .level-filters { display: flex; gap: 4px; }
+        .level-btn {
+            background: var(--primary); border: 1px solid var(--border); color: var(--text-dim);
+            padding: 3px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;
+            position: relative;
+        }
+        .level-count {
+            font-size: 9px; opacity: 0.7; margin-left: 2px;
+        }
+        .level-btn.active { color: var(--text); border-color: var(--accent); }
+        .level-btn.active[data-level="ERROR"] { border-color: var(--danger); color: var(--danger); }
+        .level-btn.active[data-level="WARN"] { border-color: var(--warning); color: var(--warning); }
+        .level-btn.active[data-level="INFO"] { border-color: var(--accent); }
+        .level-btn.active[data-level="DEBUG"] { border-color: var(--text-dim); }
+        .level-btn.active[data-level="TRACE"] { border-color: var(--text-dim); opacity: 0.6; }
+
+        #log-container {
+            flex: 1; overflow-y: auto; padding: 8px 16px; font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 12px; line-height: 1.6; background: var(--bg);
+        }
+        .log-line { white-space: pre-wrap; word-break: break-all; padding: 1px 0; }
+        .log-line.error { color: var(--danger); }
+        .log-line.warn { color: var(--warning); }
+        .log-line.info { color: var(--text); }
+        .log-line.debug { color: var(--text-dim); }
+        .log-line.trace { color: var(--text-dim); opacity: 0.6; }
+        .log-line .ts { color: var(--accent); opacity: 0.5; }
+        .log-line .level { font-weight: 700; }
+        .log-line.highlight { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+        .debug-footer {
+            padding: 6px 16px; background: var(--surface); border-top: 1px solid var(--border);
+            font-size: 11px; color: var(--text-dim); display: flex; gap: 16px; flex-shrink: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="debug-toolbar">
+        <h2>Debug Console</h2>
+        <div class="level-filters">
+            <button class="level-btn active" data-level="ERROR">ERR <span class="level-count" id="count-ERROR">0</span></button>
+            <button class="level-btn active" data-level="WARN">WARN <span class="level-count" id="count-WARN">0</span></button>
+            <button class="level-btn active" data-level="INFO">INFO <span class="level-count" id="count-INFO">0</span></button>
+            <button class="level-btn active" data-level="DEBUG">DBG <span class="level-count" id="count-DEBUG">0</span></button>
+            <button class="level-btn active" data-level="TRACE">TRC <span class="level-count" id="count-TRACE">0</span></button>
+        </div>
+        <select id="log-source" class="filter-input" style="width:140px">
+            <option value="global">Global Daemon</option>
+            <option value="project">Project Log</option>
+        </select>
+        <input type="text" class="filter-input" id="text-filter" placeholder="Filter text...">
+        <button class="btn-sm" id="btn-pause">Pause</button>
+        <button class="btn-sm" id="btn-clear">Clear</button>
+        <button class="btn-sm" id="btn-export">Export</button>
+        <button class="btn-sm" id="btn-scroll-bottom">Bottom</button>
+        <span class="status live" id="stream-status">LIVE</span>
+    </div>
+
+    <div id="log-container"></div>
+
+    <div class="debug-footer">
+        <span id="line-count">0 lines</span>
+        <span id="queue-stats" style="color:var(--accent)"></span>
+        <span id="log-file">-</span>
+    </div>
+
+    <script>
+        // Sync theme & mode from main app's localStorage
+        const theme = localStorage.getItem('ai_smartness_theme') || 'green';
+        const mode = localStorage.getItem('ai_smartness_mode') || 'dark';
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.setAttribute('data-mode', mode);
+    </script>
+    <script src="debug.js"></script>
+</body>
+</html>

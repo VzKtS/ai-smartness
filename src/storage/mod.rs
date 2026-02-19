@@ -1,0 +1,13 @@
+pub mod backup;
+pub mod beat;
+pub mod bridges;
+pub mod cognitive_inbox;
+pub mod database;
+pub mod manager;
+pub mod mcp_messages;
+pub mod migrations;
+pub mod path_utils;
+pub mod project_registry_impl;
+pub mod shared_storage;
+pub mod threads;
+pub mod topic_index;

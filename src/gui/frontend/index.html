@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Smartness</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>AI Smartness</h1>
+        <nav>
+            <button class="tab active" data-tab="dashboard" data-i18n="tab.dashboard">Dashboard</button>
+            <button class="tab" data-tab="threads" data-i18n="tab.threads">Threads</button>
+            <button class="tab" data-tab="agents" data-i18n="tab.agents">Agents</button>
+            <button class="tab" data-tab="settings" data-i18n="tab.settings">Settings</button>
+            <button id="btn-debug" class="tab tab-debug" data-i18n="btn.debug">Debug</button>
+        </nav>
+        <div class="header-right">
+            <button id="btn-add-project" class="btn-sm btn-success" data-i18n="btn.addproject">+</button>
+            <select id="project-select" title="Select project">
+                <option value="">No project</option>
+            </select>
+            <button id="btn-edit-project" class="btn-sm" title="Edit project">&#9881;</button>
+        </div>
+    </header>
+
+    <main>
+        <!-- ═══ Dashboard ═══ -->
+        <section id="dashboard" class="panel active">
+            <div class="cards">
+                <div class="card">
+                    <h3 data-i18n="dash.daemon">Daemon</h3>
+                    <div id="daemon-status" class="status" data-i18n="status.checking">checking...</div>
+                    <div class="card-actions">
+                        <button id="btn-daemon-start" class="btn-sm btn-success" data-i18n="btn.start">Start</button>
+                        <button id="btn-daemon-stop" class="btn-sm btn-danger" data-i18n="btn.stop">Stop</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.active">Active Threads</h3>
+                    <div id="thread-active" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.suspended">Suspended</h3>
+                    <div id="thread-suspended" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.archived">Archived</h3>
+                    <div id="thread-archived" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.bridges">Bridges</h3>
+                    <div id="bridge-count" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.version">Version</h3>
+                    <div id="daemon-version" class="status">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.cpu">CPU</h3>
+                    <div id="resource-cpu" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.memory">Memory</h3>
+                    <div id="resource-mem" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.pool">Pool</h3>
+                    <div id="resource-pool" class="metric">-</div>
+                </div>
+            </div>
+
+            <!-- Agent Role Tree -->
+            <div class="dashboard-tree-section">
+                <h3 data-i18n="dash.roletree">Team Role Tree</h3>
+                <div id="dashboard-hierarchy"></div>
+            </div>
+
+            <!-- Agent Memory Detail Panel -->
+            <div id="agent-detail-panel" class="agent-detail-panel" style="display:none">
+                <div class="agent-detail-header">
+                    <h4 id="agent-detail-title"></h4>
+                    <div class="agent-detail-stats" id="agent-detail-stats"></div>
+                </div>
+                <div class="agent-detail-tabs">
+                    <button class="agent-tab active" data-agent-tab="threads">Threads</button>
+                    <button class="agent-tab" data-agent-tab="bridges">Bridges</button>
+                </div>
+                <div id="agent-threads-content">
+                    <table class="table">
+                        <thead><tr>
+                            <th>Title</th><th>Status</th><th>Weight</th><th>Importance</th><th>Topics</th>
+                        </tr></thead>
+                        <tbody id="agent-threads-body"></tbody>
+                    </table>
+                </div>
+                <div id="agent-bridges-content" style="display:none">
+                    <table class="table">
+                        <thead><tr>
+                            <th>Source</th><th>Target</th><th>Relation</th><th>Weight</th>
+                        </tr></thead>
+                        <tbody id="agent-bridges-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ Threads ═══ -->
+        <section id="threads" class="panel">
+            <div class="toolbar">
+                <select id="thread-filter">
+                    <option value="active" data-i18n="dash.active">Active</option>
+                    <option value="suspended" data-i18n="dash.suspended">Suspended</option>
+                    <option value="archived" data-i18n="dash.archived">Archived</option>
+                </select>
+                <input type="text" id="thread-search" data-i18n-placeholder="ph.search" placeholder="Search threads...">
+                <button id="btn-search" data-i18n="btn.search">Search</button>
+                <button id="btn-reindex" class="btn-sm" title="Recalculate all thread embeddings for improved search quality. Check 'Reset weights' to also reset thread weights to 1.0.">Reindex</button>
+                <label style="font-size:12px; margin-left:4px" title="Reset all thread weights to 1.0 during reindex"><input type="checkbox" id="reindex-reset-weights"> Reset weights</label>
+            </div>
+            <table id="thread-table">
+                <thead>
+                    <tr>
+                        <th data-i18n="th.title">Title</th>
+                        <th data-i18n="th.status">Status</th>
+                        <th data-i18n="th.weight">Weight</th>
+                        <th data-i18n="th.importance">Importance</th>
+                        <th data-i18n="th.topics">Topics</th>
+                        <th data-i18n="th.activations">Activations</th>
+                    </tr>
+                </thead>
+                <tbody id="thread-body"></tbody>
+            </table>
+        </section>
+
+        <!-- ═══ Agents ═══ -->
+        <section id="agents" class="panel">
+            <div class="agent-toolbar">
+                <h3 data-i18n="agents.list">Registered Agents</h3>
+                <button id="btn-add-agent" class="btn-sm btn-success" data-i18n="btn.addagent">+ Add Agent</button>
+            </div>
+            <table id="agent-table">
+                <thead>
+                    <tr>
+                        <th style="width:28px"></th>
+                        <th data-i18n="th.id">ID</th>
+                        <th data-i18n="th.name">Name</th>
+                        <th data-i18n="th.role">Role</th>
+                        <th data-i18n="th.status">Status</th>
+                        <th data-i18n="th.supervisor">Supervisor</th>
+                        <th data-i18n="th.team">Team</th>
+                        <th data-i18n="th.mode">Mode</th>
+                        <th>Threads</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="agent-body"></tbody>
+            </table>
+            <div class="hierarchy-tree">
+                <h3 data-i18n="agents.hierarchy">Hierarchy</h3>
+                <div id="hierarchy-view"></div>
+            </div>
+        </section>
+
+        <!-- ═══ Settings ═══ -->
+        <section id="settings" class="panel">
+            <div class="settings-header">
+                <h2 data-i18n="settings.title">Settings</h2>
+                <div class="settings-actions">
+                    <button id="btn-reset-defaults" class="btn-sm" data-i18n="btn.reset">Reset Defaults</button>
+                    <button id="btn-save-settings" class="btn-sm btn-success" data-i18n="btn.save">Save</button>
+                </div>
+            </div>
+            <div id="save-status" class="save-status"></div>
+
+            <!-- Sub-tabs -->
+            <div class="sub-tabs">
+                <button class="sub-tab active" data-stab="stab-general" data-i18n="stab.general">General</button>
+                <button class="sub-tab" data-stab="stab-guardian" data-i18n="stab.guardian">Guardian LLM</button>
+                <button class="sub-tab" data-stab="stab-matching" data-i18n="stab.matching">Thread Matching</button>
+                <button class="sub-tab" data-stab="stab-gossip" data-i18n="stab.gossip">Gossip</button>
+                <button class="sub-tab" data-stab="stab-recall" data-i18n="stab.recall">Recall</button>
+                <button class="sub-tab" data-stab="stab-engram" data-i18n="stab.engram">Engram</button>
+                <button class="sub-tab" data-stab="stab-alerts" data-i18n="stab.alerts">Alerts</button>
+                <button class="sub-tab" data-stab="stab-fallback" data-i18n="stab.fallback">Fallback</button>
+                <button class="sub-tab" data-stab="stab-guardcode" data-i18n="stab.guardcode">GuardCode</button>
+                <button class="sub-tab" data-stab="stab-healthguard">HealthGuard</button>
+                <button class="sub-tab" data-stab="stab-heartbeat">Heartbeat</button>
+                <button class="sub-tab" data-stab="stab-hooks">Hooks</button>
+                <button class="sub-tab" data-stab="stab-capture">Capture</button>
+                <button class="sub-tab" data-stab="stab-profile">Profile</button>
+                <button class="sub-tab" data-stab="stab-backup">Backup</button>
+            </div>
+
+            <!-- ── General ── -->
+            <div id="stab-general" class="sub-panel active">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="gen-lang" data-i18n="sec.langdisplay">Language & Display</h3>
+                    <div id="section-gen-lang" class="section-body open">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.language" title="Language used for LLM synthesis outputs (thread summaries, labels). The GUI interface language also changes. Default: English.">Language <select id="lang-select" data-path="synthesis.language">
+                                <option value="en">English</option>
+                                <option value="fr">Francais</option>
+                                <option value="es">Espanol</option>
+                            </select></label>
+                            <label data-i18n="cfg.mode" title="GUI display mode. Dark mode is easier on the eyes in low-light environments. Light mode provides better contrast in bright environments.">Mode <select id="mode-select">
+                                <option value="dark">Dark</option>
+                                <option value="light">Light</option>
+                            </select></label>
+                            <label data-i18n="cfg.theme" title="Accent color theme for the GUI. Affects buttons, highlights, badges, and status indicators. Pure aesthetic preference.">Theme <select id="theme-select">
+                                <option value="green">Green</option>
+                                <option value="blue">Blue</option>
+                                <option value="yellow">Yellow</option>
+                                <option value="orange">Orange</option>
+                                <option value="red">Red</option>
+                            </select></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="daemon-pool" data-i18n="sec.daemonpool">Connection Pool</h3>
+                    <div id="section-daemon-pool" class="section-body">
+                        <div class="form-grid">
+                            <label data-i18n="daemon.autostart" title="Automatically start the daemon process when the GUI opens. If disabled, you must start it manually from the Dashboard.">Auto-start Daemon <input type="checkbox" id="daemon-auto-start"></label>
+                            <label data-i18n="daemon.maxconn" title="Maximum simultaneous SQLite database connections the daemon keeps open (one per active agent). Higher values use more RAM but support more concurrent agents. Default: 50.">Max Connections <input type="number" id="daemon-max-conn" min="1" max="200"></label>
+                            <label data-i18n="daemon.idletimeout" title="Seconds before an idle agent connection is evicted from the pool. Lower values free RAM faster but cause more reconnections. Default: 1800 (30 min).">Idle Timeout (secs) <input type="number" id="daemon-idle-timeout" min="60"></label>
+                            <label data-i18n="daemon.pruneinterval" title="Interval in seconds between periodic maintenance tasks: gossip bridge discovery, thread weight decay, archive old suspended threads, orphan cleanup, and WAL checkpoint. Lower = fresher memory but more CPU usage. Default: 300 (5 min).">Prune Interval (secs) <input type="number" id="daemon-prune-interval" min="60"></label>
+                            <label data-i18n="daemon.crossgossip" title="Enable bridge discovery between threads from different projects. Experimental feature: useful for cross-project knowledge transfer but may create noisy connections. Default: off.">Cross-project Gossip <input type="checkbox" id="daemon-cross-gossip"></label>
+                        </div>
+                        <div class="settings-actions" style="margin-top:12px">
+                            <button id="btn-save-daemon-settings" class="btn-sm btn-success" data-i18n="btn.save">Save</button>
+                            <span id="daemon-save-status" class="save-status"></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="gen-network" data-i18n="ph.network.title">Agent Network</h3>
+                    <div id="section-gen-network" class="section-body">
+                        <p class="hint" data-i18n="ph.network">Multi-agent communication and remote team collaboration settings.</p>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="gen-updates" data-i18n="ph.updates.title">Updates</h3>
+                    <div id="section-gen-updates" class="section-body">
+                        <div class="form-grid">
+                            <label title="Current installed version of AI Smartness.">Current Version <span id="current-version">-</span></label>
+                            <label title="Latest available version from GitHub releases.">Latest Version <span id="latest-version">-</span></label>
+                        </div>
+                        <div style="margin-top:12px; display:flex; gap:8px">
+                            <button class="btn-sm" id="btn-check-update" title="Check for new versions on GitHub.">Check for Updates</button>
+                        </div>
+                        <div id="update-status" style="font-size:12px; min-height:18px; margin-top:8px; color: var(--text-secondary)"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Guardian LLM ── -->
+            <div id="stab-guardian" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="global" data-i18n="sec.global">Global Settings</h3>
+                    <div id="section-global" class="section-body open">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.enabled" title="Master switch for the entire Guardian cognitive system. When disabled, no LLM calls are made — hooks pass through without memory processing.">Guardian Enabled <input type="checkbox" data-path="enabled"></label>
+                            <label data-i18n="cfg.clipath" title="Path to the Claude CLI executable. Leave empty for auto-detection. Only needed if Claude is installed in a non-standard location.">Claude CLI Path <input type="text" data-path="claude_cli_path" placeholder="auto-detect"></label>
+                            <label data-i18n="cfg.hookguard" title="Environment variable name used to prevent hook recursion. The daemon sets this variable when processing captures to avoid infinite loops. Default: AI_SMARTNESS_HOOK_RUNNING.">Hook Guard Env <input type="text" data-path="hook_guard_env"></label>
+                            <label data-i18n="cfg.cache" title="Cache extraction and synthesis results to avoid redundant LLM calls for identical inputs. Saves API costs but uses more RAM. Default: off.">Cache Enabled <input type="checkbox" data-path="cache_enabled"></label>
+                            <label data-i18n="cfg.cachettl" title="Time-to-live for cached LLM results in seconds. After this period, cached entries expire and will be recomputed on next access. Default: 300 (5 min).">Cache TTL (secs) <input type="number" data-path="cache_ttl_secs" min="0"></label>
+                            <label data-i18n="cfg.cachemax" title="Maximum number of cached LLM results before oldest entries are evicted. Higher values use more RAM. Default: 100.">Cache Max Entries <input type="number" data-path="cache_max_entries" min="0"></label>
+                            <label data-i18n="cfg.pattern" title="Enable automatic learning of extraction patterns from LLM outputs. Patterns improve heuristic fallback quality over time. Default: on.">Pattern Learning <input type="checkbox" data-path="pattern_learning_enabled"></label>
+                            <label data-i18n="cfg.patterndecay" title="Number of days before learned patterns lose relevance. Older patterns are weighted less. Higher values retain patterns longer. Default: 30 days.">Pattern Decay (days) <input type="number" data-path="pattern_decay_days" min="0" step="0.1"></label>
+                            <label data-i18n="cfg.usage" title="Track which threads are injected into prompts and how often. Usage data feeds the Engram V5 validator (Injection History) for smarter recall. Default: on.">Usage Tracking <input type="checkbox" data-path="usage_tracking_enabled"></label>
+                            <label data-i18n="cfg.fallback" title="Deprecated — use per-task Failure Mode instead. Legacy global fallback toggle.">Fallback on Failure <input type="checkbox" data-path="fallback_on_failure"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="extraction" data-i18n="sec.extraction">Extraction</h3>
+                    <div id="section-extraction" class="section-body">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.model" title="LLM model for extracting title, topics, and summary from tool outputs. Called on EVERY tool capture (high frequency). Haiku recommended for speed/cost. Sonnet/Opus give higher quality but cost more.">Model <select data-path="extraction.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
+                            <label data-i18n="cfg.timeout" title="Maximum seconds to wait for the extraction LLM response before timing out. Default: 30s.">Timeout (s) <input type="number" data-path="extraction.llm.timeout_secs" min="1"></label>
+                            <label data-i18n="cfg.retries" title="Number of retry attempts if the extraction LLM call fails (timeout, network error). 0 = no retries. Default: 1.">Max Retries <input type="number" data-path="extraction.llm.max_retries" min="0" max="5"></label>
+                            <label data-i18n="cfg.taskEnabled" title="Enable LLM-based extraction. When disabled, no title/topics/summary are extracted — threads get generic names. Default: on.">Enabled <input type="checkbox" data-path="extraction.llm.enabled"></label>
+                            <label data-i18n="cfg.failmode" title="What happens when the extraction LLM fails. RetryWithHaiku: retry with cheapest model then skip. Skip: silently skip. HeuristicRegex: use regex patterns (lower quality). Default: RetryWithHaiku.">Failure Mode <select data-path="extraction.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
+                            <label title="Maximum characters of tool output sent to the LLM for extraction. Longer content is truncated. Higher values give better context but cost more tokens. Default: 3000.">Max Content Chars <input type="number" data-path="extraction.max_content_chars" min="100"></label>
+                            <label title="Minimum number of mentions required for a topic to be included in extraction results. Filters out one-off noise words. Default: 1.">Min Topic Frequency <input type="number" data-path="extraction.min_topic_frequency" min="1"></label>
+                            <label title="Detect skip markers in tool output (e.g., 'skip_extraction', 'SKIP'). When detected, extraction is skipped entirely — useful for noisy tools. Default: on.">Skip Signal <input type="checkbox" data-path="extraction.enable_skip_signal"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="coherence" data-i18n="sec.coherence">Coherence</h3>
+                    <div id="section-coherence" class="section-body">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.model" title="LLM model for scoring thematic coherence between consecutive captures. Determines if new content continues an existing thread or starts a new one. Called on every capture with pending context (high frequency). Haiku recommended.">Model <select data-path="coherence.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
+                            <label data-i18n="cfg.timeout" title="Maximum seconds to wait for coherence LLM response. Default: 15s.">Timeout (s) <input type="number" data-path="coherence.llm.timeout_secs" min="1"></label>
+                            <label data-i18n="cfg.retries" title="Retry attempts on coherence LLM failure. Default: 0 (no retries — speed priority).">Max Retries <input type="number" data-path="coherence.llm.max_retries" min="0" max="5"></label>
+                            <label data-i18n="cfg.taskEnabled" title="Enable LLM coherence check. When disabled, fallback_score is always used. Default: on.">Enabled <input type="checkbox" data-path="coherence.llm.enabled"></label>
+                            <label data-i18n="cfg.failmode" title="Behavior when coherence LLM fails. RetryWithHaiku: retry with cheapest model. Skip: use fallback_score. HeuristicRegex: keyword overlap heuristic.">Failure Mode <select data-path="coherence.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
+                            <label title="Maximum characters of context sent to the coherence LLM. Default: 1500.">Max Context Chars <input type="number" data-path="coherence.max_context_chars" min="100"></label>
+                            <label title="Coherence score threshold to continue an existing thread. Score >= this = add as child message. Higher values create more separate threads. Default: 0.6.">Child Threshold <input type="number" data-path="coherence.child_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Score below child_threshold but >= orphan_threshold creates a new thread. Score below orphan_threshold = forget (drop content). Lower values keep more content. Default: 0.4.">Orphan Threshold <input type="number" data-path="coherence.orphan_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Default coherence score returned when the LLM fails or is disabled. Should be between orphan and child thresholds for safe behavior. Default: 0.5.">Fallback Score <input type="number" data-path="coherence.fallback_score" min="0" max="1" step="0.05"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="reactivation" data-i18n="sec.reactivation">Reactivation</h3>
+                    <div id="section-reactivation" class="section-body">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.model" title="LLM model for borderline thread reactivation decisions. Only called when a suspended thread's similarity falls between the borderline and auto thresholds (low frequency). Haiku is fine.">Model <select data-path="reactivation.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
+                            <label data-i18n="cfg.timeout" title="Maximum seconds to wait for reactivation LLM response. Default: 30s.">Timeout (s) <input type="number" data-path="reactivation.llm.timeout_secs" min="1"></label>
+                            <label data-i18n="cfg.retries" title="Retry attempts on reactivation LLM failure. Default: 0.">Max Retries <input type="number" data-path="reactivation.llm.max_retries" min="0" max="5"></label>
+                            <label data-i18n="cfg.taskEnabled" title="Enable LLM-assisted reactivation for borderline cases. When disabled, only auto_threshold applies. Default: on.">Enabled <input type="checkbox" data-path="reactivation.llm.enabled"></label>
+                            <label data-i18n="cfg.failmode" title="Behavior when reactivation LLM fails. Default: RetryWithHaiku.">Failure Mode <select data-path="reactivation.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
+                            <label title="Similarity above this threshold = auto-reactivate suspended thread without LLM. Higher values are more conservative (fewer reactivations). Default: 0.35.">Auto Threshold <input type="number" data-path="reactivation.auto_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Similarity between borderline and auto thresholds triggers LLM decision. Below borderline = skip reactivation entirely. Lower values check more candidates. Default: 0.15.">Borderline Threshold <input type="number" data-path="reactivation.borderline_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Maximum characters of context sent to the reactivation LLM. Default: 500.">Max Context Chars <input type="number" data-path="reactivation.max_context_chars" min="100"></label>
+                            <label title="Maximum number of topic tags included in the reactivation prompt. Default: 5.">Max Topics <input type="number" data-path="reactivation.max_topics" min="1"></label>
+                            <label title="Maximum characters of thread summary included in the reactivation prompt. Default: 200.">Max Summary Chars <input type="number" data-path="reactivation.max_summary_chars" min="50"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="synthesis" data-i18n="sec.synthesis">Synthesis</h3>
+                    <div id="section-synthesis" class="section-body">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.model" title="LLM model for thread summarization. Called when a thread reaches 95% context capacity or is archived. Medium frequency. Sonnet gives better summaries for complex threads.">Model <select data-path="synthesis.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
+                            <label data-i18n="cfg.timeout" title="Maximum seconds for synthesis LLM. Longer timeout recommended as synthesis processes more context. Default: 60s.">Timeout (s) <input type="number" data-path="synthesis.llm.timeout_secs" min="1"></label>
+                            <label data-i18n="cfg.retries" title="Retry attempts on synthesis LLM failure. Default: 0.">Max Retries <input type="number" data-path="synthesis.llm.max_retries" min="0" max="5"></label>
+                            <label data-i18n="cfg.taskEnabled" title="Enable LLM summarization. When disabled, threads accumulate messages without being summarized. Default: on.">Enabled <input type="checkbox" data-path="synthesis.llm.enabled"></label>
+                            <label data-i18n="cfg.failmode" title="Behavior when synthesis LLM fails. Default: RetryWithHaiku.">Failure Mode <select data-path="synthesis.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
+                            <label title="Maximum number of messages included in the synthesis prompt. Older messages are dropped. Default: 10.">Max Messages <input type="number" data-path="synthesis.max_messages" min="1"></label>
+                            <label title="Maximum characters per message sent to synthesis. Longer messages are truncated. Default: 500.">Max Message Chars <input type="number" data-path="synthesis.max_message_chars" min="50"></label>
+                            <label title="Maximum length of the generated summary output. Longer summaries preserve more detail but cost more tokens and storage. Default: 1000.">Max Output Chars <input type="number" data-path="synthesis.max_output_chars" min="100"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="labels" data-i18n="sec.labels">Label Suggestion</h3>
+                    <div id="section-labels" class="section-body">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.model" title="LLM model for suggesting semantic labels on threads (action, idea, question, issue, etc.). Triggered by HealthGuard or on extraction (low frequency). Haiku is sufficient.">Model <select data-path="label_suggestion.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
+                            <label data-i18n="cfg.timeout" title="Maximum seconds for label suggestion LLM. Default: 30s.">Timeout (s) <input type="number" data-path="label_suggestion.llm.timeout_secs" min="1"></label>
+                            <label data-i18n="cfg.retries" title="Retry attempts on label LLM failure. Default: 0.">Max Retries <input type="number" data-path="label_suggestion.llm.max_retries" min="0" max="5"></label>
+                            <label data-i18n="cfg.taskEnabled" title="Enable LLM label suggestions. When disabled, threads remain unlabeled unless manually tagged. Default: on.">Enabled <input type="checkbox" data-path="label_suggestion.llm.enabled"></label>
+                            <label data-i18n="cfg.failmode" title="Behavior when label LLM fails. Default: RetryWithHaiku.">Failure Mode <select data-path="label_suggestion.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
+                            <label title="Automatically suggest labels when a new thread is created via extraction. Adds a small overhead to each extraction but keeps threads organized. Default: on.">Auto Suggest on Extraction <input type="checkbox" data-path="label_suggestion.auto_suggest_on_extraction"></label>
+                            <label title="Allow the LLM to suggest labels outside the predefined vocabulary (action, idea, question, issue, reference, social, decision, learning, frustration, intuition). Default: on.">Allow Custom Labels <input type="checkbox" data-path="label_suggestion.allow_custom_labels"></label>
+                            <label title="Maximum number of unlabeled threads processed in a single label suggestion batch. Default: 10.">Batch Size <input type="number" data-path="label_suggestion.batch_size" min="1"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="importance" data-i18n="sec.importance">Importance Rating</h3>
+                    <div id="section-importance" class="section-body">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.model" title="LLM model for importance rating. Usually piggybacked on extraction (zero extra cost). Standalone model only used if piggyback is disabled.">Model <select data-path="importance_rating.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
+                            <label data-i18n="cfg.timeout" title="Maximum seconds for standalone importance LLM call. Default: 15s.">Timeout (s) <input type="number" data-path="importance_rating.llm.timeout_secs" min="1"></label>
+                            <label data-i18n="cfg.taskEnabled" title="Enable importance rating. When disabled, all threads get the fallback score. Default: on.">Enabled <input type="checkbox" data-path="importance_rating.llm.enabled"></label>
+                            <label title="Include importance rating in the extraction prompt (zero extra LLM cost). When enabled, importance is extracted alongside title/topics. Highly recommended. Default: on.">Piggyback on Extraction <input type="checkbox" data-path="importance_rating.piggyback_on_extraction"></label>
+                            <label title="Default importance score assigned when the LLM fails or is disabled. Affects thread decay rate and suspend priority. Default: 0.5.">Fallback Score <input type="number" data-path="importance_rating.fallback_score" min="0" max="1" step="0.1"></label>
+                            <label title="Score for critical content: architecture decisions, blockers, security issues. These threads decay slowest and are last to be suspended. Default: 1.0.">Score: Critical <input type="number" data-path="importance_rating.score_map.critical" min="0" max="1" step="0.1"></label>
+                            <label title="Score for high-importance content: implementation details, bug fixes, configurations. Default: 0.8.">Score: High <input type="number" data-path="importance_rating.score_map.high" min="0" max="1" step="0.1"></label>
+                            <label title="Score for normal content: exploration, questions, learning notes. Default: 0.5.">Score: Normal <input type="number" data-path="importance_rating.score_map.normal" min="0" max="1" step="0.1"></label>
+                            <label title="Score for low-importance content: casual chat, noise, meta-discussion. These threads decay faster. Default: 0.3.">Score: Low <input type="number" data-path="importance_rating.score_map.low" min="0" max="1" step="0.1"></label>
+                            <label title="Score for disposable content: one-off debug outputs, transient logs. These threads are suspended first when quota is reduced. Default: 0.1.">Score: Disposable <input type="number" data-path="importance_rating.score_map.disposable" min="0" max="1" step="0.1"></label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Thread Matching ── -->
+            <div id="stab-matching" class="sub-panel">
+                <div class="form-grid">
+                    <label title="Thread matching strategy. EmbeddingOnly: fast cosine similarity (~80% precision, no LLM cost). EmbeddingPlusLlm: hybrid with LLM confirmation for borderline matches (~95% precision, higher cost). Default: EmbeddingOnly.">Mode <select data-path="thread_matching.mode"><option value="EmbeddingOnly">EmbeddingOnly</option><option value="EmbeddingPlusLlm">EmbeddingPlusLlm</option></select></label>
+                    <label title="Embedding backend for thread matching. OnnxWithFallback: ONNX neural model with TF-IDF fallback if ONNX unavailable. OnnxOnly: skip if ONNX missing. TfidfOnly: lightweight keyword-based (offline, no model needed). Disabled: always create new threads.">Embedding Mode <select data-path="thread_matching.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
+                    <label title="Cosine similarity threshold for ONNX (all-MiniLM-L6-v2 neural model). Content with similarity >= threshold continues the existing thread. Higher = more separate threads, lower = more merging. Default: 0.60.">ONNX Threshold <input type="number" data-path="thread_matching.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Cosine similarity threshold for TF-IDF keyword-based fallback. Typically lower than ONNX since TF-IDF scores are less discriminative. Default: 0.45.">TF-IDF Threshold <input type="number" data-path="thread_matching.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
+                </div>
+            </div>
+
+            <!-- ── Gossip ── -->
+            <div id="stab-gossip" class="sub-panel">
+                <div class="form-grid">
+                    <label title="Embedding backend for gossip bridge discovery. Runs periodically (every prune interval) to find semantic relationships between threads. OnnxWithFallback recommended. Disabled = no automatic bridge creation.">Embedding Mode <select data-path="gossip.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
+                    <label title="ONNX similarity threshold for creating a bridge between two threads. Higher = fewer but stronger bridges. Default: 0.75 (conservative).">ONNX Threshold <input type="number" data-path="gossip.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="TF-IDF similarity threshold for bridge creation fallback. Default: 0.55.">TF-IDF Threshold <input type="number" data-path="gossip.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Enable zero-cost topic-based bridge creation. Threads sharing enough common topics get a bridge without needing embeddings. Complementary to embedding-based discovery. Default: on.">Topic Overlap Enabled <input type="checkbox" data-path="gossip.topic_overlap_enabled"></label>
+                    <label title="Minimum number of shared topics required to create a topic-based bridge. Higher = fewer bridges but more meaningful. Default: 2.">Min Shared Topics <input type="number" data-path="gossip.topic_overlap_min_shared" min="1"></label>
+                    <label title="Initial weight assigned to topic-overlap bridges. Lower than embedding bridges since topic overlap is a weaker signal. Bridges decay over time via half-life. Default: 0.5.">Topic Overlap Weight <input type="number" data-path="gossip.topic_overlap_initial_weight" min="0" max="1" step="0.05"></label>
+                    <label title="Number of threads processed per gossip batch. Higher = faster processing but more CPU per cycle. Default: 50.">Batch Size <input type="number" data-path="gossip.batch_size" min="1"></label>
+                    <label title="Milliseconds to yield between gossip batches. Prevents CPU monopolization during large gossip runs. 0 = no yielding. Default: 10ms.">Yield (ms) <input type="number" data-path="gossip.yield_ms" min="0"></label>
+                    <label title="Similarity above this threshold extends a bridge relation type (e.g., from 'related' to 'extends'). Default: 0.80.">Strong Bridge Threshold <input type="number" data-path="gossip.strong_bridge_threshold" min="0" max="1" step="0.05"></label>
+                </div>
+            </div>
+
+            <!-- ── Recall ── -->
+            <div id="stab-recall" class="sub-panel">
+                <div class="form-grid">
+                    <label title="Embedding backend for legacy recall system. Superseded by Engram (multi-validator) but kept for backward compatibility. OnnxWithFallback recommended.">Embedding Mode <select data-path="recall.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
+                    <label title="ONNX similarity threshold for legacy recall. Threads with similarity below this are excluded from results. Default: 0.30 (inclusive).">ONNX Threshold <input type="number" data-path="recall.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="TF-IDF similarity threshold for legacy recall fallback. Default: 0.20.">TF-IDF Threshold <input type="number" data-path="recall.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Maximum number of threads returned for memory injection into the agent's prompt. More results = richer context but longer prompts. Default: 5.">Max Results <input type="number" data-path="recall.max_results" min="1"></label>
+                    <label title="Maximum number of threads scanned from the index before ranking. Higher = better recall but slower. Default: 50.">Max Candidates <input type="number" data-path="recall.max_candidates" min="1"></label>
+                    <label title="Score boost applied to threads matching the current ai_focus directive. Helps prioritize contextually relevant threads. Default: 0.15.">Focus Boost <input type="number" data-path="recall.focus_boost" min="0" max="1" step="0.05"></label>
+                    <label title="Score penalty applied to suspended/archived threads. Gives priority to active threads in recall results. Default: 0.1.">Status Penalty <input type="number" data-path="recall.status_penalty" min="0" max="1" step="0.05"></label>
+                </div>
+            </div>
+
+            <!-- ── Engram ── -->
+            <div id="stab-engram" class="sub-panel">
+                <div class="form-grid">
+                    <label title="Embedding backend for the Engram V1 validator (semantic similarity). Used in the 8-validator consensus pipeline for memory injection. OnnxWithFallback recommended.">Embedding Mode <select data-path="engram.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
+                    <label title="ONNX similarity threshold for Engram V1 validator. Threads above this pass the semantic similarity vote. Default: 0.30.">ONNX Threshold <input type="number" data-path="engram.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="TF-IDF similarity threshold for Engram V1 validator fallback. Default: 0.20.">TF-IDF Threshold <input type="number" data-path="engram.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Minimum validator votes (out of 8) for StrongInject — thread is injected with high confidence into the agent's prompt. Lower = more injections but potentially noisy. Default: 5.">Strong Inject Min Votes <input type="number" data-path="engram.strong_inject_min_votes" min="1" max="8"></label>
+                    <label title="Minimum validator votes for WeakInject — thread is injected with lower confidence (may be summarized). Below this threshold = skip. Default: 3.">Weak Inject Min Votes <input type="number" data-path="engram.weak_inject_min_votes" min="1" max="8"></label>
+                    <label title="Maximum threads returned for prompt injection after the 8-validator consensus pipeline. More = richer context but longer prompts. Default: 5.">Max Results <input type="number" data-path="engram.max_results" min="1"></label>
+                    <label title="Maximum threads fetched from the topic hash index for the validator pipeline. Higher = better recall but slower. Default: 50.">Max Candidates <input type="number" data-path="engram.max_candidates" min="1"></label>
+                    <label title="Maximum archived threads scanned in addition to active/suspended. Archived threads may contain valuable historical knowledge. 0 = skip archived. Default: 50.">Max Archived Scan <input type="number" data-path="engram.max_archived_scan" min="0"></label>
+                    <label title="Use the TopicIndex hash pre-filter for O(1) candidate lookup. When disabled, falls back to full table scan (legacy behavior, much slower with many threads). Default: on.">Hash Index Enabled <input type="checkbox" data-path="engram.hash_index_enabled"></label>
+                </div>
+                <h4 data-i18n="sec.validatorweights">Validator Weights (0.0 = disabled, 1.0 = full)</h4>
+                <div class="form-grid">
+                    <label title="V1: Cosine similarity between prompt and thread embedding (ONNX or TF-IDF). Core relevance signal. 0.0 = disabled, 1.0 = full weight. Default: 1.0.">V1: Semantic Similarity <input type="number" data-path="engram.validator_weights.semantic_similarity" min="0" max="1" step="0.1"></label>
+                    <label title="V2: Number of shared topics between prompt and thread. Zero-cost heuristic. Good for catching keyword-level matches that embeddings might miss. Default: 0.8.">V2: Topic Overlap <input type="number" data-path="engram.validator_weights.topic_overlap" min="0" max="1" step="0.1"></label>
+                    <label title="V3: How recently the thread was updated (WorkContext freshness). Favors threads from the current session. Prevents stale threads from dominating recall. Default: 0.7.">V3: Temporal Proximity <input type="number" data-path="engram.validator_weights.temporal_proximity" min="0" max="1" step="0.1"></label>
+                    <label title="V4: Bridge connectivity — threads connected via bridges to already-injected threads get a boost. Enables associative memory chains. Default: 0.9.">V4: Graph Connectivity <input type="number" data-path="engram.validator_weights.graph_connectivity" min="0" max="1" step="0.1"></label>
+                    <label title="V5: Injection history feedback — threads that were previously injected and used (high usage_ratio) are favored. Learns from agent behavior. Default: 0.6.">V5: Injection History <input type="number" data-path="engram.validator_weights.injection_history" min="0" max="1" step="0.1"></label>
+                    <label title="V6: Thread weight * importance after temporal decay. Combines quality (importance) with freshness (decay). Naturally deprioritizes old, low-quality threads. Default: 0.5.">V6: Decayed Relevance <input type="number" data-path="engram.validator_weights.decayed_relevance" min="0" max="1" step="0.1"></label>
+                    <label title="V7: Label coherence — threads whose labels match the prompt context score higher. Requires label_suggestion to be active. Default: 0.4.">V7: Label Coherence <input type="number" data-path="engram.validator_weights.label_coherence" min="0" max="1" step="0.1"></label>
+                    <label title="V8: Alignment with the current ai_focus directive. Strong boost for threads matching the declared project focus. Default: 0.8.">V8: Focus Alignment <input type="number" data-path="engram.validator_weights.focus_alignment" min="0" max="1" step="0.1"></label>
+                </div>
+            </div>
+
+            <!-- ── Alert Thresholds ── -->
+            <div id="stab-alerts" class="sub-panel">
+                <div class="form-grid">
+                    <label title="Number of consecutive LLM failures before emitting a WARNING alert. Non-blocking informative notification. Default: 3.">Warning After (failures) <input type="number" data-path="alert_thresholds.warning_after" min="1"></label>
+                    <label title="Number of consecutive LLM failures before emitting a CRITICAL alert. Urgent notification indicating the system may be degraded. Default: 5.">Critical After (failures) <input type="number" data-path="alert_thresholds.critical_after" min="1"></label>
+                    <label title="Minimum seconds between alerts for the same subsystem. Prevents alert flooding during sustained outages. Default: 300 (5 min).">Cooldown (secs) <input type="number" data-path="alert_thresholds.per_system_cooldown_secs" min="0"></label>
+                </div>
+            </div>
+
+            <!-- ── Fallback ── -->
+            <div id="stab-fallback" class="sub-panel">
+                <div class="form-grid">
+                    <label title="Regex pattern for extracting a thread title when LLM is unavailable. Captures 10-80 characters from the beginning of content. Only used in HeuristicRegex failure mode. Not recommended for production use.">Title Pattern <input type="text" data-path="fallback_patterns.title_pattern"></label>
+                    <label title="Keyword overlap ratio threshold for heuristic coherence when LLM is unavailable. Score = shared keywords / total keywords. Default: 0.3 (30% overlap = continue thread).">Coherence Keyword Threshold <input type="number" data-path="fallback_patterns.coherence_keyword_threshold" min="0" max="1" step="0.05"></label>
+                </div>
+            </div>
+
+            <!-- ── GuardCode ── -->
+            <div id="stab-guardcode" class="sub-panel">
+                <div class="form-grid">
+                    <label data-i18n="gc.enabled" title="Enable content validation rules (max length, blocked patterns). Protects agent memory from oversized or sensitive content. Default: on.">Enabled <input type="checkbox" data-path="guardcode.enabled"></label>
+                    <label data-i18n="gc.maxbytes" title="Maximum content size in bytes before the MaxLengthRule triggers. Prevents storage of huge tool outputs (e.g., large file dumps). Default: 50000 (50 KB).">Max Content Bytes <input type="number" data-path="guardcode.max_content_bytes" min="1000" step="1000"></label>
+                    <label data-i18n="gc.warnonblock" title="Log a warning when content is blocked by a validation rule. Useful for debugging false positives. Default: on.">Warn on Block <input type="checkbox" data-path="guardcode.warn_on_block"></label>
+                    <label data-i18n="gc.action" title="What happens when content is blocked. Reject: discard entirely. WarnOnly: store but log warning. Truncate: cut to max_content_bytes. SanitizeLlm: send to LLM for cleanup then re-validate.">Action on Block <select id="gc-action-select" data-path="guardcode.action_on_block">
+                        <option value="Reject">Reject</option>
+                        <option value="WarnOnly">WarnOnly</option>
+                        <option value="Truncate">Truncate</option>
+                        <option value="SanitizeLlm">SanitizeLlm</option>
+                    </select></label>
+                </div>
+                <div id="gc-sanitize-section" class="config-section" style="display:none;margin-top:12px">
+                    <h3 class="section-toggle open" data-section="gc-sanitize" data-i18n="gc.sanitize">Sanitize LLM</h3>
+                    <div id="section-gc-sanitize" class="section-body open">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.model" title="LLM model for content sanitization (only used when Action on Block = SanitizeLlm). Haiku is fast and sufficient for cleanup tasks.">Model <select data-path="guardcode.sanitize_llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
+                            <label data-i18n="cfg.timeout" title="Maximum seconds for sanitization LLM call. Default: 30s.">Timeout (s) <input type="number" data-path="guardcode.sanitize_llm.timeout_secs" min="1"></label>
+                            <label data-i18n="cfg.retries" title="Retry attempts on sanitization LLM failure. Default: 1.">Max Retries <input type="number" data-path="guardcode.sanitize_llm.max_retries" min="0" max="5"></label>
+                            <label data-i18n="gc.sanitizeretries" title="Maximum sanitize-then-revalidate loops. Prevents infinite cycles where sanitized content still fails validation. Default: 2.">Sanitize Loop Max <input type="number" data-path="guardcode.sanitize_max_retries" min="1" max="5"></label>
+                            <label data-i18n="cfg.failmode" title="Behavior when sanitization LLM fails. RetryWithHaiku: retry with cheapest model. Skip: discard the content. Default: Skip.">Failure Mode <select data-path="guardcode.sanitize_llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option></select></label>
+                        </div>
+                    </div>
+                </div>
+                <h4 data-i18n="gc.blockedpatterns">Blocked Patterns</h4>
+                <div class="pattern-list" id="blocked-patterns-list"></div>
+                <button class="btn-sm btn-success" id="btn-add-pattern" data-i18n="gc.addpattern">+ Add Pattern</button>
+                <div class="config-section" style="margin-top:12px">
+                    <h3 class="section-toggle" data-section="gc-messages">Custom Messages</h3>
+                    <div id="section-gc-messages" class="section-body">
+                        <div class="prompt-fields">
+                            <label title="Message shown when content is rejected by GuardCode. Default: 'Content blocked by validation rules.'">
+                                <span class="prompt-label">Reject Message</span>
+                                <textarea data-path="guardcode.messages.reject" rows="3" placeholder="Content blocked by validation rules."></textarea>
+                            </label>
+                            <label title="Message shown when content exceeds max length. Use {size} and {max} placeholders.">
+                                <span class="prompt-label">Max Length Warning</span>
+                                <textarea data-path="guardcode.messages.max_length" rows="3" placeholder="Content exceeds max length: {size} > {max}"></textarea>
+                            </label>
+                            <label title="Message shown when a blocked pattern is detected. Use {pattern} placeholder.">
+                                <span class="prompt-label">Pattern Match Warning</span>
+                                <textarea data-path="guardcode.messages.pattern_match" rows="3" placeholder="Blocked pattern found: {pattern}"></textarea>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── HealthGuard ── -->
+            <div id="stab-healthguard" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hg-general">General</h3>
+                    <div id="section-hg-general" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Enable proactive memory health monitoring. Runs 9 diagnostic checks: capacity, fragmentation, unlabeled threads, weak bridges, stale threads, merge candidates, poor titles, disk usage, and guardian alerts. Default: on.">Enabled <input type="checkbox" data-path="healthguard.enabled"></label>
+                            <label title="Minimum seconds between health analyses per agent. Prevents excessive health checks during high-activity periods. Default: 1800 (30 min).">Cooldown (secs) <input type="number" data-path="healthguard.cooldown_secs" min="0"></label>
+                            <label title="Maximum number of health findings returned per analysis, sorted by priority (critical first). Default: 3.">Max Suggestions <input type="number" data-path="healthguard.max_suggestions" min="1" max="10"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hg-capacity">Capacity Thresholds</h3>
+                    <div id="section-hg-capacity" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Alert when active thread count reaches this percentage of the agent's thread quota. Example: 0.75 with quota 50 = warning at 38 threads. Default: 0.75 (75%).">Warning (%) <input type="number" data-path="healthguard.capacity_warning_percent" min="0" max="1" step="0.05"></label>
+                            <label title="Critical alert when active thread count reaches this percentage of quota. At this level, HealthGuard may recommend switching to a higher thread mode. Default: 0.90 (90%).">Critical (%) <input type="number" data-path="healthguard.capacity_critical_percent" min="0" max="1" step="0.05"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hg-fragmentation">Fragmentation</h3>
+                    <div id="section-hg-fragmentation" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Alert if this fraction of active threads have only 1 message (fragmented). Indicates threads are being created but not consolidated. Default: 0.30 (30%).">Ratio Threshold <input type="number" data-path="healthguard.fragmentation_ratio_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Minimum number of active threads before fragmentation check is evaluated. Avoids false positives when there are few threads. Default: 8.">Min Threads <input type="number" data-path="healthguard.fragmentation_min_threads" min="1"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hg-labels">Unlabeled Threads</h3>
+                    <div id="section-hg-labels" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Alert if this fraction of active threads have no labels. Unlabeled threads reduce Engram V7 validator effectiveness. Default: 0.40 (40%).">Ratio Threshold <input type="number" data-path="healthguard.unlabeled_ratio_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Minimum number of active threads before unlabeled check is evaluated. Default: 10.">Min Threads <input type="number" data-path="healthguard.unlabeled_min_threads" min="1"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hg-bridges">Bridges & Staleness</h3>
+                    <div id="section-hg-bridges" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Alert if there are this many or more weak bridges (weight < 0.1). Weak bridges consume storage but provide little recall value. Gossip pruning should clean them naturally. Default: 50.">Weak Bridges Threshold <input type="number" data-path="healthguard.weak_bridges_threshold" min="0"></label>
+                            <label title="Number of hours of inactivity after which an active thread is considered stale. Stale threads should be reviewed for suspension or archival. Default: 168 (7 days).">Stale Thread Hours <input type="number" data-path="healthguard.stale_thread_hours" min="1"></label>
+                            <label title="Minimum number of stale threads before raising an alert. Default: 5.">Stale Count Threshold <input type="number" data-path="healthguard.stale_thread_count_threshold" min="1"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hg-misc">Titles & Disk</h3>
+                    <div id="section-hg-misc" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Alert if this many threads have poor/generic titles (e.g., 'Untitled', very short, or auto-generated). Poor titles reduce search and recall quality. Default: 5.">Poor Titles Threshold <input type="number" data-path="healthguard.poor_titles_threshold" min="0"></label>
+                            <label title="Alert when the agent's SQLite database exceeds this size in bytes. Large databases may slow down queries. Consider purging or archiving. Default: 50000000 (50 MB).">Disk Warning (bytes) <input type="number" data-path="healthguard.disk_warning_bytes" min="1000000" step="1000000"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="hg-prompts">Injection Prompts</h3>
+                    <div id="section-hg-prompts" class="section-body">
+                        <p class="hint" title="Customize the messages injected into agent context when health issues are found. Leave empty to use defaults.">Custom prompts injected by HealthGuard when issues are detected.</p>
+                        <div class="prompt-fields">
+                            <label title="Prompt prepended to all health findings. Default: 'Memory health alerts:'">
+                                <span class="prompt-label">Header Prompt</span>
+                                <textarea data-path="healthguard.prompts.header" rows="2" placeholder="Memory health alerts:"></textarea>
+                            </label>
+                            <label title="Template for capacity warnings. Use {percent} and {quota} placeholders.">
+                                <span class="prompt-label">Capacity Warning</span>
+                                <textarea data-path="healthguard.prompts.capacity_warning" rows="4" placeholder="Memory at {percent}% capacity ({quota} threads max). Consider archiving or merging threads to free space."></textarea>
+                            </label>
+                            <label title="Prompt injected at first session to introduce the memory system. Leave empty to use built-in onboarding.">
+                                <span class="prompt-label">Onboarding Prompt</span>
+                                <textarea class="prompt-lg" data-path="healthguard.prompts.onboarding" rows="8" placeholder="AI Smartness Memory System — Quick Reference&#10;You have access to these MCP tools for managing your persistent memory:&#10;- ai_status: Check daemon health and thread counts&#10;- ai_search <query>: Search through memory threads&#10;- ai_recall <query>: Active memory recall&#10;- ai_pin <content>: Pin important content&#10;..."></textarea>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Heartbeat ── -->
+            <div id="stab-heartbeat" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hb-toggle">Heartbeat</h3>
+                    <div id="section-hb-toggle" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Disabling the heartbeat disables agent activity tracking, self-wake scheduling, and proactive inter-agent communication. Essential features will be lost if disabled.">Heartbeat Active
+                                <input type="checkbox" data-path="heartbeat.enabled" checked></label>
+                        </div>
+                        <p class="hint" style="color: var(--warning, #e8a317);">If disabled: loss of activity tracking, self-wake, and proactive inter-agent communication.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Hooks ── -->
+            <div id="stab-hooks" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hooks-guardwrite">Guard Write (Plan Mode)</h3>
+                    <div id="section-hooks-guardwrite" class="section-body open">
+                        <p class="hint" title="When enabled, Edit and Write tool calls are blocked unless a validated plan exists. This enforces a 'plan before you write' workflow.">Blocks Edit/Write without a validated plan_state.json. Prevents unplanned code modifications.</p>
+                        <div class="form-grid">
+                            <label title="Enable or disable the Guard Write hook. When disabled, all Edit/Write calls pass through without plan validation.">Guard Write Enabled
+                                <input type="checkbox" data-path="hooks.guard_write_enabled" checked></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hooks-mcpperm">MCP Permissions</h3>
+                    <div id="section-hooks-mcpperm" class="section-body open">
+                        <p class="hint" title="When enabled, MCP tool calls (ai_recall, ai_thread_create, etc.) are automatically allowed without prompting. When disabled, each MCP tool call requires manual approval.">Auto-allow all AI Smartness MCP tools without permission prompts.</p>
+                        <div class="form-grid">
+                            <label title="Automatically allow MCP tool calls. Adds mcp__ai-smartness__* wildcard to .claude/settings.json permissions.">MCP Auto-Allow
+                                <input type="checkbox" data-path="hooks.mcp_auto_allow" checked></label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Capture ── -->
+            <div id="stab-capture" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="cap-tools">Tool Capture Toggles</h3>
+                    <div id="section-cap-tools" class="section-body open">
+                        <p class="hint" title="Control which tool outputs are sent to the daemon for LLM extraction and memory processing. Disabled tools are silently skipped.">Select which tools have their outputs captured and processed into memory threads.</p>
+                        <div class="form-grid">
+                            <label title="Capture file contents when the agent reads files. High volume but provides context about what the agent is looking at.">Read
+                                <input type="checkbox" data-path="capture.tools.read" checked></label>
+                            <label title="Capture edit diffs when the agent modifies files. Important for tracking code changes.">Edit
+                                <input type="checkbox" data-path="capture.tools.edit" checked></label>
+                            <label title="Capture file creation content. Important for tracking new files.">Write
+                                <input type="checkbox" data-path="capture.tools.write" checked></label>
+                            <label title="Capture command output (stdout/stderr). Can be noisy for build commands but valuable for debugging context.">Bash
+                                <input type="checkbox" data-path="capture.tools.bash" checked></label>
+                            <label title="Capture search results. Useful for understanding what the agent is looking for.">Grep
+                                <input type="checkbox" data-path="capture.tools.grep" checked></label>
+                            <label title="Capture file listing results. Lower value, can be disabled to reduce noise.">Glob
+                                <input type="checkbox" data-path="capture.tools.glob" checked></label>
+                            <label title="Capture web page fetches. Useful for research tasks.">WebFetch
+                                <input type="checkbox" data-path="capture.tools.web_fetch" checked></label>
+                            <label title="Capture web search results. Useful for research context.">WebSearch
+                                <input type="checkbox" data-path="capture.tools.web_search" checked></label>
+                            <label title="Capture sub-agent task results. Can be verbose.">Task
+                                <input type="checkbox" data-path="capture.tools.task" checked></label>
+                            <label title="Capture Jupyter notebook edits.">NotebookEdit
+                                <input type="checkbox" data-path="capture.tools.notebook_edit" checked></label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Profile ── -->
+            <div id="stab-profile" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="prof-identity">Identity</h3>
+                    <div id="section-prof-identity" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Your name (optional). Used for personalized interactions.">Name
+                                <input type="text" id="profile-name" placeholder="(optional)"></label>
+                            <label title="Your role. 'developer' for coding tasks, 'user' for general use, 'owner' for project management.">Role
+                                <select id="profile-role">
+                                    <option value="user">User</option>
+                                    <option value="developer">Developer</option>
+                                    <option value="owner">Owner</option>
+                                </select></label>
+                            <label title="Your relationship to the project. Affects how the agent talks about the codebase.">Relationship
+                                <select id="profile-relationship">
+                                    <option value="user">User</option>
+                                    <option value="contributor">Contributor</option>
+                                    <option value="owner">Owner</option>
+                                </select></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="prof-prefs">Preferences</h3>
+                    <div id="section-prof-prefs" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Response verbosity. 'concise' for brief answers, 'detailed' for thorough explanations.">Verbosity
+                                <select id="profile-verbosity">
+                                    <option value="concise">Concise</option>
+                                    <option value="normal" selected>Normal</option>
+                                    <option value="detailed">Detailed</option>
+                                </select></label>
+                            <label title="Your technical level. Affects terminology and explanation depth.">Technical Level
+                                <select id="profile-technical">
+                                    <option value="beginner">Beginner</option>
+                                    <option value="intermediate">Intermediate</option>
+                                    <option value="expert">Expert</option>
+                                </select></label>
+                            <label title="Allow emojis in agent responses. Default: off.">Emoji Usage
+                                <input type="checkbox" id="profile-emoji"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="prof-rules">Custom Rules</h3>
+                    <div id="section-prof-rules" class="section-body">
+                        <p class="hint" title="Rules the agent should always follow. Auto-detected from phrases like 'always...', 'never...', 'remember:'. Can also be added manually here.">Rules the agent should always follow (e.g., "always use TypeScript", "never commit directly to main").</p>
+                        <div id="profile-rules-list" class="pattern-list"></div>
+                        <div style="display:flex; gap:8px; margin-top:8px">
+                            <input type="text" id="profile-new-rule" placeholder="Add a rule..." style="flex:1">
+                            <button class="btn-sm btn-success" id="btn-add-rule" title="Add a custom rule for the agent to follow">+ Add</button>
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top:12px; display:flex; gap:8px">
+                    <button class="btn-sm btn-success" id="btn-save-profile" title="Save user profile changes">Save Profile</button>
+                    <span id="profile-status" style="font-size:12px; color: var(--text-secondary); line-height:28px"></span>
+                </div>
+            </div>
+
+            <!-- ── Backup ── -->
+            <div id="stab-backup" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="bk-settings">Backup Settings</h3>
+                    <div id="section-bk-settings" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Directory where backups are stored. Supports ~ for home directory. Default: ~/.config/ai-smartness/backups/">Backup Path
+                                <input type="text" id="backup-path" placeholder="~/.config/ai-smartness/backups/"></label>
+                            <label title="Backup frequency. 'manual' = only on demand. 'daily' = once per day at the configured hour. 'weekly' = once per week.">Schedule
+                                <select id="backup-schedule">
+                                    <option value="manual">Manual only</option>
+                                    <option value="daily">Daily</option>
+                                    <option value="weekly">Weekly</option>
+                                </select></label>
+                            <label title="Maximum number of backups to keep. Oldest backups are deleted when this limit is exceeded. Default: 5.">Retention Count
+                                <input type="number" id="backup-retention" min="1" max="50" value="5"></label>
+                            <label title="Hour of day (0-23) for automatic backups when schedule is 'daily' or 'weekly'. Default: 3 (3 AM).">Auto-backup Hour
+                                <input type="number" id="backup-hour" min="0" max="23" value="3"></label>
+                        </div>
+                        <div style="margin-top:12px">
+                            <button class="btn-sm btn-success" id="btn-save-backup-settings" title="Save backup configuration">Save Settings</button>
+                            <span id="backup-settings-status" style="font-size:12px; color: var(--text-secondary); margin-left:8px"></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="bk-actions">Actions</h3>
+                    <div id="section-bk-actions" class="section-body open">
+                        <div style="display:flex; gap:8px; margin-bottom:12px; align-items:center">
+                            <select id="backup-agent-select" title="Select which agent to backup, or 'All' for global backup">
+                                <option value="__all__">All Agents</option>
+                            </select>
+                            <button class="btn-sm btn-success" id="btn-trigger-backup" title="Create a backup now">Backup Now</button>
+                        </div>
+                        <div id="backup-status" style="font-size:12px; color: var(--text-secondary); min-height:18px"></div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="bk-history">Backup History</h3>
+                    <div id="section-bk-history" class="section-body open">
+                        <table class="data-table">
+                            <thead><tr>
+                                <th>Date</th><th>Agent</th><th>Size</th><th>Actions</th>
+                            </tr></thead>
+                            <tbody id="backup-history-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+    </main>
+
+    <footer>
+        <span id="version">AI Smartness v0.1.0-alpha</span>
+    </footer>
+
+    <!-- ═══ Add Project Modal ═══ -->
+    <div id="modal-add-project" class="modal-overlay">
+        <div class="modal">
+            <h3 data-i18n="modal.addproject">Add Project</h3>
+            <div class="modal-field">
+                <label for="new-project-path" data-i18n="modal.projectpath">Project Path</label>
+                <input type="text" id="new-project-path" placeholder="/home/user/my-project">
+            </div>
+            <div class="modal-field">
+                <label for="new-project-name" data-i18n="modal.projectname">Name (optional)</label>
+                <input type="text" id="new-project-name" placeholder="My Project">
+            </div>
+            <div id="add-project-error" style="color: var(--danger); font-size: 12px; min-height: 18px;"></div>
+            <div class="modal-actions">
+                <button id="btn-cancel-project" class="btn-sm" data-i18n="btn.cancel">Cancel</button>
+                <button id="btn-confirm-project" class="btn-sm btn-success" data-i18n="btn.add">Add</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Add Agent Modal ═══ -->
+    <div id="modal-add-agent" class="modal-overlay">
+        <div class="modal">
+            <h3 data-i18n="modal.addagent">Add Agent</h3>
+            <div class="modal-field">
+                <label for="new-agent-id" data-i18n="modal.agentid" title="Unique identifier for this agent. Used in hooks (project_hash + agent_id). Must be unique within the project. Examples: 'claude-code', 'reviewer-1', 'arch-lead'.">Agent ID</label>
+                <input type="text" id="new-agent-id">
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-name" data-i18n="modal.agentname" title="Human-readable display name shown in the dashboard, hierarchy tree, and logs.">Name</label>
+                <input type="text" id="new-agent-name">
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-role" data-i18n="modal.agentrole" title="Agent role in the team. Affects hierarchy display and future coordination features. Programmer: writes code. Coordinator: orchestrates tasks. Reviewer: reviews code/decisions. Researcher: gathers information. Architect: designs systems.">Role</label>
+                <select id="new-agent-role">
+                    <option value="programmer">programmer</option>
+                    <option value="coordinator">coordinator</option>
+                    <option value="reviewer">reviewer</option>
+                    <option value="researcher">researcher</option>
+                    <option value="architect">architect</option>
+                </select>
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-supervisor" data-i18n="modal.agentsupervisor" title="Parent agent in the hierarchy tree. The supervisor can coordinate this agent's work. Leave empty for top-level agents.">Supervisor (optional)</label>
+                <select id="new-agent-supervisor">
+                    <option value="">— None —</option>
+                </select>
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-team" data-i18n="modal.agentteam" title="Team name for grouping agents. Agents in the same team share visibility in the hierarchy tree. Optional — useful for multi-team projects.">Team (optional)</label>
+                <input type="text" id="new-agent-team">
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-thread-mode" title="Controls the maximum number of active memory threads for this agent. Light (15): minimal memory, fast. Normal (50): balanced. Heavy (100): deep memory. Max (200): maximum capacity. Lowering the mode suspends excess threads by importance (least important first).">Thread Mode</label>
+                <select id="new-agent-thread-mode">
+                    <option value="light">Light (15 threads)</option>
+                    <option value="normal" selected>Normal (50 threads)</option>
+                    <option value="heavy">Heavy (100 threads)</option>
+                    <option value="max">Max (200 threads)</option>
+                </select>
+            </div>
+            <div class="modal-field modal-field-inline">
+                <input type="checkbox" id="new-agent-supervisor-flag">
+                <label for="new-agent-supervisor-flag" data-i18n="modal.issupervisor" title="Mark this agent as a supervisor node in the hierarchy. Supervisors appear as parent nodes in the team tree and can coordinate subordinate agents.">Is Supervisor</label>
+            </div>
+            <div id="add-agent-error" style="color: var(--danger); font-size: 12px; min-height: 18px;"></div>
+            <div class="modal-actions">
+                <button id="btn-cancel-agent" class="btn-sm" data-i18n="btn.cancel">Cancel</button>
+                <button id="btn-confirm-agent" class="btn-sm btn-success" data-i18n="btn.add">Add</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Thread Detail Modal ═══ -->
+    <div id="modal-thread-detail" class="modal-overlay">
+        <div class="modal" style="max-width:750px; max-height:80vh; overflow-y:auto">
+            <h3 id="thread-detail-title">Thread Detail</h3>
+            <div id="thread-detail-meta" style="font-size:13px; color:var(--text-dim); margin-bottom:12px"></div>
+            <h4 style="margin:8px 0 4px">Messages</h4>
+            <div id="thread-detail-messages" style="max-height:300px; overflow-y:auto; border:1px solid var(--border); border-radius:4px; padding:8px; font-size:12px; background:var(--bg-alt)"></div>
+            <h4 style="margin:8px 0 4px">Bridges</h4>
+            <div id="thread-detail-bridges" style="font-size:12px"></div>
+            <div class="modal-actions" style="margin-top:12px">
+                <button id="btn-delete-thread" class="btn-sm btn-danger">Delete Thread</button>
+                <button id="btn-close-thread-detail" class="btn-sm">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

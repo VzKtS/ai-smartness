@@ -1,0 +1,83 @@
+{
+  "name": "ai-smartness-vscode",
+  "displayName": "AI Smartness",
+  "description": "Agent wake-up, status monitoring, and stdin injection for AI Smartness cognitive runtime",
+  "version": "6.0.0",
+  "publisher": "vzcrow",
+  "license": "BUSL-1.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VzKtS/ai-smartness"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "aiSmartness.showStatus",
+        "title": "AI Smartness: Show Status"
+      },
+      {
+        "command": "aiSmartness.checkInbox",
+        "title": "AI Smartness: Check Inbox"
+      },
+      {
+        "command": "aiSmartness.toggleAutoWake",
+        "title": "AI Smartness: Toggle Auto-Wake"
+      },
+      {
+        "command": "aiSmartness.openAgentWindow",
+        "title": "AI Smartness: Open Agent Window"
+      },
+      {
+        "command": "aiSmartness.selectAgent",
+        "title": "AI Smartness: Select Agent"
+      }
+    ],
+    "configuration": {
+      "title": "AI Smartness",
+      "properties": {
+        "aiSmartness.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable auto-wake for AI agents"
+        },
+        "aiSmartness.watchInterval": {
+          "type": "number",
+          "default": 3000,
+          "description": "Poll interval in milliseconds"
+        },
+        "aiSmartness.autoPrompt": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically inject stdin on wake signal detection"
+        },
+        "aiSmartness.communicationMode": {
+          "type": "string",
+          "default": "cognitive",
+          "enum": ["cognitive", "inbox"],
+          "enumDescriptions": [
+            "Cognitive: messages injected via Layer 2 hook. Wake signal sends 'check inbox' prompt. Telepathic — less aggressive.",
+            "Inbox: full message content injected via stdin. Agent reads it directly. More explicit."
+          ],
+          "description": "Communication mode for inter-agent messaging"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}
