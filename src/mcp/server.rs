@@ -1,4 +1,5 @@
 use ai_smartness::AiResult;
+use ai_smartness::registry::heartbeat::Heartbeat;
 use ai_smartness::storage::beat::BeatState;
 use ai_smartness::storage::cognitive_inbox::CognitiveInbox;
 use ai_smartness::storage::database::{self, ConnectionRole};
@@ -269,6 +270,10 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
 
     tracing::info!(pid, "Heartbeat thread started");
 
+    // Open registry connection for Heartbeat::update() (keeps agent status=active)
+    let registry_db = path_utils::registry_db_path();
+    let registry_conn = database::open_connection(&registry_db, ConnectionRole::Daemon).ok();
+
     while running.load(Ordering::Relaxed) {
         // Read current agent_id (may change via swap_agent)
         let agent_id = match shared_agent.read() {
@@ -300,6 +305,13 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
         beat.cli_pid = get_cli_pid();
         beat.last_beat_at = chrono::Utc::now().to_rfc3339();
         beat.save(&data_dir);
+
+        // 1a. Update registry DB last_seen + status=active (prevents mark_stale)
+        if let Some(ref conn) = registry_conn {
+            if let Err(e) = Heartbeat::update(conn, &agent_id, project_hash) {
+                tracing::warn!(agent = %agent_id, "Heartbeat registry update failed: {}", e);
+            }
+        }
 
         // 1b. Maintain session_agents/{mcp_pid} for extension agent detection
         let sa_dir = path_utils::session_agents_dir(project_hash);

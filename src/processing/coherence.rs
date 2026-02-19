@@ -6,6 +6,7 @@
 //!   - Continue (same topic as pending context) -> extend parent
 //!   - Forget (noise) -> score < orphan_threshold, skip
 
+use crate::config::CoherenceConfig;
 use crate::AiResult;
 use serde::{Deserialize, Serialize};
 
@@ -34,43 +35,56 @@ pub fn check_coherence(
     context: &str,
     content: &str,
     current_labels: &[String],
+    config: &CoherenceConfig,
 ) -> AiResult<CoherenceResult> {
-    // Try LLM coherence check
-    match check_via_llm(context, content, current_labels) {
+    if !config.llm.enabled {
+        // LLM disabled — use embedding fallback directly
+        return check_via_embedding(context, content, current_labels, config);
+    }
+
+    match check_via_llm(context, content, current_labels, config) {
         Ok(result) => {
             tracing::debug!(score = result.score, reason = %result.reason, "Coherence check (LLM)");
             Ok(result)
         }
-        Err(_) => {
-            // Fallback: use embedding similarity
-            let mgr = super::embeddings::EmbeddingManager::global();
-            let ctx_emb = mgr.embed(context);
-            let cnt_emb = mgr.embed(content);
-            let score = mgr.similarity(&ctx_emb, &cnt_emb);
-
-            tracing::debug!(score = score, "Coherence check (embedding fallback)");
-
-            Ok(CoherenceResult {
-                score,
-                reason: "embedding similarity (LLM fallback)".to_string(),
-                updated_labels: current_labels.to_vec(),
-            })
-        }
+        Err(_) => check_via_embedding(context, content, current_labels, config),
     }
+}
+
+fn check_via_embedding(
+    context: &str,
+    content: &str,
+    current_labels: &[String],
+    _config: &CoherenceConfig,
+) -> AiResult<CoherenceResult> {
+    let mgr = super::embeddings::EmbeddingManager::global();
+    let ctx_emb = mgr.embed(context);
+    let cnt_emb = mgr.embed(content);
+    let score = mgr.similarity(&ctx_emb, &cnt_emb);
+
+    tracing::debug!(score = score, "Coherence check (embedding fallback)");
+
+    Ok(CoherenceResult {
+        score,
+        reason: "embedding similarity (LLM fallback)".to_string(),
+        updated_labels: current_labels.to_vec(),
+    })
 }
 
 fn check_via_llm(
     context: &str,
     content: &str,
     current_labels: &[String],
+    config: &CoherenceConfig,
 ) -> AiResult<CoherenceResult> {
-    let ctx_truncated = if context.len() > 2000 {
-        &context[..2000]
+    let max_ctx = config.max_context_chars;
+    let ctx_truncated = if context.len() > max_ctx {
+        &context[..max_ctx]
     } else {
         context
     };
-    let cnt_truncated = if content.len() > 2000 {
-        &content[..2000]
+    let cnt_truncated = if content.len() > max_ctx {
+        &content[..max_ctx]
     } else {
         content
     };
@@ -89,7 +103,8 @@ New content:
         current_labels, ctx_truncated, cnt_truncated
     );
 
-    let response = super::llm_subprocess::call_claude(&prompt)?;
+    let model = config.llm.model.as_cli_flag();
+    let response = super::llm_subprocess::call_claude_with_model(&prompt, model)?;
 
     // Parse JSON from response
     let json_str = if let Some(start) = response.find('{') {

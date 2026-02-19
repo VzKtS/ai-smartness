@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ai_smartness::config::GuardianConfig;
 use ai_smartness::intelligence::archiver::Archiver;
 use ai_smartness::intelligence::decayer::Decayer;
 use ai_smartness::intelligence::gossip::Gossip;
@@ -123,7 +124,16 @@ pub fn run_prune_loop(
                     "Running prune cycle for agent"
                 );
 
-                run_prune_cycle(&conn_guard);
+                // Load GuardianConfig for this prune cycle
+                let guardian = {
+                    let cfg_path = path_utils::data_dir().join("config.json");
+                    std::fs::read_to_string(&cfg_path)
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<GuardianConfig>(&s).ok())
+                        .unwrap_or_default()
+                };
+
+                run_prune_cycle(&conn_guard, &guardian);
 
                 // Drop conn_guard before backup (which opens its own connection)
                 drop(conn_guard);
@@ -184,11 +194,11 @@ pub fn run_prune_loop(
 }
 
 /// Single prune cycle for one agent — runs all 8 tasks sequentially.
-fn run_prune_cycle(conn: &Connection) {
-    // 1. Gossip: discover new bridges via TF-IDF similarity
+fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig) {
+    // 1. Gossip: discover new bridges via TF-IDF similarity (config-driven limits)
     run_task("gossip", || {
         let gossip = Gossip::new();
-        match gossip.run_cycle(conn) {
+        match gossip.run_cycle(conn, &guardian.gossip) {
             Ok(n) => {
                 if n > 0 {
                     tracing::info!("Gossip: created {} bridges", n);

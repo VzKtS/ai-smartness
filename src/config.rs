@@ -260,7 +260,9 @@ impl GuardianAlertManager {
 pub struct ExtractionConfig {
     pub llm: TaskLlmConfig,
     /// Max content chars sent to LLM (truncation).
-    pub max_content_chars: usize,           // default: 3000
+    pub max_content_chars: usize,           // default: 15000
+    /// Minimum content length to attempt capture (below = noise).
+    pub min_capture_length: usize,          // default: 80
     /// Noise words filtered from extracted topics.
     pub topic_noise_words: Vec<String>,
     /// Custom topic aliases — maps extracted terms to canonical topics.
@@ -283,7 +285,8 @@ impl Default for ExtractionConfig {
                 enabled: true,
                 failure_mode: LlmFailureMode::RetryWithHaiku,
             },
-            max_content_chars: 3000,
+            max_content_chars: 15000,
+            min_capture_length: 80,
             topic_noise_words: vec![
                 "message", "contenu", "analyse", "fichier", "code",
                 "json", "response", "result", "data", "type", "value",
@@ -537,6 +540,12 @@ pub struct GossipConfig {
     pub batch_size: usize,                      // default: 50
     pub yield_ms: u64,                          // default: 10
     pub strong_bridge_threshold: f64,           // default: 0.80
+    /// Min bridges per thread (clamp floor for dynamic_limits).
+    pub min_bridges_per_thread: usize,          // default: 3
+    /// Max bridges per thread (clamp ceiling for dynamic_limits).
+    pub max_bridges_per_thread: usize,          // default: 10
+    /// Target ratio bridges/threads for dynamic limit calculation.
+    pub target_bridge_ratio: f64,               // default: 3.0
 }
 
 impl Default for GossipConfig {
@@ -553,6 +562,9 @@ impl Default for GossipConfig {
             batch_size: 50,
             yield_ms: 10,
             strong_bridge_threshold: 0.80,
+            min_bridges_per_thread: 3,
+            max_bridges_per_thread: 10,
+            target_bridge_ratio: 3.0,
         }
     }
 }
@@ -1195,6 +1207,15 @@ impl GuardianConfig {
                 if let Some(v) = g.get("batch_size").and_then(|v| v.as_u64()) {
                     gc.gossip.batch_size = v as usize;
                 }
+                if let Some(v) = g.get("min_bridges_per_thread").and_then(|v| v.as_u64()) {
+                    gc.gossip.min_bridges_per_thread = v as usize;
+                }
+                if let Some(v) = g.get("max_bridges_per_thread").and_then(|v| v.as_u64()) {
+                    gc.gossip.max_bridges_per_thread = v as usize;
+                }
+                if let Some(v) = g.get("target_bridge_ratio").and_then(|v| v.as_f64()) {
+                    gc.gossip.target_bridge_ratio = v;
+                }
             }
 
             // Recall config
@@ -1293,6 +1314,9 @@ impl GuardianConfig {
                 }
                 if let Some(v) = ext.get("max_content_chars").and_then(|v| v.as_u64()) {
                     gc.extraction.max_content_chars = v as usize;
+                }
+                if let Some(v) = ext.get("min_capture_length").and_then(|v| v.as_u64()) {
+                    gc.extraction.min_capture_length = v as usize;
                 }
                 if let Some(v) = ext.get("skip_tools").and_then(|v| v.as_array()) {
                     gc.extraction.skip_tools = v.iter()

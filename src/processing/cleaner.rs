@@ -26,12 +26,18 @@ pub fn clean_text(raw: &str) -> String {
 }
 
 /// Determine if content is worth capturing (not too short, not binary junk).
+/// Uses the hardcoded MIN_CAPTURE_LENGTH constant.
 pub fn should_capture(content: &str) -> bool {
+    should_capture_with_config(content, MIN_CAPTURE_LENGTH)
+}
+
+/// Config-driven capture filter. Uses `min_len` from GuardianConfig.extraction.min_capture_length.
+pub fn should_capture_with_config(content: &str, min_len: usize) -> bool {
     let trimmed = content.trim();
 
     // Too short
-    if trimmed.len() < MIN_CAPTURE_LENGTH {
-        tracing::debug!(len = trimmed.len(), min = MIN_CAPTURE_LENGTH, "Capture rejected: too short");
+    if trimmed.len() < min_len {
+        tracing::debug!(len = trimmed.len(), min = min_len, "Capture rejected: too short");
         return false;
     }
 

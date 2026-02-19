@@ -236,6 +236,18 @@ pub fn add_project(path: String, name: Option<String>) -> Result<serde_json::Val
         Err(e) => tracing::warn!(error = %e, "GUI: failed to install MCP config"),
     }
 
+    // Write default config.json if it doesn't exist
+    let config_path = path_utils::data_dir().join("config.json");
+    if !config_path.exists() {
+        let default_config = ai_smartness::config::GuardianConfig::default();
+        if let Ok(json) = serde_json::to_string_pretty(&default_config) {
+            match std::fs::write(&config_path, json) {
+                Ok(()) => tracing::info!(path = %config_path.display(), "GUI: default config.json created"),
+                Err(e) => tracing::warn!(error = %e, "GUI: failed to write config.json"),
+            }
+        }
+    }
+
     tracing::info!(hash = %&hash[..8.min(hash.len())], "GUI: add_project completed");
     Ok(serde_json::json!({
         "hash": hash,

@@ -13,6 +13,7 @@ use std::sync::mpsc::{sync_channel, SyncSender, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use ai_smartness::config::GuardianConfig;
 use ai_smartness::registry::registry::AgentRegistry;
 use ai_smartness::storage::database::{open_connection, ConnectionRole};
 use ai_smartness::storage::path_utils;
@@ -232,6 +233,15 @@ fn worker_loop(
         ensure_quota_cached(&pool, &job.key);
         let thread_quota = pool.get_thread_quota(&job.key);
 
+        // Load GuardianConfig from config.json (reload per-job, ~1ms)
+        let guardian = {
+            let cfg_path = path_utils::data_dir().join("config.json");
+            std::fs::read_to_string(&cfg_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<GuardianConfig>(&s).ok())
+                .unwrap_or_default()
+        };
+
         // Get connection + pending context from pool
         let conn = match pool.get_or_open(&job.key) {
             Ok(c) => c,
@@ -286,6 +296,7 @@ fn worker_loop(
                 &job.content,
                 job.session_id.as_deref(),
                 thread_quota,
+                &guardian,
             )
         } else {
             processor::process_capture(
@@ -295,6 +306,7 @@ fn worker_loop(
                 &job.content,
                 job.file_path.as_deref(),
                 thread_quota,
+                &guardian,
             )
         };
 

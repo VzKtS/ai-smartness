@@ -48,6 +48,15 @@ impl StorageManager {
         // Initialize shared.db
         let _shared = self.open_shared_db(project_hash)?;
 
+        // Write default config.json if it doesn't exist
+        let config_path = path_utils::data_dir().join("config.json");
+        if !config_path.exists() {
+            let default_config = crate::config::GuardianConfig::default();
+            if let Ok(json) = serde_json::to_string_pretty(&default_config) {
+                let _ = std::fs::write(&config_path, json);
+            }
+        }
+
         Ok(())
     }
 }

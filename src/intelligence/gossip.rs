@@ -7,6 +7,7 @@
 
 use crate::{id_gen, time_utils};
 use crate::bridge::{BridgeStatus, BridgeType, ThinkBridge};
+use crate::config::GossipConfig;
 use crate::constants::*;
 use crate::thread::Thread;
 use crate::AiResult;
@@ -15,10 +16,6 @@ use crate::storage::bridges::BridgeStorage;
 use crate::storage::threads::ThreadStorage;
 use rusqlite::Connection;
 
-/// Dynamic limits -- target ratio bridges/threads
-const TARGET_BRIDGE_RATIO: f64 = 2.0;
-const MIN_BRIDGES_PER_THREAD: usize = 2;
-const MAX_BRIDGES_PER_THREAD: usize = 10;
 #[allow(dead_code)]
 const MAX_PROPAGATION_DEPTH: usize = 1;
 const PROPAGATION_THRESHOLD_FACTOR: f64 = 0.9;
@@ -36,8 +33,9 @@ impl Gossip {
     }
 
     /// Main gossip cycle -- called by daemon prune loop.
+    /// Config-driven bridge limits from GossipConfig.
     /// Returns number of bridges created.
-    pub fn run_cycle(&self, conn: &Connection) -> AiResult<u32> {
+    pub fn run_cycle(&self, conn: &Connection, config: &GossipConfig) -> AiResult<u32> {
         let active = ThreadStorage::list_active(conn)?;
         if active.len() < 2 {
             tracing::debug!(active_threads = active.len(), "Gossip skipped: not enough threads");
@@ -46,7 +44,7 @@ impl Gossip {
 
         tracing::info!(active_threads = active.len(), threshold = self.similarity_threshold, "Gossip cycle starting");
 
-        let (max_per, _max_total) = Self::dynamic_limits(active.len());
+        let (max_per, _max_total) = Self::dynamic_limits(active.len(), config);
         let embeddings = EmbeddingManager::global();
         let mut created = 0u32;
 
@@ -259,11 +257,11 @@ impl Gossip {
         Ok(created)
     }
 
-    /// Dynamic bridge limits based on current thread count.
-    fn dynamic_limits(n_threads: usize) -> (usize, usize) {
+    /// Dynamic bridge limits based on current thread count and config.
+    fn dynamic_limits(n_threads: usize, config: &GossipConfig) -> (usize, usize) {
         let n = n_threads.max(1);
-        let max_total = (n as f64 * TARGET_BRIDGE_RATIO) as usize;
-        let max_per = (max_total / n).clamp(MIN_BRIDGES_PER_THREAD, MAX_BRIDGES_PER_THREAD);
+        let max_total = (n as f64 * config.target_bridge_ratio) as usize;
+        let max_per = (max_total / n).clamp(config.min_bridges_per_thread, config.max_bridges_per_thread);
         (max_per, max_total)
     }
 

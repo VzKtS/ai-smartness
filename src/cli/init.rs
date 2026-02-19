@@ -101,6 +101,17 @@ pub fn run(path: Option<&str>) -> Result<()> {
     std::fs::create_dir_all(&wake_dir)
         .context("Failed to create wake signals directory")?;
 
+    // 7. Write default config.json if it doesn't exist
+    let config_path = path_utils::data_dir().join("config.json");
+    if !config_path.exists() {
+        let default_config = ai_smartness::config::GuardianConfig::default();
+        if let Ok(json) = serde_json::to_string_pretty(&default_config) {
+            std::fs::write(&config_path, &json)
+                .context("Failed to write default config.json")?;
+            println!("  Created default config.json");
+        }
+    }
+
     println!("\nAI Smartness initialized successfully!");
     println!("Project: {} ({})", project_name, &hash[..8]);
     println!("\nNext steps:");
