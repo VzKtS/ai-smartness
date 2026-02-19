@@ -360,6 +360,79 @@ impl ThreadStorage {
         Ok(all)
     }
 
+    pub fn search_by_labels(conn: &Connection, labels: &[String]) -> AiResult<Vec<Thread>> {
+        let mut all = Vec::new();
+        for label in labels {
+            let pattern = format!("%\"{}\"%" , label);
+            let mut stmt = conn
+                .prepare("SELECT * FROM threads WHERE labels LIKE ?1 AND status = 'active'")
+                .map_err(|e| AiError::Storage(e.to_string()))?;
+            let threads: Vec<Thread> = stmt
+                .query_map(params![pattern], thread_from_row)
+                .map_err(|e| AiError::Storage(e.to_string()))?
+                .filter_map(|r| r.ok())
+                .collect();
+            for t in threads {
+                if !all.iter().any(|existing: &Thread| existing.id == t.id) {
+                    all.push(t);
+                }
+            }
+        }
+        Ok(all)
+    }
+
+    /// List all distinct labels across active threads.
+    pub fn list_all_labels(conn: &Connection) -> AiResult<Vec<String>> {
+        let mut stmt = conn
+            .prepare("SELECT labels FROM threads WHERE status = 'active' AND labels != '[]'")
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+
+        let mut label_set = std::collections::HashSet::new();
+        let rows: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for json_str in &rows {
+            if let Ok(labels) = serde_json::from_str::<Vec<String>>(json_str) {
+                for label in labels {
+                    label_set.insert(label);
+                }
+            }
+        }
+
+        let mut labels: Vec<String> = label_set.into_iter().collect();
+        labels.sort();
+        Ok(labels)
+    }
+
+    /// List all distinct topics across active threads.
+    pub fn list_all_topics(conn: &Connection) -> AiResult<Vec<String>> {
+        let mut stmt = conn
+            .prepare("SELECT topics FROM threads WHERE status = 'active' AND topics != '[]'")
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+
+        let mut topic_set = std::collections::HashSet::new();
+        let rows: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for json_str in &rows {
+            if let Ok(topics) = serde_json::from_str::<Vec<String>>(json_str) {
+                for topic in topics {
+                    topic_set.insert(topic);
+                }
+            }
+        }
+
+        let mut topics: Vec<String> = topic_set.into_iter().collect();
+        topics.sort();
+        Ok(topics)
+    }
+
     // ── Messages ──
 
     pub fn message_count(conn: &Connection, thread_id: &str) -> AiResult<usize> {

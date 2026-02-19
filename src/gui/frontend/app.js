@@ -320,6 +320,79 @@ document.getElementById('thread-search')?.addEventListener('keydown', (e) => {
 });
 document.getElementById('thread-filter')?.addEventListener('change', loadThreads);
 
+// ─── Search sub-tabs (Text / Labels / Topics) ───────────────
+document.querySelectorAll('.search-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.search-tab').forEach(t => {
+            t.classList.remove('active');
+            t.style.borderBottomColor = 'transparent';
+            t.style.color = 'var(--text-dim,#888)';
+        });
+        document.querySelectorAll('.search-panel').forEach(p => p.style.display = 'none');
+        tab.classList.add('active');
+        tab.style.borderBottomColor = 'var(--accent,#6cf)';
+        tab.style.color = 'var(--text,#eee)';
+        const panel = document.getElementById('search-' + tab.dataset.searchTab);
+        if (panel) panel.style.display = '';
+        // Auto-load labels/topics when switching tabs
+        if (tab.dataset.searchTab === 'labels') loadLabelOptions();
+        if (tab.dataset.searchTab === 'topics') loadTopicOptions();
+    });
+});
+
+async function loadLabelOptions() {
+    if (!projectHash) return;
+    try {
+        const labels = await invoke('list_all_labels', { projectHash, agentId });
+        const sel = document.getElementById('label-select');
+        sel.innerHTML = '';
+        for (const l of labels) {
+            const opt = document.createElement('option');
+            opt.value = l;
+            opt.textContent = l;
+            sel.appendChild(opt);
+        }
+    } catch (e) { console.error('Labels load error:', e); }
+}
+
+async function loadTopicOptions() {
+    if (!projectHash) return;
+    try {
+        const topics = await invoke('list_all_topics', { projectHash, agentId });
+        const sel = document.getElementById('topic-select');
+        sel.innerHTML = '';
+        for (const t of topics) {
+            const opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t;
+            sel.appendChild(opt);
+        }
+    } catch (e) { console.error('Topics load error:', e); }
+}
+
+document.getElementById('btn-search-labels')?.addEventListener('click', async () => {
+    const sel = document.getElementById('label-select');
+    const labels = Array.from(sel.selectedOptions).map(o => o.value);
+    if (labels.length === 0) return;
+    try {
+        const threads = await invoke('search_threads_by_label', { projectHash, agentId, labels });
+        renderThreads(threads);
+    } catch (e) { console.error('Label search error:', e); }
+});
+
+document.getElementById('btn-search-topics')?.addEventListener('click', async () => {
+    const sel = document.getElementById('topic-select');
+    const topics = Array.from(sel.selectedOptions).map(o => o.value);
+    if (topics.length === 0) return;
+    try {
+        const threads = await invoke('search_threads_by_topic', { projectHash, agentId, topics });
+        renderThreads(threads);
+    } catch (e) { console.error('Topic search error:', e); }
+});
+
+document.getElementById('btn-load-labels')?.addEventListener('click', loadLabelOptions);
+document.getElementById('btn-load-topics')?.addEventListener('click', loadTopicOptions);
+
 // ─── Settings buttons ────────────────────────────────────────
 document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
 document.getElementById('btn-reset-defaults').addEventListener('click', async () => {

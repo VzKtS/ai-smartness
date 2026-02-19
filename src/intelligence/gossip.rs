@@ -181,6 +181,62 @@ impl Gossip {
             }
         }
 
+        // Phase 2B: Label overlap complement
+        for source in &active {
+            if source.labels.is_empty() {
+                continue;
+            }
+
+            let existing = BridgeStorage::list_for_thread(conn, &source.id)?;
+            if existing.len() >= max_per {
+                continue;
+            }
+
+            for target in &active {
+                if target.id == source.id || target.labels.is_empty() {
+                    continue;
+                }
+
+                if existing
+                    .iter()
+                    .any(|b| b.source_id == target.id || b.target_id == target.id)
+                {
+                    continue;
+                }
+
+                let shared = Self::shared_labels(source, target);
+                let shared_count = shared.len();
+                if shared_count >= GOSSIP_LABEL_OVERLAP_MIN {
+                    let bridge = ThinkBridge {
+                        id: id_gen::bridge_id(),
+                        source_id: source.id.clone(),
+                        target_id: target.id.clone(),
+                        relation_type: BridgeType::Sibling,
+                        reason: format!("gossip:label_overlap({})", shared_count),
+                        shared_concepts: shared,
+                        weight: 0.55,
+                        confidence: 0.65,
+                        status: BridgeStatus::Active,
+                        propagated_from: None,
+                        propagation_depth: 0,
+                        created_by: "gossip".to_string(),
+                        use_count: 0,
+                        created_at: time_utils::now(),
+                        last_reinforced: None,
+                    };
+                    if BridgeStorage::insert(conn, &bridge).is_ok() {
+                        tracing::info!(
+                            source = %&source.id[..8.min(source.id.len())],
+                            target = %&target.id[..8.min(target.id.len())],
+                            shared_count,
+                            "Gossip P2B: bridge created (label overlap)"
+                        );
+                        created += 1;
+                    }
+                }
+            }
+        }
+
         // Phase 3: Propagation A-B + B-C -> A-C
         for source in &active {
             let bridges = BridgeStorage::list_for_thread(conn, &source.id)?;
@@ -305,6 +361,19 @@ impl Gossip {
                 b.topics
                     .iter()
                     .any(|bt| bt.to_lowercase() == t.to_lowercase())
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Find shared labels between two threads.
+    fn shared_labels(a: &Thread, b: &Thread) -> Vec<String> {
+        a.labels
+            .iter()
+            .filter(|l| {
+                b.labels
+                    .iter()
+                    .any(|bl| bl.to_lowercase() == l.to_lowercase())
             })
             .cloned()
             .collect()

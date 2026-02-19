@@ -28,6 +28,25 @@ const CONTINUE_THRESHOLD: f64 = 0.25;
 const REACTIVATE_THRESHOLD: f64 = 0.50;
 const AUTO_MERGE_THRESHOLD: f64 = 0.85;
 
+/// Labels that are too generic to carry semantic value — filtered out before storage.
+const LABEL_BLOCKLIST: &[&str] = &[
+    "action", "decision", "metadata", "empty", "search result",
+    "no matches", "empty result", "file-listing", "directory-listing",
+    "grep-output", "search-config", "build-output", "code-snippet",
+];
+
+fn filter_blocked_labels(labels: &[String]) -> Vec<String> {
+    labels
+        .iter()
+        .filter(|l| {
+            !LABEL_BLOCKLIST
+                .iter()
+                .any(|blocked| l.to_lowercase() == *blocked)
+        })
+        .cloned()
+        .collect()
+}
+
 pub struct ThreadManager;
 
 impl ThreadManager {
@@ -154,7 +173,7 @@ impl ThreadManager {
             summary: Some(extraction.summary.clone()),
             topics: extraction.subjects.clone(),
             tags: vec![],
-            labels: extraction.labels.clone(),
+            labels: filter_blocked_labels(&extraction.labels),
             embedding: Some(embedding),
             relevance_score,
             ratings: vec![],
@@ -249,8 +268,8 @@ impl ThreadManager {
             }
         }
 
-        // Merge labels (preserve existing)
-        for label in &extraction.labels {
+        // Merge labels (preserve existing, filter blocked)
+        for label in &filter_blocked_labels(&extraction.labels) {
             if !thread.labels.iter().any(|l| l == label) {
                 thread.labels.push(label.clone());
             }
@@ -439,7 +458,7 @@ impl ThreadManager {
             score += 0.1;
         }
 
-        let high_labels = ["action", "decision", "architecture"];
+        let high_labels = ["architecture", "security", "bug-fix", "performance"];
         let low_labels = ["joke", "social"];
 
         if thread

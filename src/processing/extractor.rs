@@ -195,9 +195,12 @@ fn build_extraction_prompt(
 - 0.6-0.8: substantial content worth remembering (implementations, decisions, debugging).
 - 0.9-1.0: critical content (architecture decisions, bug root causes, key insights).
 
-### Labels (from vocabulary)
-Choose from: [{label_vocab}]
-You may add 1 custom label if none fit.
+### Labels (content-descriptive)
+Labels MUST describe WHAT the content is about, not what type of action it represents.
+Good: "rust-configuration", "thread-lifecycle", "sqlite-storage", "hook-dispatcher"
+Bad: "action", "decision", "metadata", "code-snippet"
+Vocabulary hints: [{label_vocab}]
+You may use custom labels. Prefer specific over generic.
 
 ### Importance (0.0-1.0)
 - {critical:.1} = critical (architecture decisions, blockers, breaking changes)

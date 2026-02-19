@@ -108,16 +108,37 @@
 
         <!-- ═══ Threads ═══ -->
         <section id="threads" class="panel">
-            <div class="toolbar">
-                <select id="thread-filter">
-                    <option value="active" data-i18n="dash.active">Active</option>
-                    <option value="suspended" data-i18n="dash.suspended">Suspended</option>
-                    <option value="archived" data-i18n="dash.archived">Archived</option>
-                </select>
-                <input type="text" id="thread-search" data-i18n-placeholder="ph.search" placeholder="Search threads...">
-                <button id="btn-search" data-i18n="btn.search">Search</button>
-                <button id="btn-reindex" class="btn-sm" title="Recalculate all thread embeddings for improved search quality. Check 'Reset weights' to also reset thread weights to 1.0.">Reindex</button>
-                <label style="font-size:12px; margin-left:4px" title="Reset all thread weights to 1.0 during reindex"><input type="checkbox" id="reindex-reset-weights"> Reset weights</label>
+            <div class="search-tabs" style="display:flex;gap:0;margin-bottom:8px;border-bottom:1px solid var(--border,#333)">
+                <button class="search-tab active" data-search-tab="text" style="padding:6px 14px;background:none;border:none;border-bottom:2px solid var(--accent,#6cf);color:var(--text,#eee);cursor:pointer;font-size:13px">Text</button>
+                <button class="search-tab" data-search-tab="labels" style="padding:6px 14px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim,#888);cursor:pointer;font-size:13px">Labels</button>
+                <button class="search-tab" data-search-tab="topics" style="padding:6px 14px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim,#888);cursor:pointer;font-size:13px">Topics</button>
+            </div>
+            <div id="search-text" class="search-panel">
+                <div class="toolbar">
+                    <select id="thread-filter">
+                        <option value="active" data-i18n="dash.active">Active</option>
+                        <option value="suspended" data-i18n="dash.suspended">Suspended</option>
+                        <option value="archived" data-i18n="dash.archived">Archived</option>
+                    </select>
+                    <input type="text" id="thread-search" data-i18n-placeholder="ph.search" placeholder="Search threads...">
+                    <button id="btn-search" data-i18n="btn.search">Search</button>
+                    <button id="btn-reindex" class="btn-sm" title="Recalculate all thread embeddings for improved search quality. Check 'Reset weights' to also reset thread weights to 1.0.">Reindex</button>
+                    <label style="font-size:12px; margin-left:4px" title="Reset all thread weights to 1.0 during reindex"><input type="checkbox" id="reindex-reset-weights"> Reset weights</label>
+                </div>
+            </div>
+            <div id="search-labels" class="search-panel" style="display:none">
+                <div class="toolbar">
+                    <select id="label-select" multiple style="min-width:250px;height:80px"></select>
+                    <button id="btn-search-labels">Filter by Labels</button>
+                    <button id="btn-load-labels" class="btn-sm">Refresh</button>
+                </div>
+            </div>
+            <div id="search-topics" class="search-panel" style="display:none">
+                <div class="toolbar">
+                    <select id="topic-select" multiple style="min-width:250px;height:80px"></select>
+                    <button id="btn-search-topics">Filter by Topics</button>
+                    <button id="btn-load-topics" class="btn-sm">Refresh</button>
+                </div>
             </div>
             <table id="thread-table">
                 <thead>

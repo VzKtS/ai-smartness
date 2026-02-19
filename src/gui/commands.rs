@@ -403,6 +403,96 @@ pub fn search_threads(
 }
 
 #[tauri::command]
+pub fn search_threads_by_label(
+    project_hash: String,
+    agent_id: String,
+    labels: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    tracing::info!(project = %&project_hash[..8.min(project_hash.len())], agent = %agent_id, labels = ?labels, "GUI: search_threads_by_label");
+    let agent_db = path_utils::agent_db_path(&project_hash, &agent_id);
+    let conn = open_connection(&agent_db, ConnectionRole::Cli)
+        .map_err(|e| e.to_string())?;
+
+    let threads = ThreadStorage::search_by_labels(&conn, &labels)
+        .map_err(|e| e.to_string())?;
+
+    let result: Vec<serde_json::Value> = threads.iter().map(|t| {
+        serde_json::json!({
+            "id": t.id,
+            "title": t.title,
+            "status": format!("{:?}", t.status),
+            "weight": t.weight,
+            "importance": t.importance,
+            "topics": t.topics,
+            "labels": t.labels,
+            "message_count": ThreadStorage::message_count(&conn, &t.id).unwrap_or(0),
+        })
+    }).collect();
+
+    Ok(serde_json::json!(result))
+}
+
+#[tauri::command]
+pub fn search_threads_by_topic(
+    project_hash: String,
+    agent_id: String,
+    topics: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    tracing::info!(project = %&project_hash[..8.min(project_hash.len())], agent = %agent_id, topics = ?topics, "GUI: search_threads_by_topic");
+    let agent_db = path_utils::agent_db_path(&project_hash, &agent_id);
+    let conn = open_connection(&agent_db, ConnectionRole::Cli)
+        .map_err(|e| e.to_string())?;
+
+    let threads = ThreadStorage::search_by_topics(&conn, &topics)
+        .map_err(|e| e.to_string())?;
+
+    let result: Vec<serde_json::Value> = threads.iter().map(|t| {
+        serde_json::json!({
+            "id": t.id,
+            "title": t.title,
+            "status": format!("{:?}", t.status),
+            "weight": t.weight,
+            "importance": t.importance,
+            "topics": t.topics,
+            "labels": t.labels,
+            "message_count": ThreadStorage::message_count(&conn, &t.id).unwrap_or(0),
+        })
+    }).collect();
+
+    Ok(serde_json::json!(result))
+}
+
+#[tauri::command]
+pub fn list_all_labels(
+    project_hash: String,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
+    let agent_db = path_utils::agent_db_path(&project_hash, &agent_id);
+    let conn = open_connection(&agent_db, ConnectionRole::Cli)
+        .map_err(|e| e.to_string())?;
+
+    let labels = ThreadStorage::list_all_labels(&conn)
+        .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!(labels))
+}
+
+#[tauri::command]
+pub fn list_all_topics(
+    project_hash: String,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
+    let agent_db = path_utils::agent_db_path(&project_hash, &agent_id);
+    let conn = open_connection(&agent_db, ConnectionRole::Cli)
+        .map_err(|e| e.to_string())?;
+
+    let topics = ThreadStorage::list_all_topics(&conn)
+        .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!(topics))
+}
+
+#[tauri::command]
 pub fn get_bridges(
     project_hash: String,
     agent_id: String,

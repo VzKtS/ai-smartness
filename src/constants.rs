@@ -27,6 +27,7 @@ pub const GOSSIP_SIMILARITY_THRESHOLD: f64 = 0.75; // ONNX default (aligned with
 pub const GOSSIP_TFIDF_THRESHOLD: f64 = 0.55;      // TF-IDF default (lower: different distribution)
 pub const GOSSIP_STRONG_BRIDGE: f64 = 0.80;         // high similarity → extends relation
 pub const GOSSIP_TOPIC_OVERLAP_MIN: usize = 2;      // min shared topics for topic overlap bridge
+pub const GOSSIP_LABEL_OVERLAP_MIN: usize = 2;      // min shared labels for label overlap bridge
 
 // === Retrieval ===
 pub const RETRIEVAL_ACTIVE_MIN: f64 = 0.05;

@@ -429,6 +429,7 @@ pub struct LabelSuggestionConfig {
     pub llm: TaskLlmConfig,
     pub auto_suggest_on_extraction: bool,    // default: true
     pub label_vocabulary: Vec<String>,
+    pub label_blocklist: Vec<String>,
     pub allow_custom_labels: bool,           // default: true
     pub batch_size: usize,                   // default: 10
 }
@@ -445,8 +446,15 @@ impl Default for LabelSuggestionConfig {
             },
             auto_suggest_on_extraction: true,
             label_vocabulary: vec![
-                "action", "idea", "question", "issue", "reference",
-                "social", "decision", "learning", "frustration", "intuition",
+                "bug-fix", "feature", "refactor", "architecture",
+                "configuration", "database", "api", "cli",
+                "hook-system", "agent-system", "documentation",
+                "performance", "security", "testing",
+            ].into_iter().map(String::from).collect(),
+            label_blocklist: vec![
+                "action", "decision", "metadata", "empty", "search result",
+                "no matches", "empty result", "file-listing", "directory-listing",
+                "grep-output", "search-config", "build-output", "code-snippet",
             ].into_iter().map(String::from).collect(),
             allow_custom_labels: true,
             batch_size: 10,
