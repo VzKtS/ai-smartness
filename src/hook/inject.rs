@@ -139,8 +139,12 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
         None => tracing::debug!("Layer 1.5: no session context"),
     }
 
-    // Layer 2: Cognitive inbox (always inject when pending)
-    match build_cognitive_inbox(&conn, agent_id) {
+    // Layer 2: Cognitive inbox
+    // Only consume (mark read) on wake prompts — peek on normal prompts
+    // so the message stays pending for the actual wake delivery.
+    let is_wake_prompt = message.contains("[automated inbox wake")
+        || message.contains("[automated cognitive wake");
+    match build_cognitive_inbox(&conn, agent_id, is_wake_prompt) {
         Some(ctx) => {
             let layer = format!("<system-reminder>\n{}\n</system-reminder>", ctx);
             if layer.len() < budget {
@@ -296,8 +300,13 @@ fn build_lightweight_context(conn: &Connection, agent_data_dir: &Path, session_i
 }
 
 /// Layer 2: Cognitive inbox — inter-agent messages.
-fn build_cognitive_inbox(conn: &Connection, agent_id: &str) -> Option<String> {
-    let messages = CognitiveInbox::read_pending(conn, agent_id).ok()?;
+/// `consume`: true on wake prompts (marks read), false on normal prompts (peek only).
+fn build_cognitive_inbox(conn: &Connection, agent_id: &str, consume: bool) -> Option<String> {
+    let messages = if consume {
+        CognitiveInbox::read_pending(conn, agent_id).ok()?
+    } else {
+        CognitiveInbox::peek_pending(conn, agent_id).ok()?
+    };
     if messages.is_empty() {
         return None;
     }

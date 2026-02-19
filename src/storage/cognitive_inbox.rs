@@ -57,7 +57,28 @@ impl CognitiveInbox {
         Ok(())
     }
 
-    /// Lit les messages pending (marque read_at immediatement)
+    /// Peek at pending messages without marking them read.
+    /// Used by inject hook on non-wake prompts to show content without consuming it.
+    pub fn peek_pending(conn: &Connection, agent_id: &str) -> AiResult<Vec<Message>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM cognitive_inbox
+                 WHERE to_agent = ?1 AND status = 'pending'
+                 ORDER BY created_at ASC",
+            )
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+
+        let messages: Vec<Message> = stmt
+            .query_map(params![agent_id], message_from_row)
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        tracing::debug!(agent = %agent_id, count = messages.len(), "Cognitive messages peeked (not consumed)");
+        Ok(messages)
+    }
+
+    /// Lit les messages pending et les marque read (consomme)
     pub fn read_pending(conn: &Connection, agent_id: &str) -> AiResult<Vec<Message>> {
         let now = time_utils::to_sqlite(&time_utils::now());
 
