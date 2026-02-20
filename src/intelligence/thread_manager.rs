@@ -158,7 +158,7 @@ impl ThreadManager {
             id: thread_id.clone(),
             title: extraction.title.clone(),
             status: ThreadStatus::Active,
-            weight: 1.0,
+            weight: importance,
             importance,
             importance_manually_set: false,
             created_at: now,

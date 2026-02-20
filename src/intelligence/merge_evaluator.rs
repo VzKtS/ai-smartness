@@ -335,30 +335,13 @@ or
             ThreadStorage::add_message(conn, &msg)?;
         }
 
-        // 2. Union metadata
+        // 2. Union metadata with consolidation (dedup + substring removal + caps)
         let mut merged = survivor.clone();
         merged.title = new_title.to_string();
         if !new_summary.is_empty() {
             merged.summary = Some(new_summary.to_string());
         }
-        for topic in &absorbed.topics {
-            if !merged.topics.contains(topic) {
-                merged.topics.push(topic.clone());
-            }
-        }
-        for label in &absorbed.labels {
-            if !merged.labels.contains(label) {
-                merged.labels.push(label.clone());
-            }
-        }
-        // Union concepts (deduplicated)
-        for concept in &absorbed.concepts {
-            let lower = concept.to_lowercase();
-            if !merged.concepts.iter().any(|c| c.to_lowercase() == lower) {
-                merged.concepts.push(concept.clone());
-            }
-        }
-        merged.weight = merged.weight.max(absorbed.weight);
+        super::merge_metadata::consolidate_after_merge(&mut merged, &absorbed);
 
         // 3. Recalculate embedding for survivor
         let embed_text = format!(

@@ -4,6 +4,7 @@ pub mod engram_retriever;
 pub mod gossip;
 pub mod memory_retriever;
 pub mod merge_evaluator;
+pub mod merge_metadata;
 pub mod reactivation_decider;
 pub mod synthesis;
 pub mod thread_manager;

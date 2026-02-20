@@ -30,7 +30,7 @@ impl TopicIndex {
         let mut idx = Self::default();
 
         let mut stmt = match conn.prepare(
-            "SELECT id, topics FROM threads WHERE status IN ('Active', 'Suspended')"
+            "SELECT id, topics FROM threads WHERE topics != '[]'"
         ) {
             Ok(s) => s,
             Err(_) => return Ok(idx), // Table likely doesn't exist yet

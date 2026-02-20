@@ -349,7 +349,7 @@ impl ThreadStorage {
         for topic in topics {
             let pattern = format!("%\"{}\"%" , topic);
             let mut stmt = conn
-                .prepare("SELECT * FROM threads WHERE topics LIKE ?1 AND status = 'active'")
+                .prepare("SELECT * FROM threads WHERE topics LIKE ?1")
                 .map_err(|e| AiError::Storage(e.to_string()))?;
             let threads: Vec<Thread> = stmt
                 .query_map(params![pattern], thread_from_row)
@@ -370,7 +370,7 @@ impl ThreadStorage {
         for label in labels {
             let pattern = format!("%\"{}\"%" , label);
             let mut stmt = conn
-                .prepare("SELECT * FROM threads WHERE labels LIKE ?1 AND status = 'active'")
+                .prepare("SELECT * FROM threads WHERE labels LIKE ?1")
                 .map_err(|e| AiError::Storage(e.to_string()))?;
             let threads: Vec<Thread> = stmt
                 .query_map(params![pattern], thread_from_row)

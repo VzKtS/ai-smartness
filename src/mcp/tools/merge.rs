@@ -1,4 +1,5 @@
 use ai_smartness::AiResult;
+use ai_smartness::intelligence::merge_metadata;
 use ai_smartness::storage::threads::ThreadStorage;
 
 use super::{parse_object_array, required_str, ToolContext};
@@ -22,19 +23,9 @@ pub fn handle_merge(
         let _ = ThreadStorage::add_message(ctx.agent_conn, &msg);
     }
 
-    // Merge metadata
+    // Merge metadata with consolidation (dedup + substring removal + caps)
     let mut merged = survivor.clone();
-    for topic in &absorbed.topics {
-        if !merged.topics.contains(topic) {
-            merged.topics.push(topic.clone());
-        }
-    }
-    for label in &absorbed.labels {
-        if !merged.labels.contains(label) {
-            merged.labels.push(label.clone());
-        }
-    }
-    merged.weight = merged.weight.max(absorbed.weight);
+    merge_metadata::consolidate_after_merge(&mut merged, &absorbed);
     ThreadStorage::update(ctx.agent_conn, &merged)?;
     ThreadStorage::delete(ctx.agent_conn, &absorbed_id)?;
 

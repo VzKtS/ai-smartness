@@ -49,17 +49,18 @@ impl Gossip {
         // One-time v1 bridge migration (idempotent — 0 rows after first run)
         Self::migrate_v1_bridges(conn)?;
 
-        let active = ThreadStorage::list_active(conn)?;
-        if active.len() < 2 {
-            tracing::debug!(active_threads = active.len(), "Gossip v2 skipped: not enough threads");
+        // Load ALL threads (active + suspended + archived) for inclusive gossip
+        let all_threads = ThreadStorage::list_all(conn)?;
+        if all_threads.len() < 2 {
+            tracing::debug!(threads = all_threads.len(), "Gossip v2 skipped: not enough threads");
             return Ok((0, vec![]));
         }
 
-        let thread_count = active.len();
+        let thread_count = all_threads.len();
         let concept_count = self.concept_index.concept_count();
         let indexed_count = self.concept_index.thread_count();
         tracing::info!(
-            active_threads = thread_count,
+            total_threads = thread_count,
             indexed_threads = indexed_count,
             concepts = concept_count,
             "Gossip v2 cycle starting"
@@ -128,11 +129,11 @@ impl Gossip {
                 }
 
                 // Determine relation type
-                let relation = active
+                let relation = all_threads
                     .iter()
                     .find(|t| t.id == *thread_a)
                     .and_then(|ta| {
-                        active.iter().find(|t| t.id == *thread_b).map(|tb| {
+                        all_threads.iter().find(|t| t.id == *thread_b).map(|tb| {
                             Self::determine_relation(ta, tb, weight)
                         })
                     })
@@ -187,7 +188,7 @@ impl Gossip {
         // Phase 2: Legacy topic overlap for threads WITHOUT concepts
         if config.topic_overlap_enabled {
             let legacy_created =
-                Self::run_legacy_topic_overlap(conn, &active, config, max_per)?;
+                Self::run_legacy_topic_overlap(conn, &all_threads, config, max_per)?;
             created += legacy_created;
         }
 

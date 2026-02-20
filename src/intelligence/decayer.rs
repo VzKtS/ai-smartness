@@ -30,7 +30,14 @@ impl Decayer {
                 continue;
             }
 
-            let half_life = effective_half_life(thread.importance);
+            let base_half_life = effective_half_life(thread.importance);
+            // Orphan acceleration: threads not re-injected decay faster.
+            // Every ORPHAN_HALVING_HOURS without contact halves the effective half-life.
+            let orphan_hours = age_days * 24.0;
+            let orphan_factor = 0.5f64
+                .powf(orphan_hours / ORPHAN_HALVING_HOURS)
+                .max(ORPHAN_MIN_HALF_LIFE_FACTOR);
+            let half_life = base_half_life * orphan_factor;
             let decay_factor = 0.5f64.powf(age_days / half_life);
             let new_weight = (thread.weight * decay_factor).max(0.0);
 

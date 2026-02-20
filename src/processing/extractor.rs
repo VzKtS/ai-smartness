@@ -119,8 +119,9 @@ fn extract_heuristic(content: &str) -> Extraction {
     let words: Vec<&str> = clean.split_whitespace().collect();
 
     // Title: first ~60 chars
-    let title = if clean.len() > 60 {
-        format!("{}...", &clean[..57])
+    let title = if clean.chars().count() > 60 {
+        let t: String = clean.chars().take(57).collect();
+        format!("{}...", t)
     } else {
         clean.clone()
     };
@@ -129,8 +130,9 @@ fn extract_heuristic(content: &str) -> Extraction {
     let subjects = super::cleaner::extract_topics(content);
 
     // Summary: first 200 chars
-    let summary = if clean.len() > 200 {
-        format!("{}...", &clean[..197])
+    let summary = if clean.chars().count() > 200 {
+        let s: String = clean.chars().take(197).collect();
+        format!("{}...", s)
     } else {
         clean.clone()
     };
@@ -164,10 +166,10 @@ fn build_extraction_prompt(
     agent_context: Option<&str>,
 ) -> String {
     let max_chars = extraction_cfg.max_content_chars;
-    let truncated = if content.len() > max_chars {
-        &content[..max_chars]
+    let truncated: String = if content.chars().count() > max_chars {
+        content.chars().take(max_chars).collect()
     } else {
-        content
+        content.to_string()
     };
 
     let noise_words: Vec<&str> = extraction_cfg.topic_noise_words.iter().map(|s| s.as_str()).collect();
@@ -198,21 +200,19 @@ Higher alignment = higher importance. No alignment does NOT mean low importance 
     };
 
     format!(
-        r#"You are a memory classification system. Your role: analyze content and produce structured metadata.
-IMPORTANT: Process this in strict order. Generate each JSON field sequentially.
+        r#"Your role is to process the content provided to you in order to extract only the concepts that are humanly understandable.
 
-## STEP 1 — Classification (analyze the content below, with NO external context)
+## ÉTAPE 1 — Classification (analysez le contenu ci-dessous, SANS contexte externe)
 
 ### title (max 50 chars)
 Specific, descriptive title capturing the core subject of the content.
-Never use generic prefixes ("Content:", "File:", "Analysis:", "Output:").
 
 ### subjects (2-5 items)
 Concrete topics, concepts, or entities present in the content.
 Prefer specific terms over vague ones.
 Exclude noise words: {noise_words}
 
-### summary (max 200 chars)
+## summary (max 200 chars)
 Concise description of what this content contains.
 
 ### confidence (0.0-1.0)
@@ -226,23 +226,19 @@ Confidence measures YOUR comprehension, not content quality or relevance.
 A perfectly clear text about any subject = high confidence.
 
 ### labels (1-4 items)
-Describe WHAT the content covers. Must reflect the subject matter.
-Bad: "action", "decision", "metadata", "code-snippet"
-Good: labels that name the actual topic (e.g. "goldfish-care", "sqlite-storage", "recipe-cooking"){label_hint}
+Describe WHAT the content covers. Must reflect the subject matter.{label_hint}
 
 ## STEP 1B — Semantic explosion
 
 From the title, subjects, and labels you produced in Step 1, generate an associative concept cloud.
-Include: synonyms, related domains, hypernyms, hyponyms, adjacent technologies/tools.
+Include: synonyms, related domains, hypernyms, hyponyms, adjacent concepts.
 Single lowercase words only, **in English only**. No duplicates. Do NOT repeat subjects or labels.
 Between 5 and 25 items.
-
-Example: subjects=["airbus","a320"], labels=["aviation"]
-→ concepts: ["airplane","aeronautics","piloting","boeing","glider","flight","turbine","transport","toulouse"]
 
 ## Content to classify ({source_type}: {source_desc}):
 
 {content}
+
 
 ## STEP 2 — Importance scoring
 
@@ -256,6 +252,7 @@ Acquisition source: {source_type}
 - {normal:.1} = standard, normal retention
 - {low:.1} = minor, weak retention
 - {disposable:.1} = ephemeral, minimal value
+
 
 ## Output (JSON only, no markdown, no explanation)
 {{"title":"...","subjects":["..."],"summary":"...","confidence":0.0,"labels":["..."],"concepts":["..."],"importance":0.0}}"#,

@@ -104,6 +104,11 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     session.record_prompt(&message);
     session.save(&agent_data);
 
+    // Send prompt to daemon for extraction (fire-and-forget)
+    let _ = ai_smartness::processing::daemon_ipc_client::send_capture(
+        project_hash, agent_id, "prompt", &message,
+    );
+
     // Load user profile, auto-detect traits and rules from message
     let mut profile = UserProfile::load(&agent_data);
     profile.detect_from_message(&message);
@@ -367,7 +372,7 @@ fn build_pins_context(conn: &Connection, agent_data_dir: &Path) -> Option<String
         for pin in pins.iter().take(5) {
             ctx.push_str(&format!("- {}", pin.title));
             if let Some(ref summary) = pin.summary {
-                let s = &summary[..summary.len().min(100)];
+                let s: String = summary.chars().take(100).collect();
                 ctx.push_str(&format!(": {}", s));
             }
             ctx.push('\n');
@@ -414,6 +419,28 @@ fn build_memory_context(conn: &Connection, message: &str) -> Option<String> {
     let threads = MemoryRetriever::recall(conn, message).ok()?;
     if threads.is_empty() {
         return None;
+    }
+
+    // Re-injection feedback: update last_active + reactivate suspended/archived
+    for thread in &threads {
+        match thread.status {
+            ThreadStatus::Suspended | ThreadStatus::Archived => {
+                // Reactivate: sets Active, weight=max(w, 0.3), last_active=now
+                if let Err(e) = ai_smartness::intelligence::thread_manager::ThreadManager::reactivate_thread(conn, &thread.id) {
+                    tracing::warn!(thread_id = %thread.id, error = %e, "Re-injection reactivation failed");
+                } else {
+                    tracing::info!(thread_id = %thread.id, status = %thread.status.as_str(), "Re-injection reactivated thread");
+                }
+            }
+            ThreadStatus::Active => {
+                // Touch last_active to prevent decay
+                let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+                let _ = conn.execute(
+                    "UPDATE threads SET last_active = ?1 WHERE id = ?2",
+                    rusqlite::params![now, thread.id],
+                );
+            }
+        }
     }
 
     let mut ctx = String::from("AI Smartness Memory Context:\n");

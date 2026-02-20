@@ -14,6 +14,8 @@ pub const THREAD_SUSPEND_THRESHOLD: f64 = 0.1;
 pub const THREAD_USE_BOOST: f64 = 0.1;
 pub const THREAD_MIN_HALF_LIFE: f64 = 0.75;
 pub const THREAD_MAX_HALF_LIFE: f64 = 7.0;
+pub const ORPHAN_HALVING_HOURS: f64 = 6.0;        // half-life halves every 6h without re-injection
+pub const ORPHAN_MIN_HALF_LIFE_FACTOR: f64 = 0.1;  // floor: half-life can't go below 10% of base
 
 // === Bridge Decay ===
 pub const BRIDGE_HALF_LIFE: f64 = 2.0;

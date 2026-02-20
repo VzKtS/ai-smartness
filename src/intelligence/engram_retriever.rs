@@ -350,7 +350,7 @@ fn load_active_thread_ids(
     max: usize,
 ) -> AiResult<std::collections::HashSet<String>> {
     let mut ids = std::collections::HashSet::new();
-    let sql = "SELECT id FROM threads WHERE status IN ('Active', 'Suspended') \
+    let sql = "SELECT id FROM threads \
                ORDER BY last_active DESC LIMIT ?1";
 
     let mut stmt = match conn.prepare(sql) {
@@ -417,21 +417,21 @@ fn load_threads_by_ids(
 fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
     let status_str: String = row.get(2)?;
     let status = match status_str.as_str() {
-        "Suspended" => ThreadStatus::Suspended,
-        "Archived" => ThreadStatus::Archived,
+        "suspended" => ThreadStatus::Suspended,
+        "archived" => ThreadStatus::Archived,
         _ => ThreadStatus::Active,
     };
 
     let origin_str: String = row.get(11)?;
     let origin_type = match origin_str.as_str() {
-        "FileRead" => OriginType::FileRead,
-        "FileWrite" => OriginType::FileWrite,
-        "Task" => OriginType::Task,
-        "Fetch" => OriginType::Fetch,
-        "Response" => OriginType::Response,
-        "Command" => OriginType::Command,
-        "Split" => OriginType::Split,
-        "Reactivation" => OriginType::Reactivation,
+        "file_read" => OriginType::FileRead,
+        "file_write" => OriginType::FileWrite,
+        "task" => OriginType::Task,
+        "fetch" => OriginType::Fetch,
+        "response" => OriginType::Response,
+        "command" => OriginType::Command,
+        "split" => OriginType::Split,
+        "reactivation" => OriginType::Reactivation,
         _ => OriginType::Prompt,
     };
 
