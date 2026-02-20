@@ -245,7 +245,7 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig) {
     });
 
     // 2. Decay: reduce weights, suspend low-weight threads
-    run_task("decay", || match Decayer::decay_active(conn) {
+    run_task("decay", || match Decayer::decay_active(conn, &guardian.decay) {
         Ok(n) => {
             if n > 0 {
                 tracing::info!("Decay: {} threads affected", n);
@@ -254,8 +254,8 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig) {
         Err(e) => tracing::warn!("Decay error: {}", e),
     });
 
-    // 3. Archive: stale suspended -> archived (after 72h)
-    run_task("archive", || match Archiver::archive_stale(conn) {
+    // 3. Archive: stale suspended -> archived (after config hours)
+    run_task("archive", || match Archiver::archive_stale(conn, &guardian.decay) {
         Ok(n) => {
             if n > 0 {
                 tracing::info!("Archived: {} threads", n);

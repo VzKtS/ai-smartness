@@ -1,11 +1,11 @@
 //! Decayer -- passive weight decay for threads and bridges.
 //!
 //! Does NOT delete or merge anything. Only reduces weights.
-//! Suspends threads below THREAD_SUSPEND_THRESHOLD.
+//! Suspends threads below DecayConfig.thread_suspend_threshold.
 //! Cleans orphan bridges (both endpoints missing).
 
 use crate::bridge::BridgeStatus;
-use crate::constants::*;
+use crate::config::DecayConfig;
 use crate::thread::ThreadStatus;
 use crate::AiResult;
 use crate::storage::bridges::BridgeStorage;
@@ -17,7 +17,7 @@ pub struct Decayer;
 
 impl Decayer {
     /// Decay active thread/bridge weights. Returns count of affected threads.
-    pub fn decay_active(conn: &Connection) -> AiResult<u32> {
+    pub fn decay_active(conn: &Connection, cfg: &DecayConfig) -> AiResult<u32> {
         let now = Utc::now();
         let mut affected = 0u32;
         let mut suspended_count = 0u32;
@@ -30,13 +30,13 @@ impl Decayer {
                 continue;
             }
 
-            let base_half_life = effective_half_life(thread.importance);
+            let base_half_life = effective_half_life(thread.importance, cfg);
             // Orphan acceleration: threads not re-injected decay faster.
-            // Every ORPHAN_HALVING_HOURS without contact halves the effective half-life.
+            // Every orphan_halving_hours without contact halves the effective half-life.
             let orphan_hours = age_days * 24.0;
             let orphan_factor = 0.5f64
-                .powf(orphan_hours / ORPHAN_HALVING_HOURS)
-                .max(ORPHAN_MIN_HALF_LIFE_FACTOR);
+                .powf(orphan_hours / cfg.orphan_halving_hours)
+                .max(cfg.orphan_min_half_life_factor);
             let half_life = base_half_life * orphan_factor;
             let decay_factor = 0.5f64.powf(age_days / half_life);
             let new_weight = (thread.weight * decay_factor).max(0.0);
@@ -49,7 +49,7 @@ impl Decayer {
             affected += 1;
 
             // Auto-suspend if below threshold
-            if new_weight < THREAD_SUSPEND_THRESHOLD {
+            if new_weight < cfg.thread_suspend_threshold {
                 tracing::warn!(thread_id = %thread.id, weight = new_weight, "Thread auto-suspended by decay");
                 ThreadStorage::update_status(conn, &thread.id, ThreadStatus::Suspended)?;
                 suspended_count += 1;
@@ -65,10 +65,10 @@ impl Decayer {
                 continue;
             }
 
-            let decay_factor = 0.5f64.powf(age_days / BRIDGE_HALF_LIFE);
+            let decay_factor = 0.5f64.powf(age_days / cfg.bridge_half_life);
             let new_weight = bridge.weight * decay_factor;
 
-            if new_weight < BRIDGE_DEATH_THRESHOLD {
+            if new_weight < cfg.bridge_death_threshold {
                 BridgeStorage::update_status(conn, &bridge.id, BridgeStatus::Invalid)?;
             } else if new_weight < 0.3 {
                 BridgeStorage::update_status(conn, &bridge.id, BridgeStatus::Weak)?;
@@ -93,8 +93,8 @@ impl Decayer {
 }
 
 /// Compute effective half-life based on importance.
-/// Range: 0.75 days (disposable, importance=0) to 7.0 days (critical, importance=1).
-fn effective_half_life(importance: f64) -> f64 {
-    THREAD_MIN_HALF_LIFE
-        + (importance.clamp(0.0, 1.0) * (THREAD_MAX_HALF_LIFE - THREAD_MIN_HALF_LIFE))
+/// Range: min_half_life (disposable, importance=0) to max_half_life (critical, importance=1).
+fn effective_half_life(importance: f64, cfg: &DecayConfig) -> f64 {
+    cfg.thread_min_half_life
+        + (importance.clamp(0.0, 1.0) * (cfg.thread_max_half_life - cfg.thread_min_half_life))
 }
