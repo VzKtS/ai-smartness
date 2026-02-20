@@ -28,9 +28,13 @@ pub struct EmbeddingManager {
 
 impl EmbeddingManager {
     /// Initialize: try ONNX, fall back to TF-IDF.
+    /// Wrapped in catch_unwind because `ort` with `load-dynamic` panics
+    /// if `libonnxruntime.so` is not found (instead of returning Err).
     pub fn new() -> Self {
-        match Self::try_init_onnx() {
-            Ok((session, tokenizer)) => {
+        let onnx_result = std::panic::catch_unwind(|| Self::try_init_onnx());
+
+        match onnx_result {
+            Ok(Ok((session, tokenizer))) => {
                 tracing::info!("ONNX embedding engine loaded (all-MiniLM-L6-v2)");
                 Self {
                     use_onnx: true,
@@ -38,8 +42,16 @@ impl EmbeddingManager {
                     tokenizer: Some(tokenizer),
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!("ONNX unavailable, using TF-IDF fallback: {}", e);
+                Self {
+                    use_onnx: false,
+                    onnx_session: Mutex::new(None),
+                    tokenizer: None,
+                }
+            }
+            Err(_panic) => {
+                tracing::warn!("ONNX init panicked (likely missing libonnxruntime.so), using TF-IDF fallback");
                 Self {
                     use_onnx: false,
                     onnx_session: Mutex::new(None),
@@ -55,12 +67,20 @@ impl EmbeddingManager {
     }
 
     /// Embed a single text.
+    /// Protected with catch_unwind: if ONNX panics at runtime, falls back to TF-IDF.
     pub fn embed(&self, text: &str) -> Vec<f32> {
         if self.use_onnx {
-            self.embed_onnx(text).unwrap_or_else(|e| {
-                tracing::warn!("ONNX embed failed, TF-IDF fallback: {}", e);
-                self.embed_tfidf(text)
-            })
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.embed_onnx(text))) {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
+                    tracing::warn!("ONNX embed failed, TF-IDF fallback: {}", e);
+                    self.embed_tfidf(text)
+                }
+                Err(_panic) => {
+                    tracing::error!("ONNX embed panicked, TF-IDF fallback");
+                    self.embed_tfidf(text)
+                }
+            }
         } else {
             self.embed_tfidf(text)
         }
