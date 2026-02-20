@@ -23,8 +23,10 @@ pub fn handle_windows(
             ))
         })?;
 
-    // Spawn `code <path>` — detached so it doesn't block the MCP server
+    // Spawn `code --new-window <path>` so a second window opens
+    // even if one is already open on this project.
     match std::process::Command::new("code")
+        .arg("--new-window")
         .arg(&project_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
