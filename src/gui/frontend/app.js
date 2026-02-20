@@ -1851,6 +1851,95 @@ function buildGraph(threads, bridges) {
     graphEdges = graphEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
 }
 
+// Barnes-Hut quadtree for O(n log n) repulsion force calculation.
+// For <100 nodes, falls back to brute-force O(n²) (quadtree overhead not worth it).
+class QuadTree {
+    constructor(x, y, w, h) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.body = null;    // leaf: single node
+        this.mass = 0;       // total mass (node count) in this quad
+        this.cx = 0;         // center of mass x
+        this.cy = 0;         // center of mass y
+        this.children = null; // NW, NE, SW, SE (lazy allocation)
+    }
+
+    insert(node) {
+        if (this.mass === 0) {
+            this.body = node;
+            this.mass = 1;
+            this.cx = node.x;
+            this.cy = node.y;
+            return;
+        }
+
+        // Update center of mass
+        const totalMass = this.mass + 1;
+        this.cx = (this.cx * this.mass + node.x) / totalMass;
+        this.cy = (this.cy * this.mass + node.y) / totalMass;
+        this.mass = totalMass;
+
+        // If leaf with existing body, subdivide
+        if (this.body) {
+            this._subdivide();
+            this._insertChild(this.body);
+            this.body = null;
+        }
+
+        this._insertChild(node);
+    }
+
+    _subdivide() {
+        const hw = this.w / 2, hh = this.h / 2;
+        this.children = [
+            new QuadTree(this.x, this.y, hw, hh),             // NW
+            new QuadTree(this.x + hw, this.y, hw, hh),        // NE
+            new QuadTree(this.x, this.y + hh, hw, hh),        // SW
+            new QuadTree(this.x + hw, this.y + hh, hw, hh),   // SE
+        ];
+    }
+
+    _insertChild(node) {
+        if (!this.children) this._subdivide();
+        const mx = this.x + this.w / 2, my = this.y + this.h / 2;
+        const idx = (node.x < mx ? 0 : 1) + (node.y < my ? 0 : 2);
+        this.children[idx].insert(node);
+    }
+
+    computeForce(node, theta, repulsion, minDist) {
+        if (this.mass === 0) return;
+
+        const dx = this.cx - node.x;
+        const dy = this.cy - node.y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+        // If this is a leaf with a single body (and it's not the same node)
+        if (this.body) {
+            if (this.body === node) return;
+            if (dist < minDist) dist = minDist;
+            const force = repulsion / (dist * dist);
+            node.vx -= (dx / dist) * force;
+            node.vy -= (dy / dist) * force;
+            return;
+        }
+
+        // Barnes-Hut criterion: if quad width / distance < theta, treat as single body
+        if (this.w / dist < theta) {
+            if (dist < minDist) dist = minDist;
+            const force = (repulsion * this.mass) / (dist * dist);
+            node.vx -= (dx / dist) * force;
+            node.vy -= (dy / dist) * force;
+            return;
+        }
+
+        // Otherwise recurse into children
+        if (this.children) {
+            for (const child of this.children) {
+                child.computeForce(node, theta, repulsion, minDist);
+            }
+        }
+    }
+}
+
 function forceLayout(iterations) {
     const nodes = graphNodes;
     const edges = graphEdges;
@@ -1863,24 +1952,42 @@ function forceLayout(iterations) {
     const attraction = 0.01;
     const damping = 0.9;
     const minDist = 30;
+    const useBarnesHut = nodes.length >= 100;
+    const theta = 0.9;
 
     for (let iter = 0; iter < iterations; iter++) {
-        // Repulsion (all pairs)
-        for (let i = 0; i < nodes.length; i++) {
-            for (let j = i + 1; j < nodes.length; j++) {
-                const a = nodes[i], b = nodes[j];
-                let dx = b.x - a.x, dy = b.y - a.y;
-                let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-                if (dist < minDist) dist = minDist;
-                const force = repulsion / (dist * dist);
-                const fx = (dx / dist) * force;
-                const fy = (dy / dist) * force;
-                a.vx -= fx; a.vy -= fy;
-                b.vx += fx; b.vy += fy;
+        if (useBarnesHut) {
+            // Compute bounds with 10% margin, rebuild each iteration
+            let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+            for (const n of nodes) {
+                if (n.x < bx0) bx0 = n.x;
+                if (n.y < by0) by0 = n.y;
+                if (n.x > bx1) bx1 = n.x;
+                if (n.y > by1) by1 = n.y;
+            }
+            const margin = Math.max(bx1 - bx0, by1 - by0) * 0.1 || 100;
+            const qt = new QuadTree(bx0 - margin, by0 - margin,
+                (bx1 - bx0) + margin * 2, (by1 - by0) + margin * 2);
+            for (const n of nodes) qt.insert(n);
+            for (const n of nodes) qt.computeForce(n, theta, repulsion, minDist);
+        } else {
+            // Brute-force O(n²) for small graphs
+            for (let i = 0; i < nodes.length; i++) {
+                for (let j = i + 1; j < nodes.length; j++) {
+                    const a = nodes[i], b = nodes[j];
+                    let dx = b.x - a.x, dy = b.y - a.y;
+                    let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                    if (dist < minDist) dist = minDist;
+                    const force = repulsion / (dist * dist);
+                    const fx = (dx / dist) * force;
+                    const fy = (dy / dist) * force;
+                    a.vx -= fx; a.vy -= fy;
+                    b.vx += fx; b.vy += fy;
+                }
             }
         }
 
-        // Attraction (edges)
+        // Attraction (edges) — O(E)
         for (const e of edges) {
             const a = nodeMap[e.source], b = nodeMap[e.target];
             if (!a || !b) continue;
@@ -1893,13 +2000,13 @@ function forceLayout(iterations) {
             b.vx -= fx; b.vy -= fy;
         }
 
-        // Center gravity
+        // Center gravity — O(N)
         for (const n of nodes) {
             n.vx -= n.x * 0.001;
             n.vy -= n.y * 0.001;
         }
 
-        // Apply velocity + damping
+        // Apply velocity + damping — O(N)
         for (const n of nodes) {
             n.vx *= damping;
             n.vy *= damping;
