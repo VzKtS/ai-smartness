@@ -21,7 +21,8 @@ use ai_smartness::config::GuardianConfig;
 use ai_smartness::constants::{MAX_COGNITIVE_MESSAGES, MAX_CONTEXT_SIZE};
 use ai_smartness::healthguard::{self, HealthGuard};
 use ai_smartness::thread::{InjectionStats, ThreadStatus};
-use ai_smartness::intelligence::memory_retriever::MemoryRetriever;
+use ai_smartness::config::EngramConfig;
+use ai_smartness::intelligence::engram_retriever::EngramRetriever;
 use ai_smartness::session::SessionState;
 use ai_smartness::storage::beat::BeatState;
 use ai_smartness::user_profile::UserProfile;
@@ -414,9 +415,10 @@ fn build_pins_context(conn: &Connection, agent_data_dir: &Path) -> Option<String
     }
 }
 
-/// Layer 4: Memory retrieval — find similar threads to the user's prompt.
+/// Layer 4: Memory retrieval — find similar threads via Engram 9-validator pipeline.
 fn build_memory_context(conn: &Connection, message: &str) -> Option<String> {
-    let threads = MemoryRetriever::recall(conn, message).ok()?;
+    let engram = EngramRetriever::new(conn, EngramConfig::default()).ok()?;
+    let threads = engram.get_relevant_context(conn, message, 5).ok()?;
     if threads.is_empty() {
         return None;
     }

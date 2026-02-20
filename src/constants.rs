@@ -37,7 +37,7 @@ pub const REACTIVATION_HIGH_CONFIDENCE: f64 = 0.35;
 // === Hook ===
 pub const MIN_PROMPT_LENGTH: usize = 50;
 pub const MIN_CAPTURE_LENGTH: usize = 20;
-pub const MAX_CONTEXT_SIZE: usize = 8000;
+pub const MAX_CONTEXT_SIZE: usize = 15_000;
 pub const MAX_COGNITIVE_MESSAGES: usize = 5;
 
 // === Archiver ===
