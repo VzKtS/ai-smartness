@@ -290,7 +290,6 @@ impl Default for ExtractionConfig {
             topic_noise_words: vec![
                 "message", "contenu", "analyse", "fichier",
                 "response", "result", "data", "type", "value",
-                "code", "json", "function", "class", "method", "variable", "parameter",
             ].into_iter().map(String::from).collect(),
             topic_aliases: HashMap::new(),
             min_topic_frequency: 1,
