@@ -60,6 +60,7 @@ pub fn handle_thread_create(
         source_type: "user".into(),
         timestamp: now,
         metadata: serde_json::json!({}),
+        is_truncated: false,
     };
     ThreadStorage::add_message(ctx.agent_conn, &msg)?;
 
@@ -488,6 +489,32 @@ pub fn handle_rate_context(
     thread.relevance_score = (thread.relevance_score + delta).clamp(0.0, 1.0);
     ThreadStorage::update(ctx.agent_conn, &thread)?;
     Ok(serde_json::json!({"thread_id": id, "useful": useful, "relevance_score": thread.relevance_score}))
+}
+
+pub fn handle_mark_used(
+    params: &serde_json::Value,
+    ctx: &ToolContext,
+) -> AiResult<serde_json::Value> {
+    let id = required_str(params, "thread_id")?;
+    let mut thread = ThreadStorage::get(ctx.agent_conn, &id)?
+        .ok_or_else(|| ai_smartness::AiError::ThreadNotFound(id.clone()))?;
+
+    let stats = thread
+        .injection_stats
+        .get_or_insert_with(ai_smartness::thread::InjectionStats::default);
+    stats.record_usage();
+    let ratio = stats.usage_ratio();
+    let used = stats.used_count;
+    let injected = stats.injection_count;
+
+    ThreadStorage::update(ctx.agent_conn, &thread)?;
+
+    Ok(serde_json::json!({
+        "thread_id": id,
+        "used_count": used,
+        "injection_count": injected,
+        "usage_ratio": ratio,
+    }))
 }
 
 fn thread_json(t: &ai_smartness::thread::Thread) -> serde_json::Value {

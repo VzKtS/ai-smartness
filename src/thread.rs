@@ -219,4 +219,7 @@ pub struct ThreadMessage {
     pub source_type: String,
     pub timestamp: DateTime<Utc>,
     pub metadata: serde_json::Value,
+    /// True if the original content was truncated (> 2000 chars).
+    #[serde(default)]
+    pub is_truncated: bool,
 }

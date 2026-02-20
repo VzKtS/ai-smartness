@@ -20,7 +20,7 @@ use std::path::Path;
 use ai_smartness::config::GuardianConfig;
 use ai_smartness::constants::{MAX_COGNITIVE_MESSAGES, MAX_CONTEXT_SIZE};
 use ai_smartness::healthguard::{self, HealthGuard};
-use ai_smartness::thread::ThreadStatus;
+use ai_smartness::thread::{InjectionStats, ThreadStatus};
 use ai_smartness::intelligence::memory_retriever::MemoryRetriever;
 use ai_smartness::session::SessionState;
 use ai_smartness::storage::beat::BeatState;
@@ -421,7 +421,7 @@ fn build_memory_context(conn: &Connection, message: &str) -> Option<String> {
         return None;
     }
 
-    // Re-injection feedback: update last_active + reactivate suspended/archived
+    // Re-injection feedback: update last_active, reactivate, and record injection stats
     for thread in &threads {
         match thread.status {
             ThreadStatus::Suspended | ThreadStatus::Archived => {
@@ -440,6 +440,13 @@ fn build_memory_context(conn: &Connection, message: &str) -> Option<String> {
                     rusqlite::params![now, thread.id],
                 );
             }
+        }
+
+        // Record injection for V5 InjectionHistory feedback loop
+        if let Ok(Some(mut t)) = ThreadStorage::get(conn, &thread.id) {
+            let stats = t.injection_stats.get_or_insert_with(InjectionStats::default);
+            stats.record_injection();
+            let _ = ThreadStorage::update(conn, &t);
         }
     }
 

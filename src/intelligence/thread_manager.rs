@@ -28,23 +28,34 @@ const CONTINUE_THRESHOLD: f64 = 0.25;
 const REACTIVATE_THRESHOLD: f64 = 0.50;
 const AUTO_MERGE_THRESHOLD: f64 = 0.85;
 
-/// Labels that are too generic to carry semantic value — filtered out before storage.
-const LABEL_BLOCKLIST: &[&str] = &[
-    "action", "decision", "metadata", "empty", "search result",
-    "no matches", "empty result", "file-listing", "directory-listing",
-    "grep-output", "search-config", "build-output", "code-snippet",
-];
+// LABEL_BLOCKLIST and filter_blocked_labels imported via `use crate::constants::*`
 
-fn filter_blocked_labels(labels: &[String]) -> Vec<String> {
-    labels
-        .iter()
-        .filter(|l| {
-            !LABEL_BLOCKLIST
-                .iter()
-                .any(|blocked| l.to_lowercase() == *blocked)
-        })
-        .cloned()
-        .collect()
+/// Build enriched embedding text from extraction: title 2x + subjects + labels + concepts (8 max).
+fn build_enriched_embed_text(extraction: &Extraction) -> String {
+    let concepts_limited: Vec<&str> = extraction.concepts.iter()
+        .take(8).map(|s| s.as_str()).collect();
+    format!(
+        "{} {} {} {} {}",
+        extraction.title,
+        extraction.title,
+        extraction.subjects.join(" "),
+        extraction.labels.join(" "),
+        concepts_limited.join(" "),
+    )
+}
+
+/// Build enriched embedding text from an existing thread's metadata.
+fn build_enriched_embed_text_from_thread(thread: &Thread) -> String {
+    let concepts_limited: Vec<&str> = thread.concepts.iter()
+        .take(8).map(|s| s.as_str()).collect();
+    format!(
+        "{} {} {} {} {}",
+        thread.title,
+        thread.title,
+        thread.topics.join(" "),
+        thread.labels.join(" "),
+        concepts_limited.join(" "),
+    )
 }
 
 pub struct ThreadManager;
@@ -78,8 +89,29 @@ impl ThreadManager {
         let embeddings = EmbeddingManager::global();
 
         let action = if let Some(parent_id) = parent_hint {
-            ThreadAction::Fork {
-                parent_id: parent_id.to_string(),
+            // Dual gate: coherent (already validated by processor) + similar?
+            // If embedding similarity to parent is high enough, CONTINUE in parent.
+            // If not similar despite coherence, search for a better match.
+            let embed_text = build_enriched_embed_text(extraction);
+            let query_emb = embeddings.embed(&embed_text);
+
+            let parent_sim = ThreadStorage::get(conn, parent_id)?
+                .and_then(|p| p.embedding.as_ref().map(|e| embeddings.similarity(&query_emb, e)))
+                .unwrap_or(0.0);
+
+            tracing::debug!(
+                parent_id = %parent_id,
+                parent_sim = parent_sim,
+                threshold = CONTINUE_THRESHOLD,
+                "Dual gate: checking parent similarity"
+            );
+
+            if parent_sim >= CONTINUE_THRESHOLD {
+                // Coherent AND similar → continue in parent thread
+                ThreadAction::Continue { thread_id: parent_id.to_string() }
+            } else {
+                // Coherent but not similar → search for better match
+                Self::decide_action(conn, extraction, embeddings)?
             }
         } else {
             Self::decide_action(conn, extraction, embeddings)?
@@ -149,7 +181,7 @@ impl ThreadManager {
 
         let importance = extraction.importance.max(0.5);
 
-        let embed_text = format!("{} {}", extraction.title, extraction.subjects.join(" "));
+        let embed_text = build_enriched_embed_text(extraction);
         let embedding = embeddings.embed(&embed_text);
 
         let origin_type = source_type.parse().unwrap_or(OriginType::Prompt);
@@ -187,7 +219,9 @@ impl ThreadManager {
         tracing::info!(thread_id = %thread_id, title = %extraction.title, topics = ?extraction.subjects, "Thread created");
 
         // Add initial message (truncate to 2000 chars)
-        let msg_content = if content.len() > 2000 {
+        let truncated = content.len() > 2000;
+        let msg_content = if truncated {
+            tracing::warn!(thread_id = %thread_id, len = content.len(), "Message truncated to 2000 chars");
             content[..2000].to_string()
         } else {
             content.to_string()
@@ -201,6 +235,7 @@ impl ThreadManager {
             source_type: source_type.to_string(),
             timestamp: now,
             metadata: serde_json::Value::Object(Default::default()),
+            is_truncated: truncated,
         };
         ThreadStorage::add_message(conn, &msg)?;
 
@@ -242,7 +277,9 @@ impl ThreadManager {
             None => return Ok(()),
         };
 
-        let msg_content = if content.len() > 2000 {
+        let truncated = content.len() > 2000;
+        let msg_content = if truncated {
+            tracing::warn!(thread_id = %thread_id, len = content.len(), "Message truncated to 2000 chars");
             content[..2000].to_string()
         } else {
             content.to_string()
@@ -256,6 +293,7 @@ impl ThreadManager {
             source_type: "update".to_string(),
             timestamp: time_utils::now(),
             metadata: serde_json::Value::Object(Default::default()),
+            is_truncated: truncated,
         };
         ThreadStorage::add_message(conn, &msg)?;
 
@@ -290,9 +328,9 @@ impl ThreadManager {
             wc.updated_at = Utc::now();
         }
 
-        // Update embedding
+        // Update embedding with enriched text (title 2x + topics + labels + concepts)
         let embeddings = EmbeddingManager::global();
-        let embed_text = format!("{} {}", thread.title, thread.topics.join(" "));
+        let embed_text = build_enriched_embed_text_from_thread(&thread);
         thread.embedding = Some(embeddings.embed(&embed_text));
 
         // Auto-score importance
@@ -312,7 +350,7 @@ impl ThreadManager {
         extraction: &Extraction,
         embeddings: &EmbeddingManager,
     ) -> AiResult<ThreadAction> {
-        let embed_text = format!("{} {}", extraction.title, extraction.subjects.join(" "));
+        let embed_text = build_enriched_embed_text(extraction);
         let query_emb = embeddings.embed(&embed_text);
 
         // Search active threads

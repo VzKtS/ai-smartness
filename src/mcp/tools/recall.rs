@@ -1,5 +1,6 @@
 use ai_smartness::AiResult;
-use ai_smartness::intelligence::memory_retriever::MemoryRetriever;
+use ai_smartness::config::EngramConfig;
+use ai_smartness::intelligence::engram_retriever::EngramRetriever;
 use ai_smartness::storage::bridges::BridgeStorage;
 
 use super::{optional_str, required_str, ToolContext};
@@ -11,7 +12,8 @@ pub fn handle_recall(
     let query = required_str(params, "query")?;
     let label_filter = optional_str(params, "label");
 
-    let mut threads = MemoryRetriever::recall(ctx.agent_conn, &query)?;
+    let engram = EngramRetriever::new(ctx.agent_conn, EngramConfig::default())?;
+    let mut threads = engram.search(ctx.agent_conn, &query, 10)?;
 
     if let Some(ref label) = label_filter {
         threads.retain(|t| t.labels.iter().any(|l| l.contains(label.as_str())));

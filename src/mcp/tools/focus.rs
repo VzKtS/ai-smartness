@@ -124,6 +124,7 @@ pub fn handle_pin(
         source_type: "user".into(),
         timestamp: now,
         metadata: serde_json::json!({}),
+        is_truncated: false,
     };
     ThreadStorage::add_message(ctx.agent_conn, &msg)?;
 

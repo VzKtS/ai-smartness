@@ -92,6 +92,7 @@ fn route_plain_tool(
         "ai_rename_batch" => threads::handle_rename_batch(params, ctx),
         "ai_rate_importance" => threads::handle_rate_importance(params, ctx),
         "ai_rate_context" => threads::handle_rate_context(params, ctx),
+        "ai_mark_used" => threads::handle_mark_used(params, ctx),
 
         // -- Bridges --
         "ai_bridges" => bridges::handle_bridges(params, ctx),

@@ -2,7 +2,7 @@ use crate::{AiError, AiResult};
 use rusqlite::Connection;
 
 /// Schema version actuelle
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 /// Retourne la version de schema actuelle (0 si table absente)
 pub fn get_schema_version(conn: &Connection) -> AiResult<u32> {
@@ -173,6 +173,14 @@ pub fn migrate_agent_db(conn: &Connection) -> AiResult<()> {
             "ALTER TABLE threads ADD COLUMN concepts TEXT DEFAULT '[]';"
         ).map_err(|e| AiError::Storage(format!("Agent DB V4 migration failed: {}", e)))?;
         set_schema_version(conn, 4)?;
+    }
+
+    // V5: add is_truncated column to thread_messages
+    if version < 5 {
+        conn.execute_batch(
+            "ALTER TABLE thread_messages ADD COLUMN is_truncated BOOLEAN DEFAULT 0;"
+        ).map_err(|e| AiError::Storage(format!("Agent DB V5 migration failed: {}", e)))?;
+        set_schema_version(conn, 5)?;
     }
 
     Ok(())

@@ -80,3 +80,24 @@ pub const URGENT_TTL_MINUTES: u64 = 4_320;           // 72h
 pub const ALERT_WARNING_AFTER: u32 = 3;
 pub const ALERT_CRITICAL_AFTER: u32 = 5;
 pub const ALERT_COOLDOWN_SECS: u64 = 300;            // 5 min per-system cooldown
+
+// === Label Filtering ===
+/// Labels that are too generic to carry semantic value — filtered out before storage.
+pub const LABEL_BLOCKLIST: &[&str] = &[
+    "action", "decision", "metadata", "empty", "search result",
+    "no matches", "empty result", "file-listing", "directory-listing",
+    "grep-output", "search-config", "build-output", "code-snippet",
+];
+
+/// Filter out blocked labels (case-insensitive match against LABEL_BLOCKLIST).
+pub fn filter_blocked_labels(labels: &[String]) -> Vec<String> {
+    labels
+        .iter()
+        .filter(|l| {
+            !LABEL_BLOCKLIST
+                .iter()
+                .any(|blocked| l.to_lowercase() == *blocked)
+        })
+        .cloned()
+        .collect()
+}

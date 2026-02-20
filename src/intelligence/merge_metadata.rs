@@ -3,6 +3,7 @@
 //! Used by both MCP handle_merge() and daemon MergeEvaluator to prevent
 //! topic/label/concept bloat from successive merges.
 
+use crate::constants::filter_blocked_labels;
 use crate::thread::Thread;
 
 /// Max topics after merge consolidation.
@@ -35,6 +36,7 @@ pub fn consolidate_after_merge(survivor: &mut Thread, absorbed: &Thread) {
         labels.push(l.clone());
     }
     labels = dedup_case_insensitive(labels);
+    labels = filter_blocked_labels(&labels);
     labels.truncate(MAX_LABELS);
     survivor.labels = labels;
 

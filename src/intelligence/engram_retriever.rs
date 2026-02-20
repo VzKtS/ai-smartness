@@ -577,29 +577,61 @@ fn load_focus_topics(_conn: &Connection) -> Vec<(String, f64)> {
     Vec::new()
 }
 
-/// Full-text search fallback when topic matching finds nothing.
+/// Full-text search fallback when topic/concept index finds nothing.
+/// Tokenises the query into words and searches each word individually.
+/// For JSON fields (topics, labels, concepts), uses %"word% to match inside arrays.
 fn search_threads_by_text(
     conn: &Connection,
     query: &str,
     limit: usize,
 ) -> AiResult<Vec<Thread>> {
-    let pattern = format!("%{}%", query);
-    let sql = "SELECT id, title, status, weight, importance, importance_manually_set, \
-               created_at, last_active, activation_count, split_locked, split_locked_until, \
-               origin_type, drift_history, parent_id, child_ids, summary, topics, tags, labels, \
-               concepts, embedding, relevance_score, ratings, work_context, injection_stats \
-               FROM threads WHERE (title LIKE ?1 OR summary LIKE ?1 OR topics LIKE ?1) \
-               ORDER BY last_active DESC LIMIT ?2";
+    let words: Vec<&str> = query
+        .split_whitespace()
+        .filter(|w| w.len() >= 2)
+        .collect();
 
-    let mut stmt = match conn.prepare(sql) {
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut conditions = Vec::new();
+    let mut param_values: Vec<String> = Vec::new();
+
+    for word in &words {
+        let lower = word.to_lowercase();
+        let idx_plain = param_values.len() + 1;
+        param_values.push(format!("%{}%", lower));
+        let idx_json = param_values.len() + 1;
+        param_values.push(format!("%\"{}\"%", lower));
+
+        conditions.push(format!(
+            "(LOWER(title) LIKE ?{idx_plain} OR LOWER(summary) LIKE ?{idx_plain} \
+             OR LOWER(topics) LIKE ?{idx_json} OR LOWER(labels) LIKE ?{idx_json} \
+             OR LOWER(concepts) LIKE ?{idx_json})"
+        ));
+    }
+
+    let sql = format!(
+        "SELECT id, title, status, weight, importance, importance_manually_set, \
+         created_at, last_active, activation_count, split_locked, split_locked_until, \
+         origin_type, drift_history, parent_id, child_ids, summary, topics, tags, labels, \
+         concepts, embedding, relevance_score, ratings, work_context, injection_stats \
+         FROM threads WHERE ({}) ORDER BY last_active DESC LIMIT {}",
+        conditions.join(" OR "),
+        limit
+    );
+
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return Ok(Vec::new()),
     };
 
-    let rows = match stmt.query_map(
-        rusqlite::params![pattern, limit as i64],
-        row_to_thread,
-    ) {
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
+        .iter()
+        .map(|s| s as &dyn rusqlite::types::ToSql)
+        .collect();
+
+    let rows = match stmt.query_map(param_refs.as_slice(), row_to_thread) {
         Ok(r) => r,
         Err(_) => return Ok(Vec::new()),
     };

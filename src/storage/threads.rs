@@ -80,6 +80,7 @@ fn message_from_row(row: &Row) -> rusqlite::Result<ThreadMessage> {
             let s: String = row.get("metadata")?;
             serde_json::from_str(&s).unwrap_or(serde_json::Value::Object(Default::default()))
         },
+        is_truncated: row.get("is_truncated").unwrap_or(false),
     })
 }
 
@@ -260,17 +261,52 @@ impl ThreadStorage {
     }
 
     pub fn search(conn: &Connection, query: &str) -> AiResult<Vec<Thread>> {
-        let pattern = format!("%{}%", query);
+        // Tokenise query into words — search each word individually.
+        // For JSON fields (topics, labels), use %"word"% to match inside arrays.
+        // For plain-text fields (title, summary), use %word%.
+        let words: Vec<&str> = query
+            .split_whitespace()
+            .filter(|w| w.len() >= 2)
+            .collect();
+
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build SQL: for each word, check title/summary (plain) + topics/labels (JSON)
+        let mut conditions = Vec::new();
+        let mut params_list: Vec<String> = Vec::new();
+
+        for word in &words {
+            let lower = word.to_lowercase();
+            let idx_plain = params_list.len() + 1;
+            params_list.push(format!("%{}%", lower));
+            let idx_json = params_list.len() + 1;
+            params_list.push(format!("%\"{}\"%", lower)); // matches inside JSON arrays
+
+            conditions.push(format!(
+                "(LOWER(title) LIKE ?{idx_plain} OR LOWER(summary) LIKE ?{idx_plain} \
+                 OR LOWER(topics) LIKE ?{idx_json} OR LOWER(labels) LIKE ?{idx_json} \
+                 OR LOWER(concepts) LIKE ?{idx_json})"
+            ));
+        }
+
+        let sql = format!(
+            "SELECT * FROM threads WHERE {} ORDER BY weight DESC",
+            conditions.join(" OR ")
+        );
+
         let mut stmt = conn
-            .prepare(
-                "SELECT * FROM threads
-                 WHERE title LIKE ?1 OR topics LIKE ?1 OR labels LIKE ?1 OR summary LIKE ?1
-                 ORDER BY weight DESC",
-            )
+            .prepare(&sql)
             .map_err(|e| AiError::Storage(e.to_string()))?;
 
-        let threads = stmt
-            .query_map(params![pattern], thread_from_row)
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_list
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let threads: Vec<Thread> = stmt
+            .query_map(param_refs.as_slice(), thread_from_row)
             .map_err(|e| AiError::Storage(e.to_string()))?
             .filter_map(|r| r.ok())
             .collect();
@@ -453,8 +489,8 @@ impl ThreadStorage {
 
     pub fn add_message(conn: &Connection, msg: &ThreadMessage) -> AiResult<()> {
         conn.execute(
-            "INSERT INTO thread_messages (id, thread_id, content, source, source_type, timestamp, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO thread_messages (id, thread_id, content, source, source_type, timestamp, metadata, is_truncated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 msg.msg_id,
                 msg.thread_id,
@@ -463,6 +499,7 @@ impl ThreadStorage {
                 msg.source_type,
                 time_utils::to_sqlite(&msg.timestamp),
                 serde_json::to_string(&msg.metadata).unwrap_or_else(|_| "{}".into()),
+                msg.is_truncated,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Insert message failed: {}", e)))?;

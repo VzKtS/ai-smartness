@@ -288,9 +288,9 @@ impl Default for ExtractionConfig {
             max_content_chars: 15000,
             min_capture_length: 80,
             topic_noise_words: vec![
-                "message", "contenu", "analyse", "fichier", "code",
-                "json", "response", "result", "data", "type", "value",
-                "function", "class", "method", "variable", "parameter",
+                "message", "contenu", "analyse", "fichier",
+                "response", "result", "data", "type", "value",
+                "code", "json", "function", "class", "method", "variable", "parameter",
             ].into_iter().map(String::from).collect(),
             topic_aliases: HashMap::new(),
             min_topic_frequency: 1,
