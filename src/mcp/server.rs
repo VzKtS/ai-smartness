@@ -468,6 +468,7 @@ fn tool_definitions() -> Vec<serde_json::Value> {
         tool_def("topics_network", "Trending topics", &[], &["agent_id", "limit"]),
         tool_def("test_sampling", "Test sampling", &[], &["attempt_sampling"]),
         tool_def("beat_wake", "Schedule self-wake after N beats (~5 min each). The heartbeat system will wake you automatically.", &["after"], &["reason"]),
+        tool_def("ai_windows", "Open a new VSCode window on the current project", &[], &[]),
     ]
 }
 

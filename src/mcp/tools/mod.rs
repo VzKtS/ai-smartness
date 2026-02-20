@@ -9,6 +9,7 @@ pub mod share;
 pub mod split;
 pub mod status;
 pub mod threads;
+pub mod windows;
 
 use ai_smartness::AiResult;
 use rusqlite::Connection;
@@ -157,6 +158,9 @@ fn route_plain_tool(
 
         // -- Beat / Self-wake --
         "beat_wake" => status::handle_beat_wake(params, ctx),
+
+        // -- Windows --
+        "ai_windows" => windows::handle_windows(params, ctx),
 
         // -- ai-smartness aliases (defined in tool_definitions) --
         "ai_recommend" => discover::handle_recommend(params, ctx),
