@@ -184,7 +184,7 @@ or
 
         // Truncate if too long
         if prompt.len() > MERGE_MAX_CHARS {
-            Ok(prompt[..MERGE_MAX_CHARS].to_string())
+            Ok(truncate_safe(&prompt, MERGE_MAX_CHARS).to_string())
         } else {
             Ok(prompt)
         }
@@ -211,7 +211,7 @@ or
             .iter()
             .map(|m| {
                 let content = if m.content.len() > MERGE_MSG_MAX_CHARS {
-                    format!("{}...", &m.content[..MERGE_MSG_MAX_CHARS - 3])
+                    format!("{}...", truncate_safe(&m.content, MERGE_MSG_MAX_CHARS - 3))
                 } else {
                     m.content.clone()
                 };

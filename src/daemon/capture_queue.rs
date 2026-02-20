@@ -359,11 +359,19 @@ fn worker_loop(
                     "Worker capture failed"
                 );
             }
-            Err(_panic) => {
+            Err(panic_payload) => {
                 stats.errors.fetch_add(1, Ordering::Relaxed);
+                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic (non-string payload)".to_string()
+                };
                 tracing::error!(
                     worker_id,
                     agent = %job_key,
+                    panic_message = %panic_msg,
                     duration_ms,
                     "Worker capture PANICKED — evicting connection to prevent poison cascade"
                 );

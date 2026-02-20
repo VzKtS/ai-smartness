@@ -1,5 +1,6 @@
 //! Synthesis -- generate thread summaries from messages.
 
+use crate::constants::truncate_safe;
 use crate::thread::ThreadMessage;
 
 pub struct Synthesis;
@@ -14,7 +15,7 @@ impl Synthesis {
 
         let first = &messages[0].content;
         let first_truncated = if first.len() > 200 {
-            format!("{}...", &first[..197])
+            format!("{}...", truncate_safe(first, 197))
         } else {
             first.clone()
         };
@@ -25,7 +26,7 @@ impl Synthesis {
 
         let last = &messages[messages.len() - 1].content;
         let last_truncated = if last.len() > 100 {
-            format!("{}...", &last[..97])
+            format!("{}...", truncate_safe(last, 97))
         } else {
             last.clone()
         };

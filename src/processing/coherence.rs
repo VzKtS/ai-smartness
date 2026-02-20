@@ -7,6 +7,7 @@
 //!   - Forget (noise) -> score < orphan_threshold, skip
 
 use crate::config::CoherenceConfig;
+use crate::constants::truncate_safe;
 use crate::AiResult;
 use serde::{Deserialize, Serialize};
 
@@ -78,16 +79,8 @@ fn check_via_llm(
     config: &CoherenceConfig,
 ) -> AiResult<CoherenceResult> {
     let max_ctx = config.max_context_chars;
-    let ctx_truncated = if context.len() > max_ctx {
-        &context[..max_ctx]
-    } else {
-        context
-    };
-    let cnt_truncated = if content.len() > max_ctx {
-        &content[..max_ctx]
-    } else {
-        content
-    };
+    let ctx_truncated = truncate_safe(context, max_ctx);
+    let cnt_truncated = truncate_safe(content, max_ctx);
 
     let prompt = format!(
         r#"Rate coherence between existing context and new content. Return JSON only:

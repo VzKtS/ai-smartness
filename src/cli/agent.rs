@@ -7,6 +7,8 @@ use ai_smartness::storage::database::{open_connection, ConnectionRole};
 use ai_smartness::storage::migrations;
 use ai_smartness::storage::path_utils;
 
+use ai_smartness::constants::truncate_safe;
+
 use super::resolve_project_hash;
 
 pub fn add(
@@ -271,7 +273,7 @@ pub fn tasks(id: &str, project_hash: Option<&str>) -> Result<()> {
     for t in &tasks {
         let id_short = if t.id.len() > 11 { &t.id[..11] } else { &t.id };
         let title = if t.title.len() > 24 {
-            format!("{}...", &t.title[..21])
+            format!("{}...", truncate_safe(&t.title, 21))
         } else {
             t.title.clone()
         };

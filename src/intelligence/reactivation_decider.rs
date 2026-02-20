@@ -1,7 +1,7 @@
 //! Reactivation Decider -- determine whether a suspended/archived thread
 //! should be reactivated based on embedding similarity and LLM judgment.
 
-use crate::constants::REACTIVATION_HIGH_CONFIDENCE;
+use crate::constants::{truncate_safe, REACTIVATION_HIGH_CONFIDENCE};
 use crate::thread::Thread;
 use crate::AiResult;
 use crate::processing::embeddings::EmbeddingManager;
@@ -47,11 +47,7 @@ impl ReactivationDecider {
 
         tracing::debug!(thread_id = %thread.id, similarity = similarity, "LLM reactivation: borderline, calling LLM");
 
-        let ctx_preview = if context.len() > 500 {
-            &context[..500]
-        } else {
-            context
-        };
+        let ctx_preview = truncate_safe(context, 500);
 
         let prompt = format!(
             "Is thread '{}' (topics: {}) relevant to context: '{}'?\n\

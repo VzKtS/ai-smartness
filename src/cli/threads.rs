@@ -4,6 +4,8 @@ use ai_smartness::storage::database::{open_connection, ConnectionRole};
 use ai_smartness::storage::path_utils;
 use ai_smartness::storage::threads::ThreadStorage;
 
+use ai_smartness::constants::truncate_safe;
+
 use super::{resolve_project_hash, resolve_agent_id};
 
 pub fn run(status_filter: Option<&str>, project_hash: Option<&str>, agent_id: Option<&str>) -> Result<()> {
@@ -36,13 +38,13 @@ pub fn run(status_filter: Option<&str>, project_hash: Option<&str>, agent_id: Op
     for t in &threads {
         let id_short = if t.id.len() > 11 { &t.id[..11] } else { &t.id };
         let title = if t.title.len() > 29 {
-            format!("{}...", &t.title[..26])
+            format!("{}...", truncate_safe(&t.title, 26))
         } else {
             t.title.clone()
         };
         let topics = t.topics.join(", ");
         let topics_display = if topics.len() > 20 {
-            format!("{}...", &topics[..17])
+            format!("{}...", truncate_safe(&topics, 17))
         } else {
             topics
         };

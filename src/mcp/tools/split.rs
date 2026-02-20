@@ -3,6 +3,8 @@ use ai_smartness::thread::{OriginType, Thread, ThreadStatus};
 use ai_smartness::AiResult;
 use ai_smartness::storage::threads::ThreadStorage;
 
+use ai_smartness::constants::truncate_safe;
+
 use super::{optional_bool, required_str, ToolContext};
 
 pub fn handle_split(
@@ -21,7 +23,7 @@ pub fn handle_split(
             .iter()
             .map(|m| {
                 let preview = if m.content.len() > 200 {
-                    format!("{}...", &m.content[..200])
+                    format!("{}...", truncate_safe(&m.content, 200))
                 } else {
                     m.content.clone()
                 };

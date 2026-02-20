@@ -58,18 +58,7 @@ fn build_enriched_embed_text_from_thread(thread: &Thread) -> String {
     )
 }
 
-/// Truncate a string to at most `max_bytes` bytes on a valid UTF-8 char boundary.
-fn truncate_safe(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    // Floor to nearest char boundary at or before max_bytes
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
+// truncate_safe imported via `use crate::constants::*`
 
 pub struct ThreadManager;
 

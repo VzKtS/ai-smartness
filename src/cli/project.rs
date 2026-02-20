@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use ai_smartness::constants::truncate_safe;
 use ai_smartness::project_registry::{MessagingMode, ProjectEntry, ProjectRegistryTrait};
 use ai_smartness::storage::database::{open_connection, ConnectionRole};
 use ai_smartness::storage::migrations;
@@ -138,7 +139,7 @@ pub fn list() -> Result<()> {
         let hash_short = if p.hash.len() > 9 { &p.hash[..9] } else { &p.hash };
         let name_str = p.name.as_deref().unwrap_or("unnamed");
         let name = if name_str.len() > 19 {
-            format!("{}...", &name_str[..16])
+            format!("{}...", truncate_safe(name_str, 16))
         } else {
             name_str.to_string()
         };

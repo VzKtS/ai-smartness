@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use ai_smartness::AiResult;
 use ai_smartness::config::GuardianConfig;
+use ai_smartness::constants::truncate_safe;
 use ai_smartness::intelligence::thread_manager::ThreadManager;
 use ai_smartness::processing::cleaner;
 use ai_smartness::processing::coherence::{self, CoherenceAction};
@@ -160,7 +161,7 @@ pub fn process_capture(
             .map(|t| t.labels)
             .unwrap_or_default();
         *pending = Some(PendingContext {
-            content: cleaned[..cleaned.len().min(1500)].to_string(),
+            content: truncate_safe(&cleaned, 1500).to_string(),
             thread_id: tid.clone(),
             labels,
             timestamp: Instant::now(),

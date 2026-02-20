@@ -81,6 +81,20 @@ pub const ALERT_WARNING_AFTER: u32 = 3;
 pub const ALERT_CRITICAL_AFTER: u32 = 5;
 pub const ALERT_COOLDOWN_SECS: u64 = 300;            // 5 min per-system cooldown
 
+// === UTF-8 Safe Truncation ===
+/// Truncate a string to at most `max_bytes` bytes on a valid UTF-8 char boundary.
+/// Floors to the nearest char boundary at or before `max_bytes`.
+pub fn truncate_safe(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 // === Label Filtering ===
 /// Labels that are too generic to carry semantic value — filtered out before storage.
 pub const LABEL_BLOCKLIST: &[&str] = &[
