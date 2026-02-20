@@ -6,9 +6,9 @@ const { invoke } = window.__TAURI__.core;
 // ─── i18n Translations ──────────────────────────────────────
 const T = {
 en: {
-    'tab.dashboard':'Dashboard','tab.threads':'Threads','tab.agents':'Agents','tab.settings':'Settings',
+    'tab.dashboard':'Dashboard','tab.threads':'Threads','tab.agents':'Agents','tab.graph':'Graph','tab.settings':'Settings',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Thread Matching',
-    'stab.gossip':'Gossip','stab.recall':'Recall','stab.engram':'Engram','stab.alerts':'Alerts',
+    'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decay & Lifecycle','stab.alerts':'Alerts',
     'stab.fallback':'Fallback','stab.guardcode':'GuardCode','stab.network':'Network','stab.updates':'Updates',
     'dash.daemon':'Daemon','dash.active':'Active Threads','dash.suspended':'Suspended',
     'dash.archived':'Archived','dash.bridges':'Bridges','dash.version':'Version',
@@ -57,9 +57,9 @@ en: {
     'gc.sanitize':'Sanitize LLM','gc.sanitizeretries':'Sanitize Loop Max',
 },
 fr: {
-    'tab.dashboard':'Tableau de bord','tab.threads':'Threads','tab.agents':'Agents','tab.settings':'Parametres',
+    'tab.dashboard':'Tableau de bord','tab.threads':'Threads','tab.agents':'Agents','tab.graph':'Graphe','tab.settings':'Parametres',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Correspondance',
-    'stab.gossip':'Gossip','stab.recall':'Rappel','stab.engram':'Engram','stab.alerts':'Alertes',
+    'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decroissance & Cycle de vie','stab.alerts':'Alertes',
     'stab.fallback':'Repli','stab.guardcode':'GuardCode','stab.network':'Reseau','stab.updates':'Mises a jour',
     'dash.daemon':'Daemon','dash.active':'Threads actifs','dash.suspended':'Suspendus',
     'dash.archived':'Archives','dash.bridges':'Ponts','dash.version':'Version',
@@ -108,9 +108,9 @@ fr: {
     'gc.sanitize':'Nettoyage LLM','gc.sanitizeretries':'Boucle nettoyage max',
 },
 es: {
-    'tab.dashboard':'Panel','tab.threads':'Hilos','tab.agents':'Agentes','tab.settings':'Configuracion',
+    'tab.dashboard':'Panel','tab.threads':'Hilos','tab.agents':'Agentes','tab.graph':'Grafo','tab.settings':'Configuracion',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Correspondencia',
-    'stab.gossip':'Gossip','stab.recall':'Recuerdo','stab.engram':'Engram','stab.alerts':'Alertas',
+    'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decaimiento & Ciclo de vida','stab.alerts':'Alertas',
     'stab.fallback':'Respaldo','stab.guardcode':'GuardCode','stab.network':'Red','stab.updates':'Actualizaciones',
     'dash.daemon':'Daemon','dash.active':'Hilos activos','dash.suspended':'Suspendidos',
     'dash.archived':'Archivados','dash.bridges':'Puentes','dash.version':'Version',
@@ -223,6 +223,7 @@ document.querySelectorAll('.tab:not(.tab-debug)').forEach(tab => {
         if (tab.dataset.tab === 'threads') loadThreadAgentTabs();
         if (tab.dataset.tab === 'settings') loadSettings();
         if (tab.dataset.tab === 'agents') loadAgents();
+        if (tab.dataset.tab === 'graph') loadGraph();
     });
 });
 
@@ -281,6 +282,7 @@ document.getElementById('project-select').addEventListener('change', (e) => {
         if (tab === 'threads') loadThreads();
         if (tab === 'agents') loadAgents();
         if (tab === 'settings') loadSettings();
+        if (tab === 'graph') { document.getElementById('graph-agent-select').innerHTML = ''; loadGraph(); }
     }
 });
 
@@ -1336,6 +1338,8 @@ async function loadDaemonSettings() {
         if (el('daemon-idle-timeout')) el('daemon-idle-timeout').value = cfg.pool_max_idle_secs || 1800;
         if (el('daemon-prune-interval')) el('daemon-prune-interval').value = cfg.prune_interval_secs || 300;
         if (el('daemon-cross-gossip')) el('daemon-cross-gossip').checked = cfg.gossip_cross_project || false;
+        if (el('daemon-capture-workers')) el('daemon-capture-workers').value = cfg.capture_workers || 2;
+        if (el('daemon-capture-queue')) el('daemon-capture-queue').value = cfg.capture_queue_capacity || 100;
     } catch (e) {
         console.error('Daemon settings load error:', e);
     }
@@ -1349,6 +1353,8 @@ async function saveDaemonSettings() {
             pool_max_idle_secs: parseInt(document.getElementById('daemon-idle-timeout')?.value) || 1800,
             prune_interval_secs: parseInt(document.getElementById('daemon-prune-interval')?.value) || 300,
             gossip_cross_project: document.getElementById('daemon-cross-gossip')?.checked || false,
+            capture_workers: parseInt(document.getElementById('daemon-capture-workers')?.value) || 2,
+            capture_queue_capacity: parseInt(document.getElementById('daemon-capture-queue')?.value) || 100,
         };
         await invoke('save_daemon_settings', { settings });
         showSaveStatus(T[currentLang]?.['settings.saved'] || 'Settings saved successfully');
@@ -1737,3 +1743,392 @@ async function purgeAgentDb(agentIdToPurge) {
     }
 }
 window.purgeAgentDb = purgeAgentDb;
+
+// ═══════════════════════════════════════════════════════════════
+// GRAPH — DAG Visualization (Force-directed)
+// ═══════════════════════════════════════════════════════════════
+
+let graphNodes = [];
+let graphEdges = [];
+let graphTransform = { x: 0, y: 0, scale: 1 };
+let graphDrag = null;
+let graphHoveredNode = null;
+let graphSelectedNode = null;
+let graphAnimFrame = null;
+
+const GRAPH_COLORS = {
+    active: '#4caf50',
+    suspended: '#ff9800',
+    archived: '#666',
+    edge_default: 'rgba(100,200,255,0.25)',
+    edge_highlight: 'rgba(100,200,255,0.8)',
+};
+
+const RELATION_COLORS = {
+    'ChildOf': '#6cf',
+    'SiblingOf': '#9c6',
+    'RelatedTo': '#fc6',
+    'Supersedes': '#c6f',
+};
+
+async function loadGraph() {
+    if (!projectHash) {
+        document.getElementById('graph-stats').textContent = 'Select a project to view the memory graph.';
+        return;
+    }
+    const agentSel = document.getElementById('graph-agent-select');
+    if (!agentSel.value) {
+        try {
+            const agents = await invoke('list_agents', { projectHash });
+            agentSel.innerHTML = '';
+            for (const a of agents) {
+                const opt = document.createElement('option');
+                opt.value = a.id;
+                opt.textContent = a.name || a.id;
+                agentSel.appendChild(opt);
+            }
+        } catch (e) { console.error('Graph agent list:', e); }
+    }
+    const aid = agentSel.value;
+    if (!aid) return;
+
+    try {
+        const [threads, bridges] = await Promise.all([
+            invoke('get_threads', { projectHash, agentId: aid, statusFilter: 'active' }),
+            invoke('get_bridges', { projectHash, agentId: aid }),
+        ]);
+        buildGraph(threads, bridges);
+        forceLayout(150);
+        centerGraph();
+        drawGraph();
+        document.getElementById('graph-stats').textContent =
+            `${graphNodes.length} threads, ${graphEdges.length} bridges`;
+    } catch (e) {
+        console.error('Graph load error:', e);
+        document.getElementById('graph-stats').textContent = 'Error: ' + e;
+    }
+}
+
+function buildGraph(threads, bridges) {
+    const filter = document.getElementById('graph-filter').value;
+    const idSet = new Set(threads.map(t => t.id));
+
+    // Build edges from bridges (only where both endpoints exist)
+    graphEdges = bridges
+        .filter(b => idSet.has(b.source_id) && idSet.has(b.target_id))
+        .map(b => ({
+            source: b.source_id,
+            target: b.target_id,
+            weight: b.weight || 0,
+            relation: b.relation_type || 'RelatedTo',
+            reason: b.reason || '',
+        }));
+
+    // Filter nodes
+    let filtered = threads;
+    if (filter === 'bridged') {
+        const bridgedIds = new Set();
+        graphEdges.forEach(e => { bridgedIds.add(e.source); bridgedIds.add(e.target); });
+        filtered = threads.filter(t => bridgedIds.has(t.id));
+    }
+
+    // Build nodes with random initial positions
+    graphNodes = filtered.map(t => ({
+        id: t.id,
+        title: t.title || 'Untitled',
+        status: (t.status || 'active').toLowerCase(),
+        importance: t.importance || 0.5,
+        weight: t.weight || 0.5,
+        topics: t.topics || [],
+        x: (Math.random() - 0.5) * 600,
+        y: (Math.random() - 0.5) * 400,
+        vx: 0, vy: 0,
+        radius: 6 + (t.importance || 0.5) * 10,
+    }));
+
+    // Re-filter edges to match filtered nodes
+    const nodeIds = new Set(graphNodes.map(n => n.id));
+    graphEdges = graphEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
+}
+
+function forceLayout(iterations) {
+    const nodes = graphNodes;
+    const edges = graphEdges;
+    if (nodes.length === 0) return;
+
+    const nodeMap = {};
+    nodes.forEach(n => { nodeMap[n.id] = n; });
+
+    const repulsion = 3000;
+    const attraction = 0.01;
+    const damping = 0.9;
+    const minDist = 30;
+
+    for (let iter = 0; iter < iterations; iter++) {
+        // Repulsion (all pairs)
+        for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+                const a = nodes[i], b = nodes[j];
+                let dx = b.x - a.x, dy = b.y - a.y;
+                let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                if (dist < minDist) dist = minDist;
+                const force = repulsion / (dist * dist);
+                const fx = (dx / dist) * force;
+                const fy = (dy / dist) * force;
+                a.vx -= fx; a.vy -= fy;
+                b.vx += fx; b.vy += fy;
+            }
+        }
+
+        // Attraction (edges)
+        for (const e of edges) {
+            const a = nodeMap[e.source], b = nodeMap[e.target];
+            if (!a || !b) continue;
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            const force = dist * attraction * (0.5 + e.weight);
+            const fx = (dx / dist) * force;
+            const fy = (dy / dist) * force;
+            a.vx += fx; a.vy += fy;
+            b.vx -= fx; b.vy -= fy;
+        }
+
+        // Center gravity
+        for (const n of nodes) {
+            n.vx -= n.x * 0.001;
+            n.vy -= n.y * 0.001;
+        }
+
+        // Apply velocity + damping
+        for (const n of nodes) {
+            n.vx *= damping;
+            n.vy *= damping;
+            n.x += n.vx;
+            n.y += n.vy;
+        }
+    }
+}
+
+function centerGraph() {
+    if (graphNodes.length === 0) return;
+    const canvas = document.getElementById('graph-canvas');
+    const rect = canvas.getBoundingClientRect();
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of graphNodes) {
+        if (n.x < minX) minX = n.x;
+        if (n.y < minY) minY = n.y;
+        if (n.x > maxX) maxX = n.x;
+        if (n.y > maxY) maxY = n.y;
+    }
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const rangeX = maxX - minX + 100;
+    const rangeY = maxY - minY + 100;
+    const scale = Math.min(rect.width / rangeX, rect.height / rangeY, 2);
+    graphTransform = {
+        x: rect.width / 2 - cx * scale,
+        y: rect.height / 2 - cy * scale,
+        scale: scale,
+    };
+}
+
+function drawGraph() {
+    const canvas = document.getElementById('graph-canvas');
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * (window.devicePixelRatio || 1);
+    canvas.height = rect.height * (window.devicePixelRatio || 1);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+
+    const { x: tx, y: ty, scale } = graphTransform;
+    const showLabels = document.getElementById('graph-show-labels')?.checked;
+    const showWeights = document.getElementById('graph-show-weights')?.checked;
+
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    const nodeMap = {};
+    graphNodes.forEach(n => { nodeMap[n.id] = n; });
+
+    // Draw edges
+    for (const e of graphEdges) {
+        const a = nodeMap[e.source], b = nodeMap[e.target];
+        if (!a || !b) continue;
+        const ax = a.x * scale + tx, ay = a.y * scale + ty;
+        const bx = b.x * scale + tx, by = b.y * scale + ty;
+
+        const isHighlight = graphSelectedNode &&
+            (e.source === graphSelectedNode.id || e.target === graphSelectedNode.id);
+
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.strokeStyle = isHighlight
+            ? GRAPH_COLORS.edge_highlight
+            : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default);
+        ctx.lineWidth = isHighlight ? 2 : Math.max(0.5, e.weight * 3);
+        ctx.globalAlpha = isHighlight ? 1 : 0.4 + e.weight * 0.4;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+
+        if (showWeights) {
+            const mx = (ax + bx) / 2, my = (ay + by) / 2;
+            ctx.font = '9px monospace';
+            ctx.fillStyle = '#888';
+            ctx.fillText(e.weight.toFixed(2), mx + 2, my - 2);
+        }
+    }
+
+    // Draw nodes
+    for (const n of graphNodes) {
+        const nx = n.x * scale + tx, ny = n.y * scale + ty;
+        const r = n.radius * Math.sqrt(scale);
+        const isHovered = graphHoveredNode === n;
+        const isSelected = graphSelectedNode === n;
+
+        ctx.beginPath();
+        ctx.arc(nx, ny, r, 0, Math.PI * 2);
+        ctx.fillStyle = GRAPH_COLORS[n.status] || GRAPH_COLORS.active;
+        ctx.globalAlpha = 0.3 + n.weight * 0.7;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        if (isHovered || isSelected) {
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        if (showLabels && scale > 0.5) {
+            const label = n.title.length > 24 ? n.title.substring(0, 22) + '..' : n.title;
+            ctx.font = `${Math.max(9, 11 * Math.sqrt(scale))}px sans-serif`;
+            ctx.fillStyle = '#ccc';
+            ctx.fillText(label, nx + r + 3, ny + 3);
+        }
+    }
+}
+
+// ─── Graph interaction ──────────────────────────────────────
+
+function graphScreenToWorld(sx, sy) {
+    const { x: tx, y: ty, scale } = graphTransform;
+    return { x: (sx - tx) / scale, y: (sy - ty) / scale };
+}
+
+function graphNodeAt(wx, wy) {
+    for (let i = graphNodes.length - 1; i >= 0; i--) {
+        const n = graphNodes[i];
+        const dx = n.x - wx, dy = n.y - wy;
+        if (dx * dx + dy * dy <= (n.radius + 4) * (n.radius + 4)) return n;
+    }
+    return null;
+}
+
+const graphCanvas = document.getElementById('graph-canvas');
+if (graphCanvas) {
+    graphCanvas.addEventListener('mousedown', (e) => {
+        const rect = graphCanvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+        const { x: wx, y: wy } = graphScreenToWorld(sx, sy);
+        const node = graphNodeAt(wx, wy);
+        if (node) {
+            graphDrag = { node, offsetX: node.x - wx, offsetY: node.y - wy, moved: false };
+        } else {
+            graphDrag = { pan: true, startX: sx, startY: sy, startTx: graphTransform.x, startTy: graphTransform.y };
+        }
+    });
+
+    graphCanvas.addEventListener('mousemove', (e) => {
+        const rect = graphCanvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+        const { x: wx, y: wy } = graphScreenToWorld(sx, sy);
+
+        if (graphDrag) {
+            if (graphDrag.pan) {
+                graphTransform.x = graphDrag.startTx + (sx - graphDrag.startX);
+                graphTransform.y = graphDrag.startTy + (sy - graphDrag.startY);
+            } else if (graphDrag.node) {
+                graphDrag.node.x = wx + graphDrag.offsetX;
+                graphDrag.node.y = wy + graphDrag.offsetY;
+                graphDrag.moved = true;
+            }
+            drawGraph();
+            return;
+        }
+
+        const node = graphNodeAt(wx, wy);
+        if (node !== graphHoveredNode) {
+            graphHoveredNode = node;
+            graphCanvas.style.cursor = node ? 'pointer' : 'grab';
+            drawGraph();
+        }
+    });
+
+    graphCanvas.addEventListener('mouseup', (e) => {
+        if (graphDrag && graphDrag.node && !graphDrag.moved) {
+            graphSelectedNode = graphDrag.node;
+            showGraphDetail(graphDrag.node);
+            drawGraph();
+        }
+        graphDrag = null;
+    });
+
+    graphCanvas.addEventListener('mouseleave', () => {
+        graphDrag = null;
+        graphHoveredNode = null;
+        drawGraph();
+    });
+
+    graphCanvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const rect = graphCanvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+        const newScale = Math.max(0.1, Math.min(5, graphTransform.scale * factor));
+        // Zoom toward cursor
+        graphTransform.x = sx - (sx - graphTransform.x) * (newScale / graphTransform.scale);
+        graphTransform.y = sy - (sy - graphTransform.y) * (newScale / graphTransform.scale);
+        graphTransform.scale = newScale;
+        drawGraph();
+    }, { passive: false });
+}
+
+function showGraphDetail(node) {
+    const panel = document.getElementById('graph-detail');
+    panel.style.display = 'block';
+    document.getElementById('graph-detail-title').textContent = node.title;
+    document.getElementById('graph-detail-meta').innerHTML =
+        `<strong>Status:</strong> ${esc(node.status)}<br>` +
+        `<strong>Weight:</strong> ${node.weight.toFixed(2)}<br>` +
+        `<strong>Importance:</strong> ${node.importance.toFixed(2)}<br>` +
+        `<strong>Topics:</strong> ${node.topics.join(', ') || '-'}`;
+
+    const connected = graphEdges.filter(e => e.source === node.id || e.target === node.id);
+    if (connected.length > 0) {
+        const nodeMap = {};
+        graphNodes.forEach(n => { nodeMap[n.id] = n; });
+        document.getElementById('graph-detail-bridges').innerHTML =
+            `<strong>Bridges (${connected.length}):</strong><br>` +
+            connected.map(e => {
+                const otherId = e.source === node.id ? e.target : e.source;
+                const other = nodeMap[otherId];
+                const otherTitle = other ? other.title.substring(0, 30) : otherId.substring(0, 8);
+                return `<span style="color:${RELATION_COLORS[e.relation] || '#6cf'}">${esc(e.relation)}</span> ` +
+                    `→ ${esc(otherTitle)} (${e.weight.toFixed(2)})`;
+            }).join('<br>');
+    } else {
+        document.getElementById('graph-detail-bridges').innerHTML =
+            '<span style="color:var(--text-dim)">No bridges</span>';
+    }
+}
+
+document.getElementById('btn-graph-detail-close')?.addEventListener('click', () => {
+    document.getElementById('graph-detail').style.display = 'none';
+    graphSelectedNode = null;
+    drawGraph();
+});
+
+document.getElementById('btn-graph-refresh')?.addEventListener('click', loadGraph);
+document.getElementById('graph-agent-select')?.addEventListener('change', loadGraph);
+document.getElementById('graph-filter')?.addEventListener('change', loadGraph);
+document.getElementById('graph-show-labels')?.addEventListener('change', drawGraph);
+document.getElementById('graph-show-weights')?.addEventListener('change', drawGraph);

@@ -873,6 +873,74 @@ impl Default for FallbackPatterns {
 }
 
 // ============================================================================
+// DECAY & LIFECYCLE CONFIG
+// ============================================================================
+
+/// Decay & lifecycle parameters — configurable via GUI.
+/// Controls thread weight decay, orphan acceleration, bridge decay, and archival.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecayConfig {
+    /// Thread weight below this triggers auto-suspension. Default: 0.1
+    #[serde(default = "default_thread_suspend_threshold")]
+    pub thread_suspend_threshold: f64,
+    /// Minimum half-life in days (importance=0, disposable). Default: 0.75
+    #[serde(default = "default_thread_min_half_life")]
+    pub thread_min_half_life: f64,
+    /// Maximum half-life in days (importance=1, critical). Default: 7.0
+    #[serde(default = "default_thread_max_half_life")]
+    pub thread_max_half_life: f64,
+    /// Weight boost on re-injection by Engram. Default: 0.1
+    #[serde(default = "default_thread_use_boost")]
+    pub thread_use_boost: f64,
+    /// Hours without injection before orphan half-life halves. Default: 6.0
+    #[serde(default = "default_orphan_halving_hours")]
+    pub orphan_halving_hours: f64,
+    /// Floor for orphan half-life (fraction of base). Default: 0.1
+    #[serde(default = "default_orphan_min_half_life_factor")]
+    pub orphan_min_half_life_factor: f64,
+    /// Bridge half-life in days. Default: 2.0
+    #[serde(default = "default_bridge_half_life")]
+    pub bridge_half_life: f64,
+    /// Bridge weight below this is marked invalid. Default: 0.05
+    #[serde(default = "default_bridge_death_threshold")]
+    pub bridge_death_threshold: f64,
+    /// Bridge weight boost on traversal during recall. Default: 0.1
+    #[serde(default = "default_bridge_use_boost")]
+    pub bridge_use_boost: f64,
+    /// Hours after suspension before archival. Default: 72.0
+    #[serde(default = "default_archive_after_hours")]
+    pub archive_after_hours: f64,
+}
+
+fn default_thread_suspend_threshold() -> f64 { 0.1 }
+fn default_thread_min_half_life() -> f64 { 0.75 }
+fn default_thread_max_half_life() -> f64 { 7.0 }
+fn default_thread_use_boost() -> f64 { 0.1 }
+fn default_orphan_halving_hours() -> f64 { 6.0 }
+fn default_orphan_min_half_life_factor() -> f64 { 0.1 }
+fn default_bridge_half_life() -> f64 { 2.0 }
+fn default_bridge_death_threshold() -> f64 { 0.05 }
+fn default_bridge_use_boost() -> f64 { 0.1 }
+fn default_archive_after_hours() -> f64 { 72.0 }
+
+impl Default for DecayConfig {
+    fn default() -> Self {
+        Self {
+            thread_suspend_threshold: 0.1,
+            thread_min_half_life: 0.75,
+            thread_max_half_life: 7.0,
+            thread_use_boost: 0.1,
+            orphan_halving_hours: 6.0,
+            orphan_min_half_life_factor: 0.1,
+            bridge_half_life: 2.0,
+            bridge_death_threshold: 0.05,
+            bridge_use_boost: 0.1,
+            archive_after_hours: 72.0,
+        }
+    }
+}
+
+// ============================================================================
 // LLM HEALTH STATE
 // ============================================================================
 
@@ -943,6 +1011,10 @@ pub struct GuardianConfig {
     #[serde(default)]
     pub capture: CaptureConfig,
 
+    // --- Decay & Lifecycle (thread/bridge decay, archival) ---
+    #[serde(default)]
+    pub decay: DecayConfig,
+
     // --- Global settings ---
     pub enabled: bool,
     pub claude_cli_path: Option<String>,
@@ -981,6 +1053,7 @@ impl Default for GuardianConfig {
             heartbeat: crate::registry::heartbeat::HeartbeatConfig::default(),
             hooks: HooksConfig::default(),
             capture: CaptureConfig::default(),
+            decay: DecayConfig::default(),
             enabled: true,
             claude_cli_path: None,
             hook_guard_env: "AI_SMARTNESS_HOOK_RUNNING".to_string(),
@@ -1318,6 +1391,20 @@ impl GuardianConfig {
                     if let Some(v) = w.get("focus_alignment").and_then(|v| v.as_f64()) { vw.focus_alignment = v; }
                     if let Some(v) = w.get("concept_coherence").and_then(|v| v.as_f64()) { vw.concept_coherence = v; }
                 }
+            }
+
+            // Decay & Lifecycle config
+            if let Some(d) = s.get("decay").and_then(|v| v.as_object()) {
+                if let Some(v) = d.get("thread_suspend_threshold").and_then(|v| v.as_f64()) { gc.decay.thread_suspend_threshold = v; }
+                if let Some(v) = d.get("thread_min_half_life").and_then(|v| v.as_f64()) { gc.decay.thread_min_half_life = v; }
+                if let Some(v) = d.get("thread_max_half_life").and_then(|v| v.as_f64()) { gc.decay.thread_max_half_life = v; }
+                if let Some(v) = d.get("thread_use_boost").and_then(|v| v.as_f64()) { gc.decay.thread_use_boost = v; }
+                if let Some(v) = d.get("orphan_halving_hours").and_then(|v| v.as_f64()) { gc.decay.orphan_halving_hours = v; }
+                if let Some(v) = d.get("orphan_min_half_life_factor").and_then(|v| v.as_f64()) { gc.decay.orphan_min_half_life_factor = v; }
+                if let Some(v) = d.get("bridge_half_life").and_then(|v| v.as_f64()) { gc.decay.bridge_half_life = v; }
+                if let Some(v) = d.get("bridge_death_threshold").and_then(|v| v.as_f64()) { gc.decay.bridge_death_threshold = v; }
+                if let Some(v) = d.get("bridge_use_boost").and_then(|v| v.as_f64()) { gc.decay.bridge_use_boost = v; }
+                if let Some(v) = d.get("archive_after_hours").and_then(|v| v.as_f64()) { gc.decay.archive_after_hours = v; }
             }
 
             // Alert thresholds

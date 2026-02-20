@@ -13,6 +13,7 @@
             <button class="tab active" data-tab="dashboard" data-i18n="tab.dashboard">Dashboard</button>
             <button class="tab" data-tab="threads" data-i18n="tab.threads">Threads</button>
             <button class="tab" data-tab="agents" data-i18n="tab.agents">Agents</button>
+            <button class="tab" data-tab="graph" data-i18n="tab.graph">Graph</button>
             <button class="tab" data-tab="settings" data-i18n="tab.settings">Settings</button>
             <button id="btn-debug" class="tab tab-debug" data-i18n="btn.debug">Debug</button>
         </nav>
@@ -185,6 +186,36 @@
             </div>
         </section>
 
+        <!-- ═══ Graph (DAG Visualization) ═══ -->
+        <section id="graph" class="panel">
+            <div class="graph-toolbar">
+                <h2>Memory Graph</h2>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <select id="graph-agent-select" title="Select agent"></select>
+                    <select id="graph-filter" title="Filter">
+                        <option value="all">All threads</option>
+                        <option value="active">Active only</option>
+                        <option value="bridged">Bridged only</option>
+                    </select>
+                    <button id="btn-graph-refresh" class="btn-sm">Refresh</button>
+                    <label style="font-size:12px"><input type="checkbox" id="graph-show-labels" checked> Labels</label>
+                    <label style="font-size:12px"><input type="checkbox" id="graph-show-weights"> Weights</label>
+                </div>
+            </div>
+            <div id="graph-container" style="width:100%;height:calc(100vh - 180px);border:1px solid var(--border,#333);border-radius:4px;background:var(--bg-alt,#1a1a2e);position:relative;overflow:hidden">
+                <canvas id="graph-canvas" style="width:100%;height:100%"></canvas>
+            </div>
+            <div id="graph-info" style="font-size:12px;color:var(--text-dim,#888);margin-top:4px">
+                <span id="graph-stats">Select a project and agent to view the memory graph.</span>
+            </div>
+            <div id="graph-detail" class="graph-detail-panel" style="display:none;position:absolute;right:16px;top:120px;width:300px;max-height:400px;overflow-y:auto;background:var(--bg,#0f0f23);border:1px solid var(--border,#333);border-radius:6px;padding:12px;z-index:10">
+                <h4 id="graph-detail-title" style="margin:0 0 8px"></h4>
+                <div id="graph-detail-meta" style="font-size:12px;color:var(--text-dim)"></div>
+                <div id="graph-detail-bridges" style="font-size:12px;margin-top:8px"></div>
+                <button id="btn-graph-detail-close" class="btn-sm" style="margin-top:8px">Close</button>
+            </div>
+        </section>
+
         <!-- ═══ Settings ═══ -->
         <section id="settings" class="panel">
             <div class="settings-header">
@@ -202,8 +233,8 @@
                 <button class="sub-tab" data-stab="stab-guardian" data-i18n="stab.guardian">Guardian LLM</button>
                 <button class="sub-tab" data-stab="stab-matching" data-i18n="stab.matching">Thread Matching</button>
                 <button class="sub-tab" data-stab="stab-gossip" data-i18n="stab.gossip">Gossip</button>
-                <button class="sub-tab" data-stab="stab-recall" data-i18n="stab.recall">Recall</button>
                 <button class="sub-tab" data-stab="stab-engram" data-i18n="stab.engram">Engram</button>
+                <button class="sub-tab" data-stab="stab-decay">Decay & Lifecycle</button>
                 <button class="sub-tab" data-stab="stab-alerts" data-i18n="stab.alerts">Alerts</button>
                 <button class="sub-tab" data-stab="stab-fallback" data-i18n="stab.fallback">Fallback</button>
                 <button class="sub-tab" data-stab="stab-guardcode" data-i18n="stab.guardcode">GuardCode</button>
@@ -248,6 +279,8 @@
                             <label data-i18n="daemon.maxconn" title="Maximum simultaneous SQLite database connections the daemon keeps open (one per active agent). Higher values use more RAM but support more concurrent agents. Default: 50.">Max Connections <input type="number" id="daemon-max-conn" min="1" max="200"></label>
                             <label data-i18n="daemon.idletimeout" title="Seconds before an idle agent connection is evicted from the pool. Lower values free RAM faster but cause more reconnections. Default: 1800 (30 min).">Idle Timeout (secs) <input type="number" id="daemon-idle-timeout" min="60"></label>
                             <label data-i18n="daemon.pruneinterval" title="Interval in seconds between periodic maintenance tasks: gossip bridge discovery, thread weight decay, archive old suspended threads, orphan cleanup, and WAL checkpoint. Lower = fresher memory but more CPU usage. Default: 300 (5 min).">Prune Interval (secs) <input type="number" id="daemon-prune-interval" min="60"></label>
+                            <label title="Number of worker threads for processing captures (LLM extraction). Each worker handles one capture at a time. Default: min(CPU cores, 4).">Capture Workers <input type="number" id="daemon-capture-workers" min="1" max="16"></label>
+                            <label title="Maximum buffered capture jobs. If the queue is full, new captures are dropped (non-blocking). Default: 100.">Capture Queue Capacity <input type="number" id="daemon-capture-queue" min="10" max="1000"></label>
                             <label data-i18n="daemon.crossgossip" title="Enable bridge discovery between threads from different projects. Experimental feature: useful for cross-project knowledge transfer but may create noisy connections. Default: off.">Cross-project Gossip <input type="checkbox" id="daemon-cross-gossip"></label>
                         </div>
                         <div class="settings-actions" style="margin-top:12px">
@@ -403,31 +436,48 @@
                 </div>
             </div>
 
-            <!-- ── Gossip ── -->
+            <!-- ── Gossip v2 ── -->
             <div id="stab-gossip" class="sub-panel">
-                <div class="form-grid">
-                    <label title="Embedding backend for gossip bridge discovery. Runs periodically (every prune interval) to find semantic relationships between threads. OnnxWithFallback recommended. Disabled = no automatic bridge creation.">Embedding Mode <select data-path="gossip.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
-                    <label title="ONNX similarity threshold for creating a bridge between two threads. Higher = fewer but stronger bridges. Default: 0.75 (conservative).">ONNX Threshold <input type="number" data-path="gossip.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
-                    <label title="TF-IDF similarity threshold for bridge creation fallback. Default: 0.55.">TF-IDF Threshold <input type="number" data-path="gossip.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
-                    <label title="Enable zero-cost topic-based bridge creation. Threads sharing enough common topics get a bridge without needing embeddings. Complementary to embedding-based discovery. Default: on.">Topic Overlap Enabled <input type="checkbox" data-path="gossip.topic_overlap_enabled"></label>
-                    <label title="Minimum number of shared topics required to create a topic-based bridge. Higher = fewer bridges but more meaningful. Default: 2.">Min Shared Topics <input type="number" data-path="gossip.topic_overlap_min_shared" min="1"></label>
-                    <label title="Initial weight assigned to topic-overlap bridges. Lower than embedding bridges since topic overlap is a weaker signal. Bridges decay over time via half-life. Default: 0.5.">Topic Overlap Weight <input type="number" data-path="gossip.topic_overlap_initial_weight" min="0" max="1" step="0.05"></label>
-                    <label title="Number of threads processed per gossip batch. Higher = faster processing but more CPU per cycle. Default: 50.">Batch Size <input type="number" data-path="gossip.batch_size" min="1"></label>
-                    <label title="Milliseconds to yield between gossip batches. Prevents CPU monopolization during large gossip runs. 0 = no yielding. Default: 10ms.">Yield (ms) <input type="number" data-path="gossip.yield_ms" min="0"></label>
-                    <label title="Similarity above this threshold extends a bridge relation type (e.g., from 'related' to 'extends'). Default: 0.80.">Strong Bridge Threshold <input type="number" data-path="gossip.strong_bridge_threshold" min="0" max="1" step="0.05"></label>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="gossip-concept">Concept Gossip v2</h3>
+                    <div id="section-gossip-concept" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Enable concept-based bridge discovery via ConceptIndex inverted index. Core v2 pipeline. Default: on.">Concept Gossip Enabled <input type="checkbox" data-path="gossip.concept_gossip_enabled"></label>
+                            <label title="Minimum shared concepts between two threads to consider a bridge. Higher = fewer but stronger bridges. Default: 3.">Min Shared Concepts <input type="number" data-path="gossip.concept_overlap_min_shared" min="1" max="10"></label>
+                            <label title="Minimum computed weight for a concept bridge to be created. Bridges below this are skipped. Default: 0.20.">Min Bridge Weight <input type="number" data-path="gossip.concept_min_bridge_weight" min="0" max="1" step="0.05"></label>
+                            <label title="Overlap score threshold for collecting merge candidates. Pairs above this are evaluated for potential thread merge. Default: 0.60.">Merge Evaluation Threshold <input type="number" data-path="gossip.merge_evaluation_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Overlap score threshold for automatic merge (daemon). Pairs above this are merged without user confirmation. Default: 0.85.">Merge Auto Threshold <input type="number" data-path="gossip.merge_auto_threshold" min="0" max="1" step="0.05"></label>
+                        </div>
+                    </div>
                 </div>
-            </div>
-
-            <!-- ── Recall ── -->
-            <div id="stab-recall" class="sub-panel">
-                <div class="form-grid">
-                    <label title="Embedding backend for legacy recall system. Superseded by Engram (multi-validator) but kept for backward compatibility. OnnxWithFallback recommended.">Embedding Mode <select data-path="recall.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
-                    <label title="ONNX similarity threshold for legacy recall. Threads with similarity below this are excluded from results. Default: 0.30 (inclusive).">ONNX Threshold <input type="number" data-path="recall.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
-                    <label title="TF-IDF similarity threshold for legacy recall fallback. Default: 0.20.">TF-IDF Threshold <input type="number" data-path="recall.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
-                    <label title="Maximum number of threads returned for memory injection into the agent's prompt. More results = richer context but longer prompts. Default: 5.">Max Results <input type="number" data-path="recall.max_results" min="1"></label>
-                    <label title="Maximum number of threads scanned from the index before ranking. Higher = better recall but slower. Default: 50.">Max Candidates <input type="number" data-path="recall.max_candidates" min="1"></label>
-                    <label title="Score boost applied to threads matching the current ai_focus directive. Helps prioritize contextually relevant threads. Default: 0.15.">Focus Boost <input type="number" data-path="recall.focus_boost" min="0" max="1" step="0.05"></label>
-                    <label title="Score penalty applied to suspended/archived threads. Gives priority to active threads in recall results. Default: 0.1.">Status Penalty <input type="number" data-path="recall.status_penalty" min="0" max="1" step="0.05"></label>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="gossip-limits">Bridge Limits</h3>
+                    <div id="section-gossip-limits" class="section-body">
+                        <div class="form-grid">
+                            <label title="Minimum bridges per thread (floor for dynamic limits). Default: 3.">Min Bridges/Thread <input type="number" data-path="gossip.min_bridges_per_thread" min="1" max="20"></label>
+                            <label title="Maximum bridges per thread (ceiling for dynamic limits). Default: 10.">Max Bridges/Thread <input type="number" data-path="gossip.max_bridges_per_thread" min="1" max="50"></label>
+                            <label title="Target ratio of total bridges to total threads for dynamic limit calculation. Default: 3.0.">Target Bridge Ratio <input type="number" data-path="gossip.target_bridge_ratio" min="0.5" max="10" step="0.5"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="gossip-embedding">Embedding</h3>
+                    <div id="section-gossip-embedding" class="section-body">
+                        <div class="form-grid">
+                            <label title="Embedding backend for gossip. OnnxWithFallback recommended. Default: OnnxWithFallback.">Embedding Mode <select data-path="gossip.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
+                            <label title="ONNX similarity threshold for gossip. Default: 0.75.">ONNX Threshold <input type="number" data-path="gossip.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="TF-IDF similarity threshold for gossip fallback. Default: 0.55.">TF-IDF Threshold <input type="number" data-path="gossip.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="gossip-legacy">Legacy Topic Overlap</h3>
+                    <div id="section-gossip-legacy" class="section-body">
+                        <div class="form-grid">
+                            <label title="Enable legacy topic-based bridge creation for threads without concepts. Fallback for pre-v2 threads. Default: on.">Topic Overlap Enabled <input type="checkbox" data-path="gossip.topic_overlap_enabled"></label>
+                            <label title="Minimum shared topics for legacy bridge creation. Default: 2.">Min Shared Topics <input type="number" data-path="gossip.topic_overlap_min_shared" min="1"></label>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -437,8 +487,8 @@
                     <label title="Embedding backend for the Engram V1 validator (semantic similarity). Used in the 8-validator consensus pipeline for memory injection. OnnxWithFallback recommended.">Embedding Mode <select data-path="engram.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
                     <label title="ONNX similarity threshold for Engram V1 validator. Threads above this pass the semantic similarity vote. Default: 0.30.">ONNX Threshold <input type="number" data-path="engram.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
                     <label title="TF-IDF similarity threshold for Engram V1 validator fallback. Default: 0.20.">TF-IDF Threshold <input type="number" data-path="engram.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
-                    <label title="Minimum validator votes (out of 8) for StrongInject — thread is injected with high confidence into the agent's prompt. Lower = more injections but potentially noisy. Default: 5.">Strong Inject Min Votes <input type="number" data-path="engram.strong_inject_min_votes" min="1" max="8"></label>
-                    <label title="Minimum validator votes for WeakInject — thread is injected with lower confidence (may be summarized). Below this threshold = skip. Default: 3.">Weak Inject Min Votes <input type="number" data-path="engram.weak_inject_min_votes" min="1" max="8"></label>
+                    <label title="Minimum validator votes (out of 9) for StrongInject — thread is injected with high confidence into the agent's prompt. Lower = more injections but potentially noisy. Default: 5.">Strong Inject Min Votes <input type="number" data-path="engram.strong_inject_min_votes" min="1" max="9"></label>
+                    <label title="Minimum validator votes (out of 9) for WeakInject — thread is injected with lower confidence (may be summarized). Below this threshold = skip. Default: 3.">Weak Inject Min Votes <input type="number" data-path="engram.weak_inject_min_votes" min="1" max="9"></label>
                     <label title="Maximum threads returned for prompt injection after the 8-validator consensus pipeline. More = richer context but longer prompts. Default: 5.">Max Results <input type="number" data-path="engram.max_results" min="1"></label>
                     <label title="Maximum threads fetched from the topic hash index for the validator pipeline. Higher = better recall but slower. Default: 50.">Max Candidates <input type="number" data-path="engram.max_candidates" min="1"></label>
                     <label title="Maximum archived threads scanned in addition to active/suspended. Archived threads may contain valuable historical knowledge. 0 = skip archived. Default: 50.">Max Archived Scan <input type="number" data-path="engram.max_archived_scan" min="0"></label>
@@ -454,6 +504,49 @@
                     <label title="V6: Thread weight * importance after temporal decay. Combines quality (importance) with freshness (decay). Naturally deprioritizes old, low-quality threads. Default: 0.5.">V6: Decayed Relevance <input type="number" data-path="engram.validator_weights.decayed_relevance" min="0" max="1" step="0.1"></label>
                     <label title="V7: Label coherence — threads whose labels match the prompt context score higher. Requires label_suggestion to be active. Default: 0.4.">V7: Label Coherence <input type="number" data-path="engram.validator_weights.label_coherence" min="0" max="1" step="0.1"></label>
                     <label title="V8: Alignment with the current ai_focus directive. Strong boost for threads matching the declared project focus. Default: 0.8.">V8: Focus Alignment <input type="number" data-path="engram.validator_weights.focus_alignment" min="0" max="1" step="0.1"></label>
+                    <label title="V9: Concept coherence — shared concepts via ConceptIndex. Wider semantic surface than topic overlap. Catches related threads even without shared topics. Default: 0.7.">V9: Concept Coherence <input type="number" data-path="engram.validator_weights.concept_coherence" min="0" max="1" step="0.1"></label>
+                </div>
+            </div>
+
+            <!-- ── Decay & Lifecycle ── -->
+            <div id="stab-decay" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="decay-threads">Thread Decay</h3>
+                    <div id="section-decay-threads" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Thread weight below this threshold triggers auto-suspension. Lower = threads survive longer. Default: 0.1.">Suspend Threshold <input type="number" data-path="decay.thread_suspend_threshold" min="0" max="1" step="0.01"></label>
+                            <label title="Minimum half-life in days (importance=0, disposable threads). These decay fastest. Default: 0.75 days (18h).">Min Half-Life (days) <input type="number" data-path="decay.thread_min_half_life" min="0.1" max="30" step="0.25"></label>
+                            <label title="Maximum half-life in days (importance=1, critical threads). These decay slowest. Default: 7.0 days.">Max Half-Life (days) <input type="number" data-path="decay.thread_max_half_life" min="1" max="90" step="0.5"></label>
+                            <label title="Weight boost applied when a thread is re-injected by the Engram. Prevents actively-used threads from decaying. Default: 0.1.">Use Boost <input type="number" data-path="decay.thread_use_boost" min="0" max="1" step="0.05"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="decay-orphan">Orphan Acceleration</h3>
+                    <div id="section-decay-orphan" class="section-body">
+                        <div class="form-grid">
+                            <label title="Hours without re-injection before the effective half-life is halved. Threads that are never recalled decay exponentially faster. Default: 6.0 hours.">Halving Hours <input type="number" data-path="decay.orphan_halving_hours" min="1" max="48" step="1"></label>
+                            <label title="Floor for orphan half-life reduction (fraction of base half-life). Prevents half-life from reaching zero. Default: 0.1 (10% of base).">Min Half-Life Factor <input type="number" data-path="decay.orphan_min_half_life_factor" min="0.01" max="1" step="0.05"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="decay-bridges">Bridge Decay</h3>
+                    <div id="section-decay-bridges" class="section-body">
+                        <div class="form-grid">
+                            <label title="Bridge half-life in days. Bridges lose weight over time unless reinforced by gossip. Default: 2.0 days.">Bridge Half-Life (days) <input type="number" data-path="decay.bridge_half_life" min="0.5" max="30" step="0.5"></label>
+                            <label title="Bridge weight below this is marked invalid (deleted). Default: 0.05.">Bridge Death Threshold <input type="number" data-path="decay.bridge_death_threshold" min="0" max="0.5" step="0.01"></label>
+                            <label title="Weight boost when a bridge is used (traversed during recall). Default: 0.1.">Bridge Use Boost <input type="number" data-path="decay.bridge_use_boost" min="0" max="1" step="0.05"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="decay-archive">Archival</h3>
+                    <div id="section-decay-archive" class="section-body">
+                        <div class="form-grid">
+                            <label title="Hours after suspension before a thread is archived. Archived threads retain data but are lower priority for recall. Default: 72 hours (3 days).">Archive After (hours) <input type="number" data-path="decay.archive_after_hours" min="1" max="720" step="1"></label>
+                        </div>
+                    </div>
                 </div>
             </div>
 
