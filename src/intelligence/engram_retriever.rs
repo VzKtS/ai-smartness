@@ -17,6 +17,7 @@ use crate::thread::{Thread, ThreadStatus, OriginType, WorkContext, InjectionStat
 use crate::config::EngramConfig;
 use crate::AiResult;
 use crate::processing::embeddings::EmbeddingManager;
+use crate::storage::bridges::BridgeStorage;
 use crate::storage::concept_index::ConceptIndex;
 use crate::storage::topic_index::TopicIndex;
 use chrono::{DateTime, Utc};
@@ -218,6 +219,13 @@ impl EngramRetriever {
             weak = scores.iter().filter(|s| s.decision == InjectionDecision::WeakInject).count(),
             "Engram retrieval complete"
         );
+
+        // Hebbian reinforcement: strengthen bridges connecting injected threads.
+        // This breaks the death spiral: bridges used during retrieval get
+        // last_reinforced updated → decay clock resets → bridge stays alive.
+        if !result.is_empty() {
+            reinforce_used_bridges(conn, &result, &ctx.bridge_connections);
+        }
 
         Ok(result)
     }
@@ -516,6 +524,40 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
     })
 }
 
+/// Hebbian reinforcement: for each injected thread that is connected via a bridge,
+/// call increment_use() → updates use_count and resets last_reinforced timestamp.
+/// This breaks the death spiral: bridges stay alive as long as they are useful.
+fn reinforce_used_bridges(
+    conn: &Connection,
+    injected: &[Thread],
+    bridge_connections: &HashMap<String, f64>,
+) {
+    let mut reinforced = 0u32;
+    for thread in injected {
+        if bridge_connections.contains_key(&thread.id) {
+            // Find the actual bridge IDs to reinforce
+            let sql = "SELECT id FROM bridges \
+                       WHERE (source_id = ?1 OR target_id = ?1) \
+                       AND status IN ('Active', 'Weak')";
+            if let Ok(mut stmt) = conn.prepare(sql) {
+                let ids: Vec<String> = stmt
+                    .query_map(rusqlite::params![thread.id], |row| row.get(0))
+                    .ok()
+                    .map(|rows| rows.flatten().collect())
+                    .unwrap_or_default();
+                for bridge_id in ids {
+                    if BridgeStorage::increment_use(conn, &bridge_id).is_ok() {
+                        reinforced += 1;
+                    }
+                }
+            }
+        }
+    }
+    if reinforced > 0 {
+        tracing::info!(bridges_reinforced = reinforced, "Hebbian bridge reinforcement");
+    }
+}
+
 /// Find the most recently active thread ID.
 fn find_most_recent_active_thread(conn: &Connection) -> AiResult<Option<String>> {
     let sql = "SELECT id FROM threads WHERE status = 'Active' ORDER BY last_active DESC LIMIT 1";
@@ -537,8 +579,11 @@ fn load_bridge_connections(
         None => return Ok(connections),
     };
 
-    let sql = "SELECT source_id, target_id, weight FROM bridges \
-               WHERE (source_id = ?1 OR target_id = ?1) AND status = 'Active'";
+    // Include both Active AND Weak bridges — Weak bridges get 50% weight reduction.
+    // Without this, bridges that decay to Weak become invisible to the validator,
+    // creating a death spiral: no visibility → no use → no reinforcement → death.
+    let sql = "SELECT source_id, target_id, weight, status FROM bridges \
+               WHERE (source_id = ?1 OR target_id = ?1) AND status IN ('Active', 'Weak')";
 
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
@@ -549,17 +594,20 @@ fn load_bridge_connections(
         let source: String = row.get(0)?;
         let target: String = row.get(1)?;
         let weight: f64 = row.get(2)?;
-        Ok((source, target, weight))
+        let status: String = row.get(3)?;
+        Ok((source, target, weight, status))
     }) {
         Ok(r) => r,
         Err(_) => return Ok(connections),
     };
 
     for row in rows {
-        if let Ok((source, target, weight)) = row {
+        if let Ok((source, target, weight, status)) = row {
+            // Weak bridges contribute at 50% weight — still visible but reduced influence
+            let effective_weight = if status == "Weak" { weight * 0.5 } else { weight };
             let connected = if source == thread_id { target } else { source };
             let entry = connections.entry(connected).or_insert(0.0);
-            *entry = entry.max(weight);
+            *entry = entry.max(effective_weight);
         }
     }
 

@@ -174,17 +174,21 @@ fn ensure_quota_cached(pool: &ConnectionPool, key: &AgentKey) {
                     );
                 }
                 Ok(None) => {
-                    // Agent not found in registry — use default (Normal=50)
-                    pool.set_thread_quota(key, 50);
-                    tracing::debug!(agent = %key.agent_id, "Agent not in registry, using default quota=50");
+                    // Agent not found in registry — use conservative default (Light=15).
+                    // Better to under-allocate than to let an unregistered agent
+                    // create 50+ threads with no mode constraint.
+                    pool.set_thread_quota(key, 15);
+                    tracing::warn!(agent = %key.agent_id, "Agent not in registry, using conservative default quota=15 (Light)");
                 }
                 Err(e) => {
-                    tracing::warn!(agent = %key.agent_id, error = %e, "Failed to read agent from registry");
+                    pool.set_thread_quota(key, 15);
+                    tracing::warn!(agent = %key.agent_id, error = %e, "Failed to read agent from registry, using default quota=15");
                 }
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to open registry DB for quota lookup");
+            pool.set_thread_quota(key, 15);
+            tracing::warn!(error = %e, "Failed to open registry DB for quota lookup, using default quota=15");
         }
     }
 }

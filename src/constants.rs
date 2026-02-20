@@ -18,7 +18,7 @@ pub const ORPHAN_HALVING_HOURS: f64 = 6.0;        // half-life halves every 6h w
 pub const ORPHAN_MIN_HALF_LIFE_FACTOR: f64 = 0.1;  // floor: half-life can't go below 10% of base
 
 // === Bridge Decay ===
-pub const BRIDGE_HALF_LIFE: f64 = 2.0;
+pub const BRIDGE_HALF_LIFE: f64 = 4.0;
 pub const BRIDGE_DEATH_THRESHOLD: f64 = 0.05;
 pub const BRIDGE_USE_BOOST: f64 = 0.1;
 

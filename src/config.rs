@@ -564,7 +564,7 @@ pub struct GossipConfig {
     pub target_bridge_ratio: f64,                // default: 3.0
 }
 
-fn default_concept_overlap_min_shared() -> usize { 3 }
+fn default_concept_overlap_min_shared() -> usize { 2 }
 fn default_concept_min_bridge_weight() -> f64 { 0.20 }
 fn default_merge_evaluation_threshold() -> f64 { 0.60 }
 fn default_merge_auto_threshold() -> f64 { 0.85 }
@@ -577,7 +577,7 @@ impl Default for GossipConfig {
                 onnx_threshold: 0.75,
                 tfidf_threshold: 0.55,
             },
-            concept_overlap_min_shared: 3,
+            concept_overlap_min_shared: 2,
             concept_min_bridge_weight: 0.20,
             merge_evaluation_threshold: 0.60,
             merge_auto_threshold: 0.85,

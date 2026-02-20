@@ -164,6 +164,20 @@ impl BridgeStorage {
         Ok(bridges)
     }
 
+    pub fn list_by_status(conn: &Connection, status: BridgeStatus) -> AiResult<Vec<ThinkBridge>> {
+        let mut stmt = conn
+            .prepare("SELECT * FROM bridges WHERE status = ?1 ORDER BY weight DESC")
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+
+        let bridges = stmt
+            .query_map(params![status.as_str()], bridge_from_row)
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(bridges)
+    }
+
     pub fn list_all(conn: &Connection) -> AiResult<Vec<ThinkBridge>> {
         let mut stmt = conn
             .prepare("SELECT * FROM bridges ORDER BY weight DESC")

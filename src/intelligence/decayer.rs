@@ -56,8 +56,9 @@ impl Decayer {
             }
         }
 
-        // 2. Decay bridge weights
-        let bridges = BridgeStorage::list_active(conn)?;
+        // 2. Decay bridge weights (Active + Weak — so Weak bridges can still die)
+        let mut bridges = BridgeStorage::list_active(conn)?;
+        bridges.extend(BridgeStorage::list_by_status(conn, BridgeStatus::Weak)?);
         for bridge in &bridges {
             let reference_time = bridge.last_reinforced.unwrap_or(bridge.created_at);
             let age_days = (now - reference_time).num_hours() as f64 / 24.0;
@@ -70,7 +71,9 @@ impl Decayer {
 
             if new_weight < cfg.bridge_death_threshold {
                 BridgeStorage::update_status(conn, &bridge.id, BridgeStatus::Invalid)?;
-            } else if new_weight < 0.3 {
+            } else if new_weight < 0.15 {
+                // Weak threshold lowered from 0.30 to 0.15 to give bridges
+                // more time to be reinforced via Hebbian usage before degrading.
                 BridgeStorage::update_status(conn, &bridge.id, BridgeStatus::Weak)?;
                 BridgeStorage::update_weight(conn, &bridge.id, new_weight)?;
             } else {
