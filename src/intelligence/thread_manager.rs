@@ -3,15 +3,18 @@
 //! Handles: NewThread / Continue / Fork / Reactivate decisions.
 //! Called by the daemon processor after extraction + coherence.
 
+use std::collections::HashSet;
 use crate::{id_gen, time_utils};
 use crate::bridge::{BridgeStatus, BridgeType, ThinkBridge};
-use crate::config::{EmbeddingMode, GuardianConfig};
+use crate::config::{EmbeddingMode, GossipConfig, GuardianConfig};
 use crate::constants::*;
 use crate::thread::{Thread, ThreadMessage, ThreadStatus, OriginType, WorkContext};
 use crate::AiResult;
+use crate::intelligence::gossip::Gossip;
 use crate::processing::embeddings::EmbeddingManager;
 use crate::processing::extractor::Extraction;
 use crate::storage::bridges::BridgeStorage;
+use crate::storage::concept_index::find_threads_sharing_concepts_db;
 use crate::storage::threads::ThreadStorage;
 use chrono::Utc;
 use rusqlite::Connection;
@@ -132,11 +135,31 @@ impl ThreadManager {
                 let id = Self::create_thread(
                     conn, extraction, content, source_type, None, file_path, embed_mode,
                 )?;
+                // Birth bridges: immediate concept connections
+                let birth = Self::create_birth_bridges(conn, &id, &extraction.concepts, &guardian.gossip)?;
+                if birth > 0 {
+                    tracing::info!(thread_id = %id, bridges = birth, "Birth bridges");
+                }
                 Ok(Some(id))
             }
             ThreadAction::Continue { thread_id } => {
                 tracing::info!(action = "Continue", thread_id = %thread_id, "Action decided");
+                // Detect new concepts before merge
+                let old_concepts: HashSet<String> = ThreadStorage::get(conn, &thread_id)?
+                    .map(|t| t.concepts.into_iter().collect())
+                    .unwrap_or_default();
                 Self::update_thread(conn, &thread_id, extraction, content, file_path, embed_mode)?;
+                // Birth bridges for NEW concepts only
+                let new_concepts: Vec<String> = extraction.concepts.iter()
+                    .filter(|c| !old_concepts.contains(*c))
+                    .cloned()
+                    .collect();
+                if !new_concepts.is_empty() {
+                    let birth = Self::create_birth_bridges(conn, &thread_id, &new_concepts, &guardian.gossip)?;
+                    if birth > 0 {
+                        tracing::info!(thread_id = %thread_id, bridges = birth, "Incremental birth bridges");
+                    }
+                }
                 Ok(Some(thread_id))
             }
             ThreadAction::Fork { parent_id } => {
@@ -151,6 +174,11 @@ impl ThreadManager {
                     file_path,
                     embed_mode,
                 )?;
+                // Birth bridges: immediate concept connections
+                let birth = Self::create_birth_bridges(conn, &id, &extraction.concepts, &guardian.gossip)?;
+                if birth > 0 {
+                    tracing::info!(thread_id = %id, bridges = birth, "Birth bridges (fork)");
+                }
                 Ok(Some(id))
             }
             ThreadAction::Reactivate { thread_id } => {
@@ -578,5 +606,98 @@ impl ThreadManager {
     /// Archive a thread (legacy interface).
     pub fn archive_thread(conn: &Connection, id: &str) -> AiResult<()> {
         ThreadStorage::update_status(conn, id, ThreadStatus::Archived)
+    }
+
+    /// Create birth bridges: immediate concept-based connections at thread creation.
+    /// Connects the new/updated thread to existing threads sharing concepts.
+    /// Returns the number of bridges created.
+    fn create_birth_bridges(
+        conn: &Connection,
+        thread_id: &str,
+        concepts: &[String],
+        gossip_config: &GossipConfig,
+    ) -> AiResult<u32> {
+        if concepts.is_empty() {
+            return Ok(0);
+        }
+
+        let candidates = find_threads_sharing_concepts_db(conn, concepts, Some(thread_id))?;
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+
+        // Use same dynamic limits as gossip
+        let thread_count = ThreadStorage::count_by_status(conn, &ThreadStatus::Active)?;
+        let (max_per, _) = Gossip::dynamic_limits(thread_count, gossip_config);
+
+        let mut created = 0u32;
+        let new_concept_count = concepts.len();
+
+        for (candidate_id, shared_concepts, candidate_total) in &candidates {
+            if created as usize >= max_per {
+                break;
+            }
+
+            // Dedup: skip if non-Invalid bridge already exists (allows rebirth of decayed connections)
+            let existing = BridgeStorage::list_for_thread(conn, thread_id)?;
+            let already_linked = existing.iter().any(|b| {
+                (b.source_id == *candidate_id || b.target_id == *candidate_id)
+                    && b.status != BridgeStatus::Invalid
+            });
+            if already_linked {
+                continue;
+            }
+
+            // Check bridge limit on both source AND target
+            if existing.len() >= max_per {
+                break;
+            }
+            let target_bridges = BridgeStorage::list_for_thread(conn, candidate_id)?;
+            if target_bridges.len() >= max_per {
+                continue;
+            }
+
+            // Compute weight: overlap_ratio * 0.5 + richness * 0.5
+            let shared_count = shared_concepts.len();
+            let min_concepts = new_concept_count.min(*candidate_total).max(1);
+            let overlap_ratio = shared_count as f64 / min_concepts as f64;
+            let richness = (shared_count as f64 / 5.0).min(1.0);
+            let weight = overlap_ratio * 0.5 + richness * 0.5;
+
+            if weight < 0.20 {
+                continue;
+            }
+
+            let bridge = ThinkBridge {
+                id: id_gen::bridge_id(),
+                source_id: thread_id.to_string(),
+                target_id: candidate_id.clone(),
+                relation_type: BridgeType::Sibling,
+                reason: format!("birth:concept_overlap({},ratio={:.2})", shared_count, overlap_ratio),
+                shared_concepts: shared_concepts.clone(),
+                weight,
+                confidence: weight,
+                status: BridgeStatus::Active,
+                propagated_from: None,
+                propagation_depth: 0,
+                created_by: "birth".to_string(),
+                use_count: 0,
+                created_at: time_utils::now(),
+                last_reinforced: None,
+            };
+
+            if BridgeStorage::insert(conn, &bridge).is_ok() {
+                tracing::info!(
+                    source = %&thread_id[..8.min(thread_id.len())],
+                    target = %&candidate_id[..8.min(candidate_id.len())],
+                    shared = shared_count,
+                    weight = format!("{:.3}", weight).as_str(),
+                    "Birth bridge created"
+                );
+                created += 1;
+            }
+        }
+
+        Ok(created)
     }
 }

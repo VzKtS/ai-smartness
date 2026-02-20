@@ -562,12 +562,28 @@ pub struct GossipConfig {
     pub max_bridges_per_thread: usize,           // default: 10
     /// Target ratio bridges/threads for dynamic limit calculation.
     pub target_bridge_ratio: f64,                // default: 3.0
+    // Propagation (transitive bridge discovery via gossip Phase 3)
+    /// Enable transitive propagation in gossip.
+    #[serde(default = "default_true")]
+    pub propagation_enabled: bool,               // default: true
+    /// Max propagation depth (A→B→C = depth 1).
+    #[serde(default = "default_propagation_max_depth")]
+    pub propagation_max_depth: u32,              // default: 2
+    /// Weight decay factor per propagation hop.
+    #[serde(default = "default_propagation_decay_factor")]
+    pub propagation_decay_factor: f64,           // default: 0.5
+    /// Minimum weight for propagated bridges.
+    #[serde(default = "default_propagation_min_weight")]
+    pub propagation_min_weight: f64,             // default: 0.10
 }
 
 fn default_concept_overlap_min_shared() -> usize { 2 }
 fn default_concept_min_bridge_weight() -> f64 { 0.20 }
 fn default_merge_evaluation_threshold() -> f64 { 0.60 }
 fn default_merge_auto_threshold() -> f64 { 0.85 }
+fn default_propagation_max_depth() -> u32 { 2 }
+fn default_propagation_decay_factor() -> f64 { 0.5 }
+fn default_propagation_min_weight() -> f64 { 0.10 }
 
 impl Default for GossipConfig {
     fn default() -> Self {
@@ -587,6 +603,10 @@ impl Default for GossipConfig {
             min_bridges_per_thread: 3,
             max_bridges_per_thread: 10,
             target_bridge_ratio: 3.0,
+            propagation_enabled: true,
+            propagation_max_depth: 2,
+            propagation_decay_factor: 0.5,
+            propagation_min_weight: 0.10,
         }
     }
 }
@@ -917,7 +937,7 @@ fn default_thread_max_half_life() -> f64 { 7.0 }
 fn default_thread_use_boost() -> f64 { 0.1 }
 fn default_orphan_halving_hours() -> f64 { 6.0 }
 fn default_orphan_min_half_life_factor() -> f64 { 0.1 }
-fn default_bridge_half_life() -> f64 { 2.0 }
+fn default_bridge_half_life() -> f64 { 4.0 }
 fn default_bridge_death_threshold() -> f64 { 0.05 }
 fn default_bridge_use_boost() -> f64 { 0.1 }
 fn default_archive_after_hours() -> f64 { 72.0 }
@@ -931,7 +951,7 @@ impl Default for DecayConfig {
             thread_use_boost: 0.1,
             orphan_halving_hours: 6.0,
             orphan_min_half_life_factor: 0.1,
-            bridge_half_life: 2.0,
+            bridge_half_life: 4.0,
             bridge_death_threshold: 0.05,
             bridge_use_boost: 0.1,
             archive_after_hours: 72.0,
@@ -1331,6 +1351,19 @@ impl GuardianConfig {
                 }
                 if let Some(v) = g.get("target_bridge_ratio").and_then(|v| v.as_f64()) {
                     gc.gossip.target_bridge_ratio = v;
+                }
+                // Propagation config
+                if let Some(v) = g.get("propagation_enabled").and_then(|v| v.as_bool()) {
+                    gc.gossip.propagation_enabled = v;
+                }
+                if let Some(v) = g.get("propagation_max_depth").and_then(|v| v.as_u64()) {
+                    gc.gossip.propagation_max_depth = v as u32;
+                }
+                if let Some(v) = g.get("propagation_decay_factor").and_then(|v| v.as_f64()) {
+                    gc.gossip.propagation_decay_factor = v;
+                }
+                if let Some(v) = g.get("propagation_min_weight").and_then(|v| v.as_f64()) {
+                    gc.gossip.propagation_min_weight = v;
                 }
             }
 

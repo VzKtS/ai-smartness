@@ -192,6 +192,15 @@ impl Gossip {
             created += legacy_created;
         }
 
+        // Phase 3: Transitive propagation
+        if config.propagation_enabled {
+            let propagated = Self::run_propagation(conn, config, max_per)?;
+            if propagated > 0 {
+                tracing::info!(propagated = propagated, "Gossip v2 P3: transitive propagation");
+            }
+            created += propagated;
+        }
+
         tracing::info!(
             bridges_created = created,
             merge_candidates = merge_candidates.len(),
@@ -282,7 +291,7 @@ impl Gossip {
     }
 
     /// Dynamic bridge limits based on thread count and config.
-    fn dynamic_limits(n_threads: usize, config: &GossipConfig) -> (usize, usize) {
+    pub fn dynamic_limits(n_threads: usize, config: &GossipConfig) -> (usize, usize) {
         let n = n_threads.max(1);
         let max_total = (n as f64 * config.target_bridge_ratio) as usize;
         let max_per =
@@ -316,6 +325,123 @@ impl Gossip {
             })
             .cloned()
             .collect()
+    }
+
+    /// Phase 3: Transitive propagation — if A↔B and B↔C exist, create A↔C.
+    /// Weight decays by propagation_decay_factor per hop.
+    /// Uses "gossip_v2:propagated" prefix to avoid v1 migration invalidation.
+    fn run_propagation(
+        conn: &Connection,
+        config: &GossipConfig,
+        max_per: usize,
+    ) -> AiResult<u32> {
+        let bridges = BridgeStorage::list_active(conn)?;
+        if bridges.len() < 2 {
+            return Ok(0);
+        }
+
+        // Build adjacency map: thread_id → Vec<(other_id, weight, bridge_id, depth)>
+        let mut adjacency: std::collections::HashMap<String, Vec<(String, f64, String, u32)>> =
+            std::collections::HashMap::new();
+
+        for b in &bridges {
+            adjacency.entry(b.source_id.clone()).or_default().push((
+                b.target_id.clone(),
+                b.weight,
+                b.id.clone(),
+                b.propagation_depth,
+            ));
+            adjacency.entry(b.target_id.clone()).or_default().push((
+                b.source_id.clone(),
+                b.weight,
+                b.id.clone(),
+                b.propagation_depth,
+            ));
+        }
+
+        let mut created = 0u32;
+
+        // For each hub B, check all pairs (A, C) connected to B
+        for (hub, neighbors) in &adjacency {
+            for i in 0..neighbors.len() {
+                for j in (i + 1)..neighbors.len() {
+                    let (ref a_id, w_ab, ref bridge_ab, depth_ab) = neighbors[i];
+                    let (ref c_id, w_bc, ref _bridge_bc, depth_bc) = neighbors[j];
+
+                    // Skip self-loops
+                    if a_id == c_id {
+                        continue;
+                    }
+
+                    // Depth check
+                    let new_depth = depth_ab.max(depth_bc) + 1;
+                    if new_depth > config.propagation_max_depth {
+                        continue;
+                    }
+
+                    // Compute propagated weight
+                    let weight = w_ab.min(w_bc) * config.propagation_decay_factor;
+                    if weight < config.propagation_min_weight {
+                        continue;
+                    }
+
+                    // Bidirectional dedup: check A→C AND C→A
+                    let existing_a = BridgeStorage::list_for_thread(conn, a_id)?;
+                    let already_exists = existing_a.iter().any(|b| {
+                        (b.source_id == *c_id || b.target_id == *c_id)
+                            && b.status != BridgeStatus::Invalid
+                    });
+                    if already_exists {
+                        continue;
+                    }
+
+                    // Check bridge limits
+                    if existing_a.len() >= max_per {
+                        continue;
+                    }
+                    let existing_c = BridgeStorage::list_for_thread(conn, c_id)?;
+                    if existing_c.len() >= max_per {
+                        continue;
+                    }
+
+                    let bridge = ThinkBridge {
+                        id: id_gen::bridge_id(),
+                        source_id: a_id.clone(),
+                        target_id: c_id.clone(),
+                        relation_type: BridgeType::Sibling,
+                        reason: format!(
+                            "gossip_v2:propagated(depth={},via={})",
+                            new_depth,
+                            &hub[..8.min(hub.len())]
+                        ),
+                        shared_concepts: vec![],
+                        weight,
+                        confidence: weight,
+                        status: BridgeStatus::Active,
+                        propagated_from: Some(bridge_ab.clone()),
+                        propagation_depth: new_depth,
+                        created_by: "gossip_v2".to_string(),
+                        use_count: 0,
+                        created_at: time_utils::now(),
+                        last_reinforced: None,
+                    };
+
+                    if BridgeStorage::insert(conn, &bridge).is_ok() {
+                        tracing::info!(
+                            source = %&a_id[..8.min(a_id.len())],
+                            target = %&c_id[..8.min(c_id.len())],
+                            via = %&hub[..8.min(hub.len())],
+                            depth = new_depth,
+                            weight = format!("{:.3}", weight).as_str(),
+                            "Gossip v2 P3: propagated bridge"
+                        );
+                        created += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(created)
     }
 
     /// One-time migration: invalidate v1 propagation bridges.

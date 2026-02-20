@@ -13,6 +13,72 @@ use std::collections::{HashMap, HashSet};
 use crate::{AiError, AiResult};
 use rusqlite::Connection;
 
+/// Find threads sharing concepts via direct DB query (no in-memory index needed).
+/// Returns Vec<(thread_id, shared_concepts, total_concepts_count)> sorted by shared_count DESC.
+/// Used by birth bridges — works at thread creation time without building ConceptIndex.
+pub fn find_threads_sharing_concepts_db(
+    conn: &Connection,
+    query_concepts: &[String],
+    exclude_thread_id: Option<&str>,
+) -> AiResult<Vec<(String, Vec<String>, usize)>> {
+    if query_concepts.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Accumulate: thread_id → (shared_concepts, total_concepts_count)
+    let mut hits: HashMap<String, (Vec<String>, usize)> = HashMap::new();
+
+    let mut stmt = conn.prepare(
+        "SELECT id, concepts FROM threads WHERE status IN ('Active', 'Suspended') AND concepts != '[]'"
+    ).map_err(|e| AiError::Storage(e.to_string()))?;
+
+    let rows = stmt.query_map([], |row| {
+        let id: String = row.get(0)?;
+        let concepts_json: String = row.get(1)?;
+        Ok((id, concepts_json))
+    }).map_err(|e| AiError::Storage(e.to_string()))?;
+
+    for row in rows {
+        let (id, concepts_json) = match row {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        if exclude_thread_id == Some(id.as_str()) {
+            continue;
+        }
+
+        let thread_concepts: Vec<String> = serde_json::from_str(&concepts_json).unwrap_or_default();
+        if thread_concepts.is_empty() {
+            continue;
+        }
+
+        let total = thread_concepts.len();
+        let thread_set: HashSet<String> = thread_concepts.into_iter()
+            .map(|c| c.to_lowercase())
+            .collect();
+
+        let shared: Vec<String> = query_concepts.iter()
+            .filter(|c| thread_set.contains(&c.to_lowercase()))
+            .cloned()
+            .collect();
+
+        if !shared.is_empty() {
+            hits.insert(id, (shared, total));
+        }
+    }
+
+    let mut result: Vec<(String, Vec<String>, usize)> = hits
+        .into_iter()
+        .map(|(id, (shared, total))| (id, shared, total))
+        .collect();
+
+    // Sort by shared_count DESC
+    result.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+    Ok(result)
+}
+
 /// Inverted concept index for O(1) candidate lookup.
 #[derive(Debug, Default)]
 pub struct ConceptIndex {
