@@ -85,6 +85,12 @@ enum Commands {
         #[command(subcommand)]
         action: AgentAction,
     },
+    /// Download ONNX Runtime for neural embeddings
+    SetupOnnx {
+        /// Force re-download even if already installed
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -342,5 +348,9 @@ fn main() {
                     .unwrap_or_else(|e| eprintln!("Error: {}", e));
             }
         },
+        Some(Commands::SetupOnnx { force }) => {
+            cli::setup_onnx::run(force)
+                .unwrap_or_else(|e| eprintln!("Error: {}", e));
+        }
     }
 }

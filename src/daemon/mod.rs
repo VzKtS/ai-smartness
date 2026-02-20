@@ -41,6 +41,29 @@ pub fn run() {
     // Global PID file: {data_dir}/daemon.pid
     let data_dir = path_utils::data_dir();
     std::fs::create_dir_all(&data_dir).ok();
+
+    // Set ORT_DYLIB_PATH before any ONNX usage (EmbeddingManager::global())
+    // ort with load-dynamic panics if libonnxruntime is not found; this env var
+    // tells it exactly where to look.
+    if std::env::var("ORT_DYLIB_PATH").is_err() {
+        let lib_name = if cfg!(target_os = "macos") {
+            "libonnxruntime.dylib"
+        } else {
+            "libonnxruntime.so"
+        };
+        let ort_path = data_dir.join("lib").join(lib_name);
+        if ort_path.exists() {
+            tracing::info!(path = %ort_path.display(), "Setting ORT_DYLIB_PATH");
+            std::env::set_var("ORT_DYLIB_PATH", &ort_path);
+        } else {
+            tracing::warn!(
+                path = %ort_path.display(),
+                "ONNX Runtime not found — embeddings will use TF-IDF fallback. \
+                 Run `ai-smartness setup-onnx` to download it."
+            );
+        }
+    }
+
     let pid_path = data_dir.join("daemon.pid");
     std::fs::write(&pid_path, std::process::id().to_string()).ok();
 

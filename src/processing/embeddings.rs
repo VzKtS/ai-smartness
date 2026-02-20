@@ -86,6 +86,24 @@ impl EmbeddingManager {
         }
     }
 
+    /// Embed respecting the configured EmbeddingMode.
+    /// Returns None for Disabled or OnnxOnly-when-ONNX-unavailable.
+    pub fn embed_with_mode(&self, text: &str, mode: &crate::config::EmbeddingMode) -> Option<Vec<f32>> {
+        use crate::config::EmbeddingMode;
+        match mode {
+            EmbeddingMode::Disabled => None,
+            EmbeddingMode::TfidfOnly => Some(self.embed_tfidf(text)),
+            EmbeddingMode::OnnxOnly => {
+                if self.use_onnx {
+                    Some(self.embed(text))
+                } else {
+                    None
+                }
+            }
+            EmbeddingMode::OnnxWithFallback => Some(self.embed(text)),
+        }
+    }
+
     /// Embed a batch of texts.
     pub fn embed_batch(&self, texts: &[&str]) -> Vec<Vec<f32>> {
         texts.iter().map(|t| self.embed(t)).collect()

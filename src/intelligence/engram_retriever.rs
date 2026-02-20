@@ -183,7 +183,7 @@ impl EngramRetriever {
         // Pre-compute context for validators
         let active_thread_id = find_most_recent_active_thread(conn)?;
         let bridge_connections = load_bridge_connections(conn, active_thread_id.as_deref())?;
-        let query_embedding = compute_query_embedding(user_message);
+        let query_embedding = compute_query_embedding(user_message, &self.config.embedding.mode);
 
         let ctx = QueryContext {
             user_message: user_message.to_string(),
@@ -299,7 +299,7 @@ impl EngramRetriever {
         }
 
         let candidates = load_threads_by_ids(conn, &candidate_ids)?;
-        let query_embedding = compute_query_embedding(query);
+        let query_embedding = compute_query_embedding(query, &self.config.embedding.mode);
 
         let ctx = QueryContext {
             user_message: query.to_string(),
@@ -566,9 +566,12 @@ fn load_bridge_connections(
     Ok(connections)
 }
 
-/// Compute query embedding from text using EmbeddingManager (ONNX or TF-IDF fallback).
-fn compute_query_embedding(text: &str) -> Vec<f32> {
-    EmbeddingManager::global().embed(text)
+/// Compute query embedding from text, respecting the configured EmbeddingMode.
+/// Returns zero-vec if disabled (V1 validator will score 0, effectively skipped).
+fn compute_query_embedding(text: &str, mode: &crate::config::EmbeddingMode) -> Vec<f32> {
+    EmbeddingManager::global()
+        .embed_with_mode(text, mode)
+        .unwrap_or_else(|| vec![0.0f32; EmbeddingManager::global().dimension()])
 }
 
 /// Load focus topics from the database.

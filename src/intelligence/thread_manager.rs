@@ -5,6 +5,7 @@
 
 use crate::{id_gen, time_utils};
 use crate::bridge::{BridgeStatus, BridgeType, ThinkBridge};
+use crate::config::{EmbeddingMode, GuardianConfig};
 use crate::constants::*;
 use crate::thread::{Thread, ThreadMessage, ThreadStatus, OriginType, WorkContext};
 use crate::AiResult;
@@ -73,6 +74,7 @@ impl ThreadManager {
         file_path: Option<&str>,
         parent_hint: Option<&str>,
         thread_quota: usize,
+        guardian: &GuardianConfig,
     ) -> AiResult<Option<String>> {
         tracing::info!(
             confidence = extraction.confidence,
@@ -89,17 +91,21 @@ impl ThreadManager {
         }
 
         let embeddings = EmbeddingManager::global();
+        let embed_mode = &guardian.thread_matching.embedding.mode;
 
         let action = if let Some(parent_id) = parent_hint {
             // Dual gate: coherent (already validated by processor) + similar?
             // If embedding similarity to parent is high enough, CONTINUE in parent.
             // If not similar despite coherence, search for a better match.
             let embed_text = build_enriched_embed_text(extraction);
-            let query_emb = embeddings.embed(&embed_text);
+            let query_emb = embeddings.embed_with_mode(&embed_text, embed_mode);
 
-            let parent_sim = ThreadStorage::get(conn, parent_id)?
-                .and_then(|p| p.embedding.as_ref().map(|e| embeddings.similarity(&query_emb, e)))
-                .unwrap_or(0.0);
+            let parent_sim = match &query_emb {
+                Some(qe) => ThreadStorage::get(conn, parent_id)?
+                    .and_then(|p| p.embedding.as_ref().map(|e| embeddings.similarity(qe, e)))
+                    .unwrap_or(0.0),
+                None => 0.0, // Embeddings disabled → skip similarity
+            };
 
             tracing::debug!(
                 parent_id = %parent_id,
@@ -113,10 +119,10 @@ impl ThreadManager {
                 ThreadAction::Continue { thread_id: parent_id.to_string() }
             } else {
                 // Coherent but not similar → search for better match
-                Self::decide_action(conn, extraction, embeddings)?
+                Self::decide_action(conn, extraction, embeddings, embed_mode)?
             }
         } else {
-            Self::decide_action(conn, extraction, embeddings)?
+            Self::decide_action(conn, extraction, embeddings, embed_mode)?
         };
 
         match action {
@@ -124,13 +130,13 @@ impl ThreadManager {
                 tracing::info!(action = "NewThread", "Action decided");
                 Self::ensure_capacity(conn, thread_quota, embeddings)?;
                 let id = Self::create_thread(
-                    conn, extraction, content, source_type, None, file_path,
+                    conn, extraction, content, source_type, None, file_path, embed_mode,
                 )?;
                 Ok(Some(id))
             }
             ThreadAction::Continue { thread_id } => {
                 tracing::info!(action = "Continue", thread_id = %thread_id, "Action decided");
-                Self::update_thread(conn, &thread_id, extraction, content, file_path)?;
+                Self::update_thread(conn, &thread_id, extraction, content, file_path, embed_mode)?;
                 Ok(Some(thread_id))
             }
             ThreadAction::Fork { parent_id } => {
@@ -143,13 +149,14 @@ impl ThreadManager {
                     source_type,
                     Some(&parent_id),
                     file_path,
+                    embed_mode,
                 )?;
                 Ok(Some(id))
             }
             ThreadAction::Reactivate { thread_id } => {
                 tracing::info!(action = "Reactivate", thread_id = %thread_id, "Action decided");
                 Self::reactivate_thread(conn, &thread_id)?;
-                Self::update_thread(conn, &thread_id, extraction, content, file_path)?;
+                Self::update_thread(conn, &thread_id, extraction, content, file_path, embed_mode)?;
                 Ok(Some(thread_id))
             }
         }
@@ -163,6 +170,7 @@ impl ThreadManager {
         source_type: &str,
         parent_id: Option<&str>,
         file_path: Option<&str>,
+        embed_mode: &EmbeddingMode,
     ) -> AiResult<String> {
         let thread_id = id_gen::thread_id();
         let now = time_utils::now();
@@ -184,7 +192,7 @@ impl ThreadManager {
         let importance = extraction.importance.max(0.5);
 
         let embed_text = build_enriched_embed_text(extraction);
-        let embedding = embeddings.embed(&embed_text);
+        let embedding = embeddings.embed_with_mode(&embed_text, embed_mode);
 
         let origin_type = source_type.parse().unwrap_or(OriginType::Prompt);
 
@@ -209,7 +217,7 @@ impl ThreadManager {
             tags: vec![],
             labels: filter_blocked_labels(&extraction.labels),
             concepts: extraction.concepts.clone(),
-            embedding: Some(embedding),
+            embedding,
             relevance_score,
             ratings: vec![],
             work_context,
@@ -273,6 +281,7 @@ impl ThreadManager {
         extraction: &Extraction,
         content: &str,
         file_path: Option<&str>,
+        embed_mode: &EmbeddingMode,
     ) -> AiResult<()> {
         let mut thread = match ThreadStorage::get(conn, thread_id)? {
             Some(t) => t,
@@ -333,7 +342,9 @@ impl ThreadManager {
         // Update embedding with enriched text (title 2x + topics + labels + concepts)
         let embeddings = EmbeddingManager::global();
         let embed_text = build_enriched_embed_text_from_thread(&thread);
-        thread.embedding = Some(embeddings.embed(&embed_text));
+        if let Some(emb) = embeddings.embed_with_mode(&embed_text, embed_mode) {
+            thread.embedding = Some(emb);
+        }
 
         // Auto-score importance
         let msg_count = ThreadStorage::message_count(conn, thread_id)?;
@@ -351,9 +362,17 @@ impl ThreadManager {
         conn: &Connection,
         extraction: &Extraction,
         embeddings: &EmbeddingManager,
+        embed_mode: &EmbeddingMode,
     ) -> AiResult<ThreadAction> {
         let embed_text = build_enriched_embed_text(extraction);
-        let query_emb = embeddings.embed(&embed_text);
+        let query_emb = match embeddings.embed_with_mode(&embed_text, embed_mode) {
+            Some(emb) => emb,
+            None => {
+                // Embeddings disabled → always create new thread
+                tracing::debug!("Embeddings disabled, creating new thread");
+                return Ok(ThreadAction::NewThread);
+            }
+        };
 
         // Search active threads
         let active = ThreadStorage::list_active(conn)?;

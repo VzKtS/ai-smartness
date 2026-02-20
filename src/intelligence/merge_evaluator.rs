@@ -12,6 +12,7 @@
 //!
 //! Atomicity: merge is wrapped in transaction (conn.transaction()).
 
+use crate::config::EmbeddingMode;
 use crate::constants::*;
 use crate::processing::embeddings::EmbeddingManager;
 use crate::processing::llm_subprocess;
@@ -49,7 +50,7 @@ pub struct MergeEvaluator;
 impl MergeEvaluator {
     /// Evaluate a merge candidate and execute if approved.
     /// Returns Ok(true) if merge was executed, Ok(false) if rejected.
-    pub fn evaluate_and_execute(conn: &Connection, candidate: &MergeCandidate) -> AiResult<bool> {
+    pub fn evaluate_and_execute(conn: &Connection, candidate: &MergeCandidate, embed_mode: &EmbeddingMode) -> AiResult<bool> {
         let thread_a = ThreadStorage::get(conn, &candidate.thread_a)?
             .ok_or_else(|| AiError::ThreadNotFound(candidate.thread_a.clone()))?;
         let thread_b = ThreadStorage::get(conn, &candidate.thread_b)?
@@ -71,7 +72,7 @@ impl MergeEvaluator {
                     "MergeEvaluator: executing merge"
                 );
 
-                Self::execute_merge(conn, &survivor_id, &absorbed_id, &merged_title, &merged_summary)?;
+                Self::execute_merge(conn, &survivor_id, &absorbed_id, &merged_title, &merged_summary, embed_mode)?;
                 Ok(true)
             }
             MergeDecision::Reject { reason } => {
@@ -295,13 +296,14 @@ or
         absorbed_id: &str,
         new_title: &str,
         new_summary: &str,
+        embed_mode: &EmbeddingMode,
     ) -> AiResult<()> {
         // Note: rusqlite Connection.execute_batch runs in implicit transaction.
         // For explicit transaction, we use conn.execute("BEGIN") pattern.
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| AiError::Storage(format!("Transaction begin failed: {}", e)))?;
 
-        let result = Self::execute_merge_inner(conn, survivor_id, absorbed_id, new_title, new_summary);
+        let result = Self::execute_merge_inner(conn, survivor_id, absorbed_id, new_title, new_summary, embed_mode);
 
         match result {
             Ok(()) => {
@@ -322,6 +324,7 @@ or
         absorbed_id: &str,
         new_title: &str,
         new_summary: &str,
+        embed_mode: &EmbeddingMode,
     ) -> AiResult<()> {
         let survivor = ThreadStorage::get(conn, survivor_id)?
             .ok_or_else(|| AiError::ThreadNotFound(survivor_id.to_string()))?;
@@ -343,14 +346,15 @@ or
         }
         super::merge_metadata::consolidate_after_merge(&mut merged, &absorbed);
 
-        // 3. Recalculate embedding for survivor
+        // 3. Recalculate embedding for survivor (respects GUI mode toggle)
         let embed_text = format!(
             "{} {}",
             merged.title,
             merged.summary.as_deref().unwrap_or("")
         );
-        let embedding = EmbeddingManager::global().embed(&embed_text);
-        merged.embedding = Some(embedding);
+        if let Some(embedding) = EmbeddingManager::global().embed_with_mode(&embed_text, embed_mode) {
+            merged.embedding = Some(embedding);
+        }
 
         // 4. Update survivor, delete absorbed
         ThreadStorage::update(conn, &merged)?;

@@ -151,6 +151,7 @@ pub fn process_capture(
         file_path,
         parent_hint.as_deref(),
         thread_quota,
+        guardian,
     )?;
 
     tracing::info!(thread_id = ?thread_id, "Capture processed");
