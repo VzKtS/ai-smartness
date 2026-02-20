@@ -1165,7 +1165,11 @@ function populateForm(obj) {
         const val = getNestedValue(obj, el.dataset.path);
         if (val === undefined || val === null) return;
 
-        if (el.type === 'checkbox') {
+        if (el.dataset.array === 'lines' && Array.isArray(val)) {
+            el.value = val.join('\n');
+        } else if (el.dataset.array === 'keyval' && typeof val === 'object' && !Array.isArray(val)) {
+            el.value = Object.entries(val).map(([k, v]) => `${k}=${v}`).join('\n');
+        } else if (el.type === 'checkbox') {
             el.checked = !!val;
         } else if (el.tagName === 'SELECT') {
             const strVal = typeof val === 'object' ? Object.keys(val)[0] : String(val);
@@ -1189,7 +1193,15 @@ function collectForm() {
 
     document.querySelectorAll('[data-path]').forEach(el => {
         let val;
-        if (el.type === 'checkbox') {
+        if (el.dataset.array === 'lines') {
+            val = el.value.split('\n').map(s => s.trim()).filter(s => s);
+        } else if (el.dataset.array === 'keyval') {
+            val = {};
+            el.value.split('\n').forEach(line => {
+                const eq = line.indexOf('=');
+                if (eq > 0) val[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+            });
+        } else if (el.type === 'checkbox') {
             val = el.checked;
         } else if (el.type === 'number') {
             val = el.value === '' ? 0 : Number(el.value);

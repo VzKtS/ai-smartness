@@ -341,6 +341,19 @@
                             <label title="Maximum characters of tool output sent to the LLM for extraction. Longer content is truncated. Higher values give better context but cost more tokens. Default: 3000.">Max Content Chars <input type="number" data-path="extraction.max_content_chars" min="100"></label>
                             <label title="Minimum number of mentions required for a topic to be included in extraction results. Filters out one-off noise words. Default: 1.">Min Topic Frequency <input type="number" data-path="extraction.min_topic_frequency" min="1"></label>
                             <label title="Detect skip markers in tool output (e.g., 'skip_extraction', 'SKIP'). When detected, extraction is skipped entirely — useful for noisy tools. Default: on.">Skip Signal <input type="checkbox" data-path="extraction.enable_skip_signal"></label>
+                            <label title="Minimum content length (chars) to attempt capture. Content shorter than this is treated as noise and skipped. Default: 80.">Min Capture Length <input type="number" data-path="extraction.min_capture_length" min="0"></label>
+                            <label title="Tool names to skip extraction for (one per line). Captures from these tools are silently dropped.">
+                                <span>Skip Tools</span>
+                                <textarea data-path="extraction.skip_tools" data-array="lines" rows="3" placeholder="tool_name_1&#10;tool_name_2"></textarea>
+                            </label>
+                            <label title="Noise words filtered from extracted topics (one per line). These common words are removed from topic lists to improve signal quality.">
+                                <span>Topic Noise Words</span>
+                                <textarea data-path="extraction.topic_noise_words" data-array="lines" rows="4" placeholder="message&#10;function&#10;code"></textarea>
+                            </label>
+                            <label title="Topic aliases — maps extracted terms to canonical topics (one per line: alias=canonical). Example: js=javascript">
+                                <span>Topic Aliases</span>
+                                <textarea data-path="extraction.topic_aliases" data-array="keyval" rows="3" placeholder="js=javascript&#10;ts=typescript"></textarea>
+                            </label>
                         </div>
                     </div>
                 </div>
@@ -404,6 +417,14 @@
                             <label title="Automatically suggest labels when a new thread is created via extraction. Adds a small overhead to each extraction but keeps threads organized. Default: on.">Auto Suggest on Extraction <input type="checkbox" data-path="label_suggestion.auto_suggest_on_extraction"></label>
                             <label title="Allow the LLM to suggest labels outside the predefined vocabulary (action, idea, question, issue, reference, social, decision, learning, frustration, intuition). Default: on.">Allow Custom Labels <input type="checkbox" data-path="label_suggestion.allow_custom_labels"></label>
                             <label title="Maximum number of unlabeled threads processed in a single label suggestion batch. Default: 10.">Batch Size <input type="number" data-path="label_suggestion.batch_size" min="1"></label>
+                            <label title="Predefined label vocabulary (one per line). The LLM will prefer these labels. If 'Allow Custom Labels' is off, only these labels are used.">
+                                <span>Label Vocabulary</span>
+                                <textarea data-path="label_suggestion.label_vocabulary" data-array="lines" rows="4" placeholder="bug-fix&#10;feature&#10;refactor&#10;architecture"></textarea>
+                            </label>
+                            <label title="Blocked labels (one per line). Labels in this list are never suggested, even if the LLM returns them.">
+                                <span>Label Blocklist</span>
+                                <textarea data-path="label_suggestion.label_blocklist" data-array="lines" rows="3" placeholder="action&#10;decision&#10;metadata"></textarea>
+                            </label>
                         </div>
                     </div>
                 </div>
@@ -413,7 +434,9 @@
                         <div class="form-grid">
                             <label data-i18n="cfg.model" title="LLM model for importance rating. Usually piggybacked on extraction (zero extra cost). Standalone model only used if piggyback is disabled.">Model <select data-path="importance_rating.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
                             <label data-i18n="cfg.timeout" title="Maximum seconds for standalone importance LLM call. Default: 15s.">Timeout (s) <input type="number" data-path="importance_rating.llm.timeout_secs" min="1"></label>
+                            <label data-i18n="cfg.retries" title="Retry attempts on importance LLM failure. Default: 0.">Max Retries <input type="number" data-path="importance_rating.llm.max_retries" min="0" max="5"></label>
                             <label data-i18n="cfg.taskEnabled" title="Enable importance rating. When disabled, all threads get the fallback score. Default: on.">Enabled <input type="checkbox" data-path="importance_rating.llm.enabled"></label>
+                            <label data-i18n="cfg.failmode" title="Behavior when importance LLM fails. RetryWithHaiku: retry with cheapest model. Skip: use fallback score. HeuristicRegex: regex heuristic. Default: RetryWithHaiku.">Failure Mode <select data-path="importance_rating.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
                             <label title="Include importance rating in the extraction prompt (zero extra LLM cost). When enabled, importance is extracted alongside title/topics. Highly recommended. Default: on.">Piggyback on Extraction <input type="checkbox" data-path="importance_rating.piggyback_on_extraction"></label>
                             <label title="Default importance score assigned when the LLM fails or is disabled. Affects thread decay rate and suspend priority. Default: 0.5.">Fallback Score <input type="number" data-path="importance_rating.fallback_score" min="0" max="1" step="0.1"></label>
                             <label title="Score for critical content: architecture decisions, blockers, security issues. These threads decay slowest and are last to be suspended. Default: 1.0.">Score: Critical <input type="number" data-path="importance_rating.score_map.critical" min="0" max="1" step="0.1"></label>
@@ -564,6 +587,14 @@
                 <div class="form-grid">
                     <label title="Regex pattern for extracting a thread title when LLM is unavailable. Captures 10-80 characters from the beginning of content. Only used in HeuristicRegex failure mode. Not recommended for production use.">Title Pattern <input type="text" data-path="fallback_patterns.title_pattern"></label>
                     <label title="Keyword overlap ratio threshold for heuristic coherence when LLM is unavailable. Score = shared keywords / total keywords. Default: 0.3 (30% overlap = continue thread).">Coherence Keyword Threshold <input type="number" data-path="fallback_patterns.coherence_keyword_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Regex patterns for extracting topics from content (one per line). CamelCase, hashtags, code identifiers. Only used in HeuristicRegex mode.">
+                        <span>Topic Patterns</span>
+                        <textarea data-path="fallback_patterns.topic_patterns" data-array="lines" rows="3" placeholder="\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b&#10;#(\w+)&#10;`([a-z_]+)`"></textarea>
+                    </label>
+                    <label title="Regex patterns that identify noise content to skip (one per line). JSON blobs, stacktraces, etc. Only used in HeuristicRegex mode.">
+                        <span>Noise Patterns</span>
+                        <textarea data-path="fallback_patterns.noise_patterns" data-array="lines" rows="3" placeholder="^\s*\{&#10;Traceback \(most recent&#10;at\s+\S+:\d+:\d+"></textarea>
+                    </label>
                 </div>
             </div>
 
@@ -625,6 +656,8 @@
                             <label title="Enable proactive memory health monitoring. Runs 9 diagnostic checks: capacity, fragmentation, unlabeled threads, weak bridges, stale threads, merge candidates, poor titles, disk usage, and guardian alerts. Default: on.">Enabled <input type="checkbox" data-path="healthguard.enabled"></label>
                             <label title="Minimum seconds between health analyses per agent. Prevents excessive health checks during high-activity periods. Default: 1800 (30 min).">Cooldown (secs) <input type="number" data-path="healthguard.cooldown_secs" min="0"></label>
                             <label title="Maximum number of health findings returned per analysis, sorted by priority (critical first). Default: 3.">Max Suggestions <input type="number" data-path="healthguard.max_suggestions" min="1" max="10"></label>
+                            <label title="Thread quota for capacity calculation. Capacity warning fires at warning_percent of this value. Default: 50.">Thread Quota <input type="number" data-path="healthguard.thread_quota" min="10" max="500"></label>
+                            <label title="Maximum merge candidates evaluated per gossip cycle. Higher values find more merges but increase LLM cost. Default: 3.">Max Merge Candidates <input type="number" data-path="healthguard.max_merge_candidates" min="1" max="10"></label>
                         </div>
                     </div>
                 </div>
@@ -704,6 +737,12 @@
                         <div class="form-grid">
                             <label title="Disabling the heartbeat disables agent activity tracking, self-wake scheduling, and proactive inter-agent communication. Essential features will be lost if disabled.">Heartbeat Active
                                 <input type="checkbox" data-path="heartbeat.enabled" checked></label>
+                            <label title="Seconds since last seen before an agent transitions from 'active' to 'idle'. Default: 300 (5 min).">Alive Threshold (secs)
+                                <input type="number" data-path="heartbeat.alive_threshold_secs" min="60"></label>
+                            <label title="Seconds since last seen before an agent transitions from 'idle' to offline warning. Default: 300 (5 min).">Idle Threshold (secs)
+                                <input type="number" data-path="heartbeat.idle_threshold_secs" min="60"></label>
+                            <label title="Seconds since last seen before mark_stale triggers and agent is set offline. Default: 1800 (30 min).">Offline Threshold (secs)
+                                <input type="number" data-path="heartbeat.offline_threshold_secs" min="300"></label>
                         </div>
                         <p class="hint" style="color: var(--warning, #e8a317);">If disabled: loss of activity tracking, self-wake, and proactive inter-agent communication.</p>
                     </div>
