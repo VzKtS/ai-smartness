@@ -271,6 +271,24 @@ fn worker_loop(
             }
         };
 
+        // If connection mutex is poisoned, evict and reconnect before locking
+        let conn = if conn.is_poisoned() {
+            tracing::warn!(worker_id, agent = %job.key,
+                "DB connection mutex poisoned — evicting and reconnecting");
+            pool.force_evict(&job.key);
+            match pool.get_or_open(&job.key) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(worker_id, error = %e,
+                        "Failed to reconnect after eviction");
+                    stats.errors.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            }
+        } else {
+            conn
+        };
+
         let conn_guard = match conn.lock() {
             Ok(g) => g,
             Err(e) => {
@@ -282,56 +300,74 @@ fn worker_loop(
 
         let mut pending_guard = match pending.lock() {
             Ok(g) => g,
-            Err(e) => {
-                tracing::error!(worker_id, error = %e, "Worker failed to lock pending context");
-                stats.errors.fetch_add(1, Ordering::Relaxed);
-                continue;
+            Err(poison) => {
+                tracing::warn!(worker_id, agent = %job.key,
+                    "Pending context mutex poisoned — recovering inner value");
+                poison.into_inner()
             }
         };
 
-        let result = if job.is_prompt {
-            processor::process_prompt(
-                &conn_guard,
-                &mut pending_guard,
-                &job.content,
-                job.session_id.as_deref(),
-                thread_quota,
-                &guardian,
-            )
-        } else {
-            processor::process_capture(
-                &conn_guard,
-                &mut pending_guard,
-                &job.source_type,
-                &job.content,
-                job.file_path.as_deref(),
-                thread_quota,
-                &guardian,
-            )
-        };
+        // Wrap processing in catch_unwind to prevent future Mutex poisoning
+        let job_key = job.key.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if job.is_prompt {
+                processor::process_prompt(
+                    &conn_guard,
+                    &mut pending_guard,
+                    &job.content,
+                    job.session_id.as_deref(),
+                    thread_quota,
+                    &guardian,
+                )
+            } else {
+                processor::process_capture(
+                    &conn_guard,
+                    &mut pending_guard,
+                    &job.source_type,
+                    &job.content,
+                    job.file_path.as_deref(),
+                    thread_quota,
+                    &guardian,
+                )
+            }
+        }));
+
+        // Explicitly drop guards before handling result
+        drop(conn_guard);
+        drop(pending_guard);
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
         match result {
-            Ok(tid) => {
+            Ok(Ok(tid)) => {
                 stats.processed.fetch_add(1, Ordering::Relaxed);
                 tracing::info!(
                     worker_id,
-                    agent = %job.key,
+                    agent = %job_key,
                     thread_id = ?tid,
                     duration_ms,
                     "Worker capture complete"
                 );
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 stats.errors.fetch_add(1, Ordering::Relaxed);
                 tracing::error!(
                     worker_id,
-                    agent = %job.key,
+                    agent = %job_key,
                     error = %e,
                     duration_ms,
                     "Worker capture failed"
                 );
+            }
+            Err(_panic) => {
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+                tracing::error!(
+                    worker_id,
+                    agent = %job_key,
+                    duration_ms,
+                    "Worker capture PANICKED — evicting connection to prevent poison cascade"
+                );
+                pool.force_evict(&job_key);
             }
         }
     }

@@ -105,7 +105,26 @@ pub fn run_prune_loop(
                     }
                 };
 
-                // Lock connection, run prune, then immediately release
+                // If connection mutex is poisoned, evict and reconnect before locking
+                let conn = if conn.is_poisoned() {
+                    tracing::warn!(
+                        project = %key.project_hash,
+                        agent = %key.agent_id,
+                        "Prune: DB mutex poisoned — evicting and reconnecting"
+                    );
+                    pool.force_evict(key);
+                    match pool.get_or_open(key) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!(agent = %key.agent_id, error = %e,
+                                "Prune: failed to reconnect after eviction");
+                            continue;
+                        }
+                    }
+                } else {
+                    conn
+                };
+
                 let conn_guard = match conn.lock() {
                     Ok(g) => g,
                     Err(e) => {

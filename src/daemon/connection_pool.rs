@@ -216,6 +216,20 @@ impl ConnectionPool {
             .unwrap_or_default()
     }
 
+    /// Force-evict a specific agent's connection (e.g., after Mutex poisoning).
+    /// Next call to `get_or_open()` for this agent will create a fresh connection.
+    pub fn force_evict(&self, key: &AgentKey) {
+        if let Ok(mut pool) = self.pool.lock() {
+            if pool.remove(key).is_some() {
+                tracing::warn!(
+                    project = %key.project_hash,
+                    agent = %key.agent_id,
+                    "Force-evicted poisoned connection from pool"
+                );
+            }
+        }
+    }
+
     /// Graceful shutdown — close all connections.
     pub fn close_all(&self) {
         if let Ok(mut pool) = self.pool.lock() {
