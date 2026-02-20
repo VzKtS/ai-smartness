@@ -58,6 +58,19 @@ fn build_enriched_embed_text_from_thread(thread: &Thread) -> String {
     )
 }
 
+/// Truncate a string to at most `max_bytes` bytes on a valid UTF-8 char boundary.
+fn truncate_safe(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Floor to nearest char boundary at or before max_bytes
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 pub struct ThreadManager;
 
 impl ThreadManager {
@@ -222,7 +235,7 @@ impl ThreadManager {
         let truncated = content.len() > 2000;
         let msg_content = if truncated {
             tracing::warn!(thread_id = %thread_id, len = content.len(), "Message truncated to 2000 chars");
-            content[..2000].to_string()
+            truncate_safe(content, 2000).to_string()
         } else {
             content.to_string()
         };
@@ -280,7 +293,7 @@ impl ThreadManager {
         let truncated = content.len() > 2000;
         let msg_content = if truncated {
             tracing::warn!(thread_id = %thread_id, len = content.len(), "Message truncated to 2000 chars");
-            content[..2000].to_string()
+            truncate_safe(content, 2000).to_string()
         } else {
             content.to_string()
         };
