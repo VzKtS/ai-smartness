@@ -73,6 +73,14 @@ pub fn run() {
     // Startup validation: integrity check + missed backups
     startup_validation();
 
+    // Eagerly initialize the embedding singleton BEFORE spawning workers.
+    // OnceLock init loads the ONNX model (~5-10s); if workers hit it first,
+    // all block simultaneously and the capture queue fills up.
+    {
+        let emb = ai_smartness::processing::embeddings::EmbeddingManager::global();
+        tracing::info!(use_onnx = emb.use_onnx, "EmbeddingManager initialized (eager)");
+    }
+
     // Connection pool
     let pool = Arc::new(ConnectionPool::new(
         config.pool_max_idle_secs,
