@@ -154,3 +154,100 @@ impl McpMessages {
         Ok(count)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::{Message, MessagePriority, MessageStatus};
+    use crate::test_helpers::setup_shared_db;
+
+    fn make_msg(id: &str, from: &str, to: &str) -> Message {
+        let now = time_utils::now();
+        Message {
+            id: id.to_string(),
+            from_agent: from.to_string(),
+            to_agent: to.to_string(),
+            subject: "test".to_string(),
+            content: "hello".to_string(),
+            priority: MessagePriority::Normal,
+            status: MessageStatus::Pending,
+            created_at: now,
+            ttl_expiry: now + chrono::Duration::hours(24),
+            read_at: None,
+            acked_at: None,
+            attachments: vec![],
+        }
+    }
+
+    #[test]
+    fn test_ack_sets_status_read() {
+        let conn = setup_shared_db();
+        let msg = make_msg("m1", "alice", "bob");
+        McpMessages::send(&conn, &msg).unwrap();
+
+        McpMessages::ack(&conn, "m1").unwrap();
+
+        let status: String = conn.query_row(
+            "SELECT status FROM mcp_messages WHERE id = 'm1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(status, "read");
+
+        let read_at: Option<String> = conn.query_row(
+            "SELECT read_at FROM mcp_messages WHERE id = 'm1'", [], |r| r.get(0),
+        ).unwrap();
+        assert!(read_at.is_some(), "read_at should be set after ack");
+    }
+
+    #[test]
+    fn test_inbox_returns_pending_only() {
+        let conn = setup_shared_db();
+        McpMessages::send(&conn, &make_msg("m1", "alice", "bob")).unwrap();
+        McpMessages::send(&conn, &make_msg("m2", "alice", "bob")).unwrap();
+
+        // Ack m1 → status='read'
+        McpMessages::ack(&conn, "m1").unwrap();
+
+        let inbox = McpMessages::inbox(&conn, "bob").unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].id, "m2");
+    }
+
+    #[test]
+    fn test_inbox_includes_broadcast() {
+        let conn = setup_shared_db();
+        McpMessages::send(&conn, &make_msg("m1", "alice", "bob")).unwrap();
+        McpMessages::broadcast(&conn, &make_msg("m2", "alice", "*")).unwrap();
+
+        let inbox = McpMessages::inbox(&conn, "bob").unwrap();
+        assert_eq!(inbox.len(), 2);
+    }
+
+    #[test]
+    fn test_expire_stale_pending_only() {
+        let conn = setup_shared_db();
+        let past = "2020-01-01T00:00:00Z";
+        let now_str = time_utils::to_sqlite(&time_utils::now());
+
+        // Insert expired pending message
+        conn.execute(
+            "INSERT INTO mcp_messages (id, from_agent, to_agent, msg_type, subject, payload, priority, status, created_at, expires_at)
+             VALUES ('m1', 'a', 'b', 'request', 's', 'p', 'normal', 'pending', ?1, ?2)",
+            params![now_str, past],
+        ).unwrap();
+
+        // Insert expired but already read message (should NOT be expired again)
+        conn.execute(
+            "INSERT INTO mcp_messages (id, from_agent, to_agent, msg_type, subject, payload, priority, status, created_at, expires_at)
+             VALUES ('m2', 'a', 'b', 'request', 's', 'p', 'normal', 'read', ?1, ?2)",
+            params![now_str, past],
+        ).unwrap();
+
+        let count = McpMessages::expire_stale(&conn).unwrap();
+        assert_eq!(count, 1, "Only pending messages should be expired");
+
+        let s: String = conn.query_row(
+            "SELECT status FROM mcp_messages WHERE id = 'm1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(s, "expired");
+    }
+}

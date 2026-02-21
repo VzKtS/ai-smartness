@@ -286,3 +286,36 @@ impl Default for HealthGuard {
         Self::new(HealthGuardConfig::default())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_finding(priority: HealthPriority) -> HealthFinding {
+        HealthFinding {
+            priority,
+            category: "test".to_string(),
+            message: "test finding".to_string(),
+            action: "do something".to_string(),
+            metric_value: 0.0,
+            threshold: 0.0,
+        }
+    }
+
+    #[test]
+    fn test_partition_findings_by_priority() {
+        let findings = vec![
+            make_finding(HealthPriority::Critical),
+            make_finding(HealthPriority::Low),
+            make_finding(HealthPriority::Medium),
+            make_finding(HealthPriority::High),
+            make_finding(HealthPriority::Low),
+            make_finding(HealthPriority::Medium),
+        ];
+
+        let (high_critical, medium, low) = HealthGuard::partition_findings_by_priority(&findings);
+        assert_eq!(high_critical.len(), 2, "Critical + High should be grouped");
+        assert_eq!(medium.len(), 2);
+        assert_eq!(low.len(), 2);
+    }
+}

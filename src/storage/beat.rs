@@ -183,3 +183,33 @@ impl BeatState {
         due
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quota_persistence_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = BeatState::default();
+        state.quota = 100;
+        state.beat = 42;
+        state.save(dir.path());
+
+        let loaded = BeatState::load(dir.path());
+        assert_eq!(loaded.quota, 100);
+        assert_eq!(loaded.beat, 42);
+    }
+
+    #[test]
+    fn test_backward_compat_missing_quota() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write JSON without quota field
+        let json = r#"{"beat":5,"started_at":"2026-01-01T00:00:00Z","last_beat_at":"2026-01-01T00:00:00Z","last_interaction_at":"2026-01-01T00:00:00Z","last_interaction_beat":0}"#;
+        std::fs::write(dir.path().join("beat.json"), json).unwrap();
+
+        let loaded = BeatState::load(dir.path());
+        assert_eq!(loaded.beat, 5);
+        assert_eq!(loaded.quota, 50, "Missing quota should default to 50");
+    }
+}

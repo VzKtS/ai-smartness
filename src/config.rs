@@ -1758,4 +1758,15 @@ mod tests {
         assert_eq!(cfg.active_threshold(true), 0.75);
         assert_eq!(cfg.active_threshold(false), 0.55);
     }
+
+    #[test]
+    fn test_validator_weights_to_vec_returns_9_elements() {
+        let w = ValidatorWeights::default();
+        let v = w.to_vec();
+        assert_eq!(v.len(), 9, "ValidatorWeights::to_vec must return exactly 9 elements");
+        // All defaults should be positive
+        for (i, val) in v.iter().enumerate() {
+            assert!(*val > 0.0, "Validator weight V{} should be > 0, got {}", i + 1, val);
+        }
+    }
 }
