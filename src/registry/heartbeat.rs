@@ -148,3 +148,76 @@ impl Heartbeat {
         Ok(updated)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::{Agent, AgentStatus, CoordinationMode, ThreadMode};
+    use crate::registry::registry::AgentRegistry;
+    use crate::test_helpers::setup_registry_db;
+
+    const PH: &str = "test-ph-hb";
+    const AGENT: &str = "test-agent-hb";
+
+    fn register_test_agent(conn: &Connection) {
+        let now = time_utils::to_sqlite(&time_utils::now());
+        conn.execute(
+            "INSERT INTO projects (hash, path, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![PH, "/tmp/test", "test", now],
+        ).unwrap();
+
+        let now_dt = Utc::now();
+        let agent = Agent {
+            id: AGENT.to_string(),
+            project_hash: PH.to_string(),
+            name: "Test Agent".to_string(),
+            description: String::new(),
+            role: "programmer".to_string(),
+            capabilities: vec![],
+            status: AgentStatus::Active,
+            last_seen: now_dt,
+            registered_at: now_dt,
+            supervisor_id: None,
+            coordination_mode: CoordinationMode::Autonomous,
+            team: None,
+            specializations: vec![],
+            thread_mode: ThreadMode::Normal,
+            current_activity: String::new(),
+            report_to: None,
+            custom_role: None,
+            workspace_path: String::new(),
+        };
+        AgentRegistry::register(conn, &agent).unwrap();
+    }
+
+    #[test]
+    fn test_heartbeat_update_with_activity() {
+        let conn = setup_registry_db();
+        register_test_agent(&conn);
+
+        Heartbeat::update(&conn, AGENT, PH, Some("tool:ai_recall")).unwrap();
+
+        let activity: String = conn.query_row(
+            "SELECT current_activity FROM agents WHERE id = ?1 AND project_hash = ?2",
+            params![AGENT, PH],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(activity, "tool:ai_recall");
+    }
+
+    #[test]
+    fn test_heartbeat_update_none_preserves_activity() {
+        let conn = setup_registry_db();
+        register_test_agent(&conn);
+
+        Heartbeat::update(&conn, AGENT, PH, Some("tool:ai_merge")).unwrap();
+        Heartbeat::update(&conn, AGENT, PH, None).unwrap();
+
+        let activity: String = conn.query_row(
+            "SELECT current_activity FROM agents WHERE id = ?1 AND project_hash = ?2",
+            params![AGENT, PH],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(activity, "tool:ai_merge", "Activity preserved when None");
+    }
+}

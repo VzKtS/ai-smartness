@@ -318,4 +318,78 @@ mod tests {
         assert_eq!(medium.len(), 2);
         assert_eq!(low.len(), 2);
     }
+
+    /// T-Q7.1: quota_override overrides config default in analyze().
+    /// 45 active threads, default quota=50 → Critical capacity (90%).
+    /// With override=100 → 45% → no capacity alert.
+    #[test]
+    fn test_quota_override_overrides_config_default() {
+        use crate::storage::migrations;
+        use crate::storage::threads::ThreadStorage;
+        use crate::thread::{Thread, ThreadStatus, OriginType};
+        use crate::config::GossipConfig;
+
+        // Setup in-memory DB + tempdir for ai_path
+        let conn = rusqlite::Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        migrations::migrate_agent_db(&conn).unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ai_path = tmp.path();
+
+        // Insert 45 active threads (all labeled to avoid unlabeled alerts)
+        for i in 0..45 {
+            let t = Thread {
+                id: format!("hg-t-{}", i),
+                title: format!("Thread {}", i),
+                status: ThreadStatus::Active,
+                summary: None,
+                origin_type: OriginType::Prompt,
+                parent_id: None,
+                child_ids: vec![],
+                weight: 0.5,
+                importance: 0.5,
+                importance_manually_set: false,
+                relevance_score: 1.0,
+                activation_count: 1,
+                split_locked: false,
+                split_locked_until: None,
+                topics: vec![],
+                tags: vec![],
+                labels: vec!["labeled".to_string()],
+                concepts: vec![],
+                drift_history: vec![],
+                ratings: vec![],
+                work_context: None,
+                injection_stats: None,
+                embedding: None,
+                created_at: chrono::Utc::now(),
+                last_active: chrono::Utc::now(),
+            };
+            ThreadStorage::insert(&conn, &t).unwrap();
+        }
+
+        let mut config = HealthGuardConfig::default();
+        config.thread_quota = 50; // default: 45/50 = 90% → Critical
+        config.cooldown_secs = 0; // disable cooldown for test
+        let guard = HealthGuard::new(config);
+        let gossip_config = GossipConfig::default();
+
+        // Without override: 45/50 = 90% → should trigger Critical capacity
+        let findings = guard.analyze(&conn, ai_path, &gossip_config, None);
+        assert!(findings.is_some(), "45/50 should trigger findings");
+        let findings = findings.unwrap();
+        let has_capacity = findings.iter().any(|f| f.category == "capacity");
+        assert!(has_capacity, "Should have capacity finding at 90%");
+
+        // With override=100: 45/100 = 45% → no capacity alert
+        // Need to clear cooldown file first (analyze records injection)
+        let _ = std::fs::remove_file(ai_path.join("healthguard_last.txt"));
+        let findings_override = guard.analyze(&conn, ai_path, &gossip_config, Some(100));
+        let has_capacity_override = findings_override
+            .as_ref()
+            .map(|fs| fs.iter().any(|f| f.category == "capacity"))
+            .unwrap_or(false);
+        assert!(!has_capacity_override, "45/100 should NOT trigger capacity alert");
+    }
 }
