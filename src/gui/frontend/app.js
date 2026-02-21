@@ -223,7 +223,7 @@ document.querySelectorAll('.tab:not(.tab-debug)').forEach(tab => {
         if (tab.dataset.tab === 'threads') loadThreadAgentTabs();
         if (tab.dataset.tab === 'settings') loadSettings();
         if (tab.dataset.tab === 'agents') loadAgents();
-        if (tab.dataset.tab === 'graph') loadGraph();
+        if (tab.dataset.tab === 'graph') requestAnimationFrame(() => loadGraph());
     });
 });
 
@@ -282,7 +282,7 @@ document.getElementById('project-select').addEventListener('change', (e) => {
         if (tab === 'threads') { loadThreads(); loadLabelOptions(); loadTopicOptions(); }
         if (tab === 'agents') loadAgents();
         if (tab === 'settings') loadSettings();
-        if (tab === 'graph') { document.getElementById('graph-agent-select').innerHTML = ''; loadGraph(); }
+        if (tab === 'graph') { document.getElementById('graph-agent-select').innerHTML = ''; requestAnimationFrame(() => loadGraph()); }
     }
 });
 
