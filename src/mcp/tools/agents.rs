@@ -351,3 +351,173 @@ pub fn handle_task_status(
         )))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    const PH: &str = "test-ph-tasks";
+    const AGENT: &str = "test-agent-del";
+    const TARGET: &str = "test-target-del";
+
+    fn setup_agent_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_agent_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_registry_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_registry_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_shared_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_shared_db(&conn).unwrap();
+        conn
+    }
+
+    fn insert_project(conn: &Connection) {
+        let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+        conn.execute(
+            "INSERT INTO projects (hash, path, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![PH, "/tmp/test", "test", now],
+        ).unwrap();
+    }
+
+    fn register_agent(conn: &Connection, id: &str) {
+        let now = chrono::Utc::now();
+        let agent = ai_smartness::agent::Agent {
+            id: id.to_string(),
+            project_hash: PH.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            role: "programmer".to_string(),
+            capabilities: vec![],
+            status: ai_smartness::agent::AgentStatus::Active,
+            last_seen: now,
+            registered_at: now,
+            supervisor_id: None,
+            coordination_mode: ai_smartness::agent::CoordinationMode::Autonomous,
+            team: None,
+            specializations: vec![],
+            thread_mode: ai_smartness::agent::ThreadMode::Normal,
+            current_activity: String::new(),
+            report_to: None,
+            custom_role: None,
+            workspace_path: String::new(),
+        };
+        AgentRegistry::register(conn, &agent).unwrap();
+    }
+
+    // T-C3.1: handle_task_delegate stores context
+    #[test]
+    fn test_task_delegate_stores_context() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, AGENT);
+        register_agent(&registry_conn, TARGET);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        let params = serde_json::json!({
+            "to": TARGET,
+            "task": "Implement quota guard",
+            "context": "Check thread quota before creating threads. See inject.rs for reference.",
+        });
+
+        let result = handle_task_delegate(&params, &ctx).unwrap();
+        let task_id = result["task_id"].as_str().unwrap();
+
+        let task = ai_smartness::registry::tasks::AgentTaskStorage::get_task(&registry_conn, task_id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            task.description.contains("quota"),
+            "Task description should contain context"
+        );
+    }
+
+    // T-C3.2: handle_task_status returns description
+    #[test]
+    fn test_task_status_returns_description() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, AGENT);
+        register_agent(&registry_conn, TARGET);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        let params = serde_json::json!({
+            "to": TARGET,
+            "task": "Test task",
+            "context": "Detailed context for the task",
+        });
+
+        let result = handle_task_delegate(&params, &ctx).unwrap();
+        let task_id = result["task_id"].as_str().unwrap();
+
+        let status_params = serde_json::json!({"task_id": task_id});
+        let status_result = handle_task_status(&status_params, &ctx).unwrap();
+        assert!(status_result["description"].is_string());
+        assert!(
+            status_result["description"].as_str().unwrap().contains("context"),
+            "Status should include description with context"
+        );
+    }
+
+    // T-C3.3: task delegation emits wake signal
+    #[test]
+    fn test_task_delegate_emits_wake_signal() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, AGENT);
+
+        let target = "test_wake_deleg_1";
+        register_agent(&registry_conn, target);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        let params = serde_json::json!({"to": target, "task": "Wake test task"});
+        handle_task_delegate(&params, &ctx).unwrap();
+
+        let signal_path = ai_smartness::storage::path_utils::wake_signal_path(target);
+        assert!(signal_path.exists(), "Wake signal should be created");
+
+        let content = std::fs::read_to_string(&signal_path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(json["agent_id"], target);
+        assert!(json["message"].as_str().unwrap().contains("Task delegated"));
+
+        let _ = std::fs::remove_file(&signal_path);
+    }
+}

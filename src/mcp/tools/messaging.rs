@@ -374,3 +374,158 @@ pub fn handle_msg_reply(
 
     Ok(serde_json::json!({"replied": true, "reply_id": reply.id}))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup_agent_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_agent_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_registry_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_registry_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_shared_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_shared_db(&conn).unwrap();
+        conn
+    }
+
+    fn cleanup_signal(agent: &str) {
+        let p = ai_smartness::storage::path_utils::wake_signal_path(agent);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    // T-C1.1: emit_wake_signal interrupt field
+    #[test]
+    fn test_emit_wake_signal_interrupt_flag() {
+        let agent = "test_wake_int_1";
+        cleanup_signal(agent);
+
+        emit_wake_signal(agent, "sender", "test subject", "cognitive", true);
+        let content = std::fs::read_to_string(
+            ai_smartness::storage::path_utils::wake_signal_path(agent),
+        ).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(json["interrupt"], true);
+
+        emit_wake_signal(agent, "sender", "test subject", "cognitive", false);
+        let content2 = std::fs::read_to_string(
+            ai_smartness::storage::path_utils::wake_signal_path(agent),
+        ).unwrap();
+        let json2: serde_json::Value = serde_json::from_str(&content2).unwrap();
+        assert_eq!(json2["interrupt"], false);
+
+        cleanup_signal(agent);
+    }
+
+    // T-C1.2: msg_send sets interrupt for urgent priority
+    #[test]
+    fn test_msg_send_interrupt_for_urgent() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+
+        let target_urgent = "test_wake_urg_1";
+        let target_normal = "test_wake_nrm_1";
+        cleanup_signal(target_urgent);
+        cleanup_signal(target_normal);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: "test-ph",
+            agent_id: "sender",
+        };
+
+        // Urgent → interrupt=true
+        let params = serde_json::json!({"to": target_urgent, "subject": "urgent test", "priority": "urgent"});
+        handle_msg_send(&params, &ctx).unwrap();
+        let json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(ai_smartness::storage::path_utils::wake_signal_path(target_urgent)).unwrap()
+        ).unwrap();
+        assert_eq!(json["interrupt"], true, "Urgent should set interrupt=true");
+
+        // Normal → interrupt=false
+        let params2 = serde_json::json!({"to": target_normal, "subject": "normal test", "priority": "normal"});
+        handle_msg_send(&params2, &ctx).unwrap();
+        let json2: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(ai_smartness::storage::path_utils::wake_signal_path(target_normal)).unwrap()
+        ).unwrap();
+        assert_eq!(json2["interrupt"], false, "Normal should set interrupt=false");
+
+        cleanup_signal(target_urgent);
+        cleanup_signal(target_normal);
+    }
+
+    // T-G2.1: wake signal contains all required fields
+    #[test]
+    fn test_wake_signal_contains_required_fields() {
+        let agent = "test_wake_fld_1";
+        cleanup_signal(agent);
+
+        emit_wake_signal(agent, "sender-agent", "Test subject", "inbox", true);
+        let content = std::fs::read_to_string(
+            ai_smartness::storage::path_utils::wake_signal_path(agent),
+        ).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        assert_eq!(json["agent_id"], agent);
+        assert_eq!(json["from"], "sender-agent");
+        assert_eq!(json["message"], "Test subject");
+        assert_eq!(json["mode"], "inbox");
+        assert_eq!(json["interrupt"], true);
+        assert_eq!(json["acknowledged"], false);
+        assert!(json["timestamp"].is_string());
+
+        cleanup_signal(agent);
+    }
+
+    // T-C5.3: handle_msg_ack without params uses ack_latest
+    #[test]
+    fn test_msg_ack_fallback_uses_ack_latest() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+
+        let agent_id = "test-agent-ack";
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: "test-ph",
+            agent_id,
+        };
+
+        let future = ai_smartness::time_utils::to_sqlite(
+            &(ai_smartness::time_utils::now() + chrono::Duration::hours(24)),
+        );
+        let now_str = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+
+        agent_conn.execute(
+            "INSERT INTO cognitive_inbox (id, from_agent, to_agent, subject, content, priority, ttl_expiry, status, created_at)
+             VALUES ('m1', 'sender', ?1, 'test', 'hello', 'normal', ?2, 'pending', ?3)",
+            rusqlite::params![agent_id, future, now_str],
+        ).unwrap();
+
+        // Mark as read
+        ai_smartness::storage::cognitive_inbox::CognitiveInbox::read_pending(&agent_conn, agent_id).unwrap();
+
+        // Call with empty params → should use ack_latest fallback
+        let params = serde_json::json!({});
+        let result = handle_msg_ack(&params, &ctx);
+        assert!(result.is_ok(), "Should succeed using ack_latest fallback");
+        assert_eq!(result.unwrap()["acked"], "m1");
+    }
+}

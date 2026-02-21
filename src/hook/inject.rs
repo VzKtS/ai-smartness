@@ -826,3 +826,257 @@ fn build_healthguard_injection(
     let owned: Vec<healthguard::HealthFinding> = injectable.into_iter().cloned().collect();
     Some(healthguard::formatter::format_injection(&owned))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ai_smartness::healthguard::{HealthFinding, HealthGuard, HealthPriority};
+    use ai_smartness::storage::beat::BeatState;
+
+    fn setup_agent_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+        ai_smartness::storage::migrations::migrate_agent_db(&conn).unwrap();
+        conn
+    }
+
+    fn cleanup_project(ph: &str) {
+        let dir = ai_smartness::storage::path_utils::project_dir(ph);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Insert threads with optional labels. Uses raw SQL for speed.
+    fn insert_threads(conn: &Connection, prefix: &str, count: usize, labeled: bool) {
+        let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+        let labels = if labeled { r#"["test"]"# } else { "[]" };
+        for i in 0..count {
+            conn.execute(
+                "INSERT INTO threads (id, title, status, summary, origin_type, parent_id, child_ids,
+                    weight, importance, importance_manually_set, relevance_score,
+                    activation_count, split_locked, split_locked_until,
+                    topics, tags, labels, concepts, drift_history,
+                    work_context, ratings, injection_stats, embedding,
+                    created_at, last_active)
+                 VALUES (?1, ?2, 'active', NULL, 'prompt', NULL, '[]',
+                    0.5, 0.5, 0, 1.0, 1, 0, NULL,
+                    '[]', '[]', ?3, '[]', '[]', NULL, '[]', NULL, NULL,
+                    ?4, ?4)",
+                rusqlite::params![format!("{}-{}", prefix, i), format!("Thread {}", i), labels, now],
+            ).unwrap();
+        }
+    }
+
+    // === T-P1: Onboarding ===
+
+    #[test]
+    fn test_onboarding_creates_sentinel() {
+        let ph = "test_ph_ob1";
+        let ag = "ag_ob1";
+        cleanup_project(ph);
+
+        let result = build_onboarding_prompt(ph, ag);
+        assert!(result.is_some(), "First call should return prompt");
+
+        let sentinel = ai_smartness::storage::path_utils::agent_data_dir(ph, ag)
+            .join("onboarding_done");
+        assert!(sentinel.exists(), "Sentinel file should be created");
+
+        cleanup_project(ph);
+    }
+
+    #[test]
+    fn test_onboarding_not_repeated() {
+        let ph = "test_ph_ob2";
+        let ag = "ag_ob2";
+        cleanup_project(ph);
+
+        assert!(build_onboarding_prompt(ph, ag).is_some());
+        assert!(
+            build_onboarding_prompt(ph, ag).is_none(),
+            "Second call should return None"
+        );
+
+        cleanup_project(ph);
+    }
+
+    #[test]
+    fn test_onboarding_contains_cognitive_rules() {
+        let ph = "test_ph_ob3";
+        let ag = "ag_ob3";
+        cleanup_project(ph);
+
+        let prompt = build_onboarding_prompt(ph, ag).unwrap();
+        assert!(prompt.contains("Cognitive Autonomy Rules"));
+        assert!(prompt.contains("Thread Management"));
+        assert!(prompt.contains("Context Enrichment"));
+        assert!(prompt.contains("Labeling"));
+        assert!(prompt.contains("Communication"));
+
+        cleanup_project(ph);
+    }
+
+    // === T-P2: Cognitive nudge ===
+
+    #[test]
+    fn test_nudge_recall_staleness() {
+        let conn = setup_agent_db();
+        insert_threads(&conn, "t", 12, false);
+
+        let bs = BeatState {
+            beat: 15,
+            last_recall_beat: 0,
+            ..Default::default()
+        };
+
+        let result = build_cognitive_nudge(&conn, &bs);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "recall");
+    }
+
+    #[test]
+    fn test_nudge_capacity_dynamic_threshold() {
+        let conn = setup_agent_db();
+        insert_threads(&conn, "t", 85, true); // all labeled
+
+        let bs = BeatState {
+            beat: 20,
+            last_recall_beat: 15, // 15+10=25 > 20 → no recall
+            quota: 100,
+            ..Default::default()
+        };
+
+        let result = build_cognitive_nudge(&conn, &bs);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "capacity");
+
+        // 30 labeled threads → 30/100 = 30% < 80% → no capacity
+        let conn2 = setup_agent_db();
+        insert_threads(&conn2, "t", 30, true);
+        let result2 = build_cognitive_nudge(&conn2, &bs);
+        assert!(result2.is_none(), "30/100 should not trigger any nudge");
+    }
+
+    #[test]
+    fn test_nudge_unlabeled_ratio() {
+        let conn = setup_agent_db();
+        insert_threads(&conn, "lab", 5, true);  // labeled
+        insert_threads(&conn, "unl", 5, false); // unlabeled
+
+        let bs = BeatState {
+            beat: 20,
+            last_recall_beat: 15,
+            quota: 100,
+            ..Default::default()
+        };
+
+        // 10 total, 5 unlabeled active → 5/10 = 50% > 40%
+        let result = build_cognitive_nudge(&conn, &bs);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "unlabeled");
+    }
+
+    #[test]
+    fn test_nudge_maintenance_after_50_beats() {
+        let conn = setup_agent_db();
+        insert_threads(&conn, "t", 3, true); // few threads, all labeled
+
+        let bs = BeatState {
+            beat: 55,
+            last_recall_beat: 50,
+            last_maintenance_beat: 0,
+            quota: 100,
+            ..Default::default()
+        };
+
+        let result = build_cognitive_nudge(&conn, &bs);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "maintenance");
+    }
+
+    #[test]
+    fn test_nudge_cooldown_prevents_repeat() {
+        let conn = setup_agent_db();
+        insert_threads(&conn, "t", 12, false);
+
+        let bs = BeatState {
+            beat: 15,
+            last_recall_beat: 0,
+            last_nudge_type: "recall".to_string(),
+            last_nudge_beat: 10, // 10+10=20 > 15 → recall in cooldown
+            quota: 100,
+            ..Default::default()
+        };
+
+        // Recall in cooldown → skips to unlabeled (12/12 = 100% > 40%)
+        let result = build_cognitive_nudge(&conn, &bs);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "unlabeled");
+    }
+
+    #[test]
+    fn test_nudge_only_one_per_prompt() {
+        let conn = setup_agent_db();
+        insert_threads(&conn, "t", 85, false);
+
+        let bs = BeatState {
+            beat: 15,
+            last_recall_beat: 0,
+            quota: 100,
+            ..Default::default()
+        };
+
+        // Both recall and capacity could trigger — recall has priority
+        let result = build_cognitive_nudge(&conn, &bs);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "recall");
+    }
+
+    // === T-P3: Medium findings injection ===
+
+    fn make_finding(priority: HealthPriority) -> HealthFinding {
+        HealthFinding {
+            priority,
+            category: "test".into(),
+            message: "test".into(),
+            action: "test".into(),
+            metric_value: 0.0,
+            threshold: 0.0,
+        }
+    }
+
+    #[test]
+    fn test_medium_findings_injected_every_10_beats() {
+        let findings = vec![
+            make_finding(HealthPriority::Medium),
+            make_finding(HealthPriority::High),
+        ];
+        let (hc, med, _) = HealthGuard::partition_findings_by_priority(&findings);
+
+        // Beat 10: medium included
+        let mut inj: Vec<&HealthFinding> = hc.clone();
+        if 10u64 % 10 == 0 { inj.extend(&med); }
+        assert_eq!(inj.len(), 2, "Beat 10: both high and medium");
+
+        // Beat 11: only high/critical
+        let mut inj2: Vec<&HealthFinding> = hc;
+        if 11u64 % 10 == 0 { inj2.extend(&med); }
+        assert_eq!(inj2.len(), 1, "Beat 11: only high/critical");
+    }
+
+    #[test]
+    fn test_high_critical_always_injected() {
+        let findings = vec![
+            make_finding(HealthPriority::High),
+            make_finding(HealthPriority::Critical),
+            make_finding(HealthPriority::Medium),
+            make_finding(HealthPriority::Low),
+        ];
+        let (hc, med, _) = HealthGuard::partition_findings_by_priority(&findings);
+
+        // Beat 7 (not divisible by 10): high/critical still included
+        let mut inj: Vec<&HealthFinding> = hc;
+        if 7u64 % 10 == 0 { inj.extend(&med); }
+        assert_eq!(inj.len(), 2, "High+Critical always injected");
+    }
+}

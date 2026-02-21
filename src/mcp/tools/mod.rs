@@ -323,3 +323,157 @@ pub fn parse_object_array(v: &serde_json::Value) -> Option<Vec<serde_json::Value
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ai_smartness::agent::{Agent, AgentStatus, CoordinationMode, ThreadMode};
+    use ai_smartness::registry::registry::AgentRegistry;
+    use ai_smartness::storage::threads::ThreadStorage;
+    use ai_smartness::thread::ThreadStatus;
+    use rusqlite::{params, Connection};
+
+    const PH: &str = "test-ph-mod";
+    const AGENT: &str = "test-agent-mod";
+
+    fn setup_agent_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_agent_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_registry_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_registry_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_shared_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_shared_db(&conn).unwrap();
+        conn
+    }
+
+    fn insert_project(conn: &Connection) {
+        let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+        conn.execute(
+            "INSERT INTO projects (hash, path, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![PH, "/tmp/test", "test", now],
+        ).unwrap();
+    }
+
+    fn register_agent(conn: &Connection, mode: ThreadMode) {
+        let now = chrono::Utc::now();
+        let agent = Agent {
+            id: AGENT.to_string(),
+            project_hash: PH.to_string(),
+            name: AGENT.to_string(),
+            description: String::new(),
+            role: "programmer".to_string(),
+            capabilities: vec![],
+            status: AgentStatus::Active,
+            last_seen: now,
+            registered_at: now,
+            supervisor_id: None,
+            coordination_mode: CoordinationMode::Autonomous,
+            team: None,
+            specializations: vec![],
+            thread_mode: mode,
+            current_activity: String::new(),
+            report_to: None,
+            custom_role: None,
+            workspace_path: String::new(),
+        };
+        AgentRegistry::register(conn, &agent).unwrap();
+    }
+
+    fn insert_active_threads(conn: &Connection, count: usize) {
+        for i in 0..count {
+            let t = ai_smartness::thread::Thread {
+                id: format!("t-mod-{}", i),
+                title: format!("Thread {}", i),
+                status: ThreadStatus::Active,
+                summary: None,
+                origin_type: ai_smartness::thread::OriginType::Prompt,
+                parent_id: None,
+                child_ids: vec![],
+                weight: 0.5,
+                importance: 0.5,
+                importance_manually_set: false,
+                relevance_score: 1.0,
+                activation_count: 1,
+                split_locked: false,
+                split_locked_until: None,
+                topics: vec![],
+                tags: vec![],
+                labels: vec![],
+                concepts: vec![],
+                drift_history: vec![],
+                ratings: vec![],
+                work_context: None,
+                injection_stats: None,
+                embedding: None,
+                created_at: chrono::Utc::now(),
+                last_active: chrono::Utc::now(),
+            };
+            ThreadStorage::insert(conn, &t).unwrap();
+        }
+    }
+
+    /// T-Q2.1: check_thread_quota returns (active_count, quota) for Heavy mode with 5 threads.
+    #[test]
+    fn test_check_thread_quota_returns_count_and_quota() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, ThreadMode::Heavy);
+        insert_active_threads(&agent_conn, 5);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        let (active, quota) = check_thread_quota(&ctx).unwrap();
+        assert_eq!(active, 5, "Should count 5 active threads");
+        assert_eq!(quota, 100, "Heavy mode quota should be 100");
+    }
+
+    /// T-C2.3: route_tool sets current_activity to "tool:<name>".
+    #[test]
+    fn test_route_tool_sets_activity() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, ThreadMode::Normal);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        // Call route_tool with ai_thread_list (the tool itself may error, but
+        // the activity update happens before dispatch, so we ignore the result).
+        let _ = route_tool("ai_thread_list", &serde_json::json!({}), &ctx);
+
+        let activity: String = registry_conn.query_row(
+            "SELECT current_activity FROM agents WHERE id = ?1 AND project_hash = ?2",
+            params![AGENT, PH],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(activity, "tool:ai_thread_list");
+    }
+}
