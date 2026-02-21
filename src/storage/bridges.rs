@@ -240,14 +240,26 @@ impl BridgeStorage {
     }
 
     pub fn delete_batch(conn: &Connection, ids: &[String]) -> AiResult<usize> {
-        let mut count = 0;
-        for id in ids {
-            let affected = conn
-                .execute("DELETE FROM bridges WHERE id = ?1", params![id])
-                .map_err(|e| AiError::Storage(e.to_string()))?;
-            count += affected;
+        if ids.is_empty() {
+            return Ok(0);
         }
-        Ok(count)
+        if ids.len() > 500 {
+            return ids.chunks(500).try_fold(0, |acc, chunk| {
+                let chunk_vec: Vec<String> = chunk.to_vec();
+                Self::delete_batch(conn, &chunk_vec).map(|n| acc + n)
+            });
+        }
+
+        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!("DELETE FROM bridges WHERE id IN ({})", placeholders.join(", "));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        let deleted = conn
+            .execute(&sql, param_refs.as_slice())
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+        Ok(deleted)
     }
 
     /// Bulk delete all bridges with a given status.
@@ -295,5 +307,172 @@ impl<T> OptionalExt<T> for Result<T, rusqlite::Error> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{setup_agent_db, setup_agent_db_no_fk, ThreadBuilder, BridgeBuilder};
+    use crate::storage::threads::ThreadStorage;
+
+    fn setup_two_threads(conn: &Connection) -> (String, String) {
+        let t1 = ThreadBuilder::new().id("t1").build();
+        let t2 = ThreadBuilder::new().id("t2").build();
+        ThreadStorage::insert(conn, &t1).unwrap();
+        ThreadStorage::insert(conn, &t2).unwrap();
+        ("t1".to_string(), "t2".to_string())
+    }
+
+    #[test]
+    fn test_insert_and_get() {
+        let conn = setup_agent_db();
+        let (s, t) = setup_two_threads(&conn);
+        let bridge = BridgeBuilder::new().id("b1").source_id(&s).target_id(&t).build();
+        BridgeStorage::insert(&conn, &bridge).unwrap();
+        let got = BridgeStorage::get(&conn, "b1").unwrap().unwrap();
+        assert_eq!(got.id, "b1");
+        assert_eq!(got.source_id, "t1");
+        assert_eq!(got.target_id, "t2");
+        assert_eq!(got.relation_type, BridgeType::Extends);
+    }
+
+    #[test]
+    fn test_get_nonexistent() {
+        let conn = setup_agent_db();
+        assert!(BridgeStorage::get(&conn, "nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_update() {
+        let conn = setup_agent_db();
+        let (s, t) = setup_two_threads(&conn);
+        let mut bridge = BridgeBuilder::new().id("b1").source_id(&s).target_id(&t).build();
+        BridgeStorage::insert(&conn, &bridge).unwrap();
+        bridge.weight = 0.5;
+        bridge.reason = "Updated reason".to_string();
+        BridgeStorage::update(&conn, &bridge).unwrap();
+        let got = BridgeStorage::get(&conn, "b1").unwrap().unwrap();
+        assert!((got.weight - 0.5).abs() < 0.001);
+        assert_eq!(got.reason, "Updated reason");
+    }
+
+    #[test]
+    fn test_delete() {
+        let conn = setup_agent_db();
+        let (s, t) = setup_two_threads(&conn);
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b1").source_id(&s).target_id(&t).build()).unwrap();
+        BridgeStorage::delete(&conn, "b1").unwrap();
+        assert!(BridgeStorage::get(&conn, "b1").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_delete_for_thread_bilateral() {
+        let conn = setup_agent_db();
+        let t3 = ThreadBuilder::new().id("t3").build();
+        let (s, t) = setup_two_threads(&conn);
+        ThreadStorage::insert(&conn, &t3).unwrap();
+        // Bridge where t1 is source
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b1").source_id(&s).target_id(&t).build()).unwrap();
+        // Bridge where t1 is target
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b2").source_id("t3").target_id(&s).build()).unwrap();
+        // Both should be deleted
+        let deleted = BridgeStorage::delete_for_thread(&conn, "t1").unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(BridgeStorage::count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_list_for_thread() {
+        let conn = setup_agent_db();
+        let t3 = ThreadBuilder::new().id("t3").build();
+        let (s, t) = setup_two_threads(&conn);
+        ThreadStorage::insert(&conn, &t3).unwrap();
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b1").source_id(&s).target_id(&t).build()).unwrap();
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b2").source_id(&s).target_id("t3").build()).unwrap();
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b3").source_id(&t).target_id("t3").build()).unwrap();
+        // t1 is in b1 (source) and b2 (source) = 2
+        assert_eq!(BridgeStorage::list_for_thread(&conn, "t1").unwrap().len(), 2);
+        // t3 is in b2 (target) and b3 (target) = 2
+        assert_eq!(BridgeStorage::list_for_thread(&conn, "t3").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_list_active_and_by_status() {
+        let conn = setup_agent_db();
+        let (s, t) = setup_two_threads(&conn);
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b1").source_id(&s).target_id(&t).build()).unwrap();
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b2").source_id(&s).target_id(&t).status(BridgeStatus::Weak).build()).unwrap();
+        assert_eq!(BridgeStorage::list_active(&conn).unwrap().len(), 1);
+        assert_eq!(BridgeStorage::list_by_status(&conn, BridgeStatus::Weak).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_update_weight_and_status() {
+        let conn = setup_agent_db();
+        let (s, t) = setup_two_threads(&conn);
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b1").source_id(&s).target_id(&t).build()).unwrap();
+        BridgeStorage::update_weight(&conn, "b1", 0.3).unwrap();
+        BridgeStorage::update_status(&conn, "b1", BridgeStatus::Weak).unwrap();
+        let got = BridgeStorage::get(&conn, "b1").unwrap().unwrap();
+        assert!((got.weight - 0.3).abs() < 0.001);
+        assert_eq!(got.status, BridgeStatus::Weak);
+    }
+
+    #[test]
+    fn test_increment_use() {
+        let conn = setup_agent_db();
+        let (s, t) = setup_two_threads(&conn);
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b1").source_id(&s).target_id(&t).weight(0.5).build()).unwrap();
+        BridgeStorage::increment_use(&conn, "b1").unwrap();
+        let got = BridgeStorage::get(&conn, "b1").unwrap().unwrap();
+        assert_eq!(got.use_count, 1);
+        assert!(got.last_reinforced.is_some());
+        // weight should remain unchanged — increment_use does NOT boost weight (known finding #2)
+        assert!((got.weight - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_scan_orphans() {
+        // Insert valid bridge, then delete target thread with FK off to create orphan
+        let conn = setup_agent_db_no_fk();
+        let t1 = ThreadBuilder::new().id("t1").build();
+        let t2 = ThreadBuilder::new().id("t2").build();
+        ThreadStorage::insert(&conn, &t1).unwrap();
+        ThreadStorage::insert(&conn, &t2).unwrap();
+        BridgeStorage::insert(&conn, &BridgeBuilder::new().id("b1").source_id("t1").target_id("t2").build()).unwrap();
+        // Delete t2 directly — FK is off so bridge won't cascade
+        conn.execute("DELETE FROM threads WHERE id = 't2'", []).unwrap();
+        let orphans = BridgeStorage::scan_orphans(&conn).unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].id, "b1");
+    }
+
+    #[test]
+    fn test_delete_batch_and_count_by_status() {
+        let conn = setup_agent_db();
+        let (s, t) = setup_two_threads(&conn);
+        for i in 0..3 {
+            BridgeStorage::insert(&conn, &BridgeBuilder::new().id(&format!("b{}", i)).source_id(&s).target_id(&t).build()).unwrap();
+        }
+        let deleted = BridgeStorage::delete_batch(&conn, &["b0".into(), "b1".into()]).unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(BridgeStorage::count(&conn).unwrap(), 1);
+        assert_eq!(BridgeStorage::count_by_status(&conn, &BridgeStatus::Active).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_bridge_delete_batch() {
+        let conn = setup_agent_db();
+        let (s, t) = setup_two_threads(&conn);
+        for i in 0..5 {
+            BridgeStorage::insert(&conn, &BridgeBuilder::new().id(&format!("b{}", i)).source_id(&s).target_id(&t).build()).unwrap();
+        }
+        // Single query should delete all 3
+        let deleted = BridgeStorage::delete_batch(&conn, &["b0".into(), "b2".into(), "b4".into()]).unwrap();
+        assert_eq!(deleted, 3);
+        assert_eq!(BridgeStorage::count(&conn).unwrap(), 2);
+        // Empty input returns 0
+        assert_eq!(BridgeStorage::delete_batch(&conn, &[]).unwrap(), 0);
     }
 }
