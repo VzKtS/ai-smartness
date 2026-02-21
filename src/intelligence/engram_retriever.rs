@@ -423,6 +423,7 @@ fn load_threads_by_ids(
 
 /// Convert a SQLite row to a Thread struct.
 fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
+    let id: String = row.get(0)?;
     let status_str: String = row.get(2)?;
     let status = match status_str.as_str() {
         "suspended" => ThreadStatus::Suspended,
@@ -458,22 +459,52 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
     );
 
     let drift_json: String = row.get(12)?;
-    let drift_history: Vec<String> = serde_json::from_str(&drift_json).unwrap_or_default();
+    let drift_history: Vec<String> = serde_json::from_str(&drift_json)
+        .inspect_err(|e| tracing::warn!(
+            thread_id = %id, field = "drift_history", error = %e,
+            "Corrupt JSON in thread row — using default"
+        ))
+        .unwrap_or_default();
 
     let child_ids_json: String = row.get(14)?;
-    let child_ids: Vec<String> = serde_json::from_str(&child_ids_json).unwrap_or_default();
+    let child_ids: Vec<String> = serde_json::from_str(&child_ids_json)
+        .inspect_err(|e| tracing::warn!(
+            thread_id = %id, field = "child_ids", error = %e,
+            "Corrupt JSON in thread row — using default"
+        ))
+        .unwrap_or_default();
 
     let topics_json: String = row.get(16)?;
-    let topics: Vec<String> = serde_json::from_str(&topics_json).unwrap_or_default();
+    let topics: Vec<String> = serde_json::from_str(&topics_json)
+        .inspect_err(|e| tracing::warn!(
+            thread_id = %id, field = "topics", error = %e,
+            "Corrupt JSON in thread row — using default"
+        ))
+        .unwrap_or_default();
 
     let tags_json: String = row.get(17)?;
-    let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+    let tags: Vec<String> = serde_json::from_str(&tags_json)
+        .inspect_err(|e| tracing::warn!(
+            thread_id = %id, field = "tags", error = %e,
+            "Corrupt JSON in thread row — using default"
+        ))
+        .unwrap_or_default();
 
     let labels_json: String = row.get(18)?;
-    let labels: Vec<String> = serde_json::from_str(&labels_json).unwrap_or_default();
+    let labels: Vec<String> = serde_json::from_str(&labels_json)
+        .inspect_err(|e| tracing::warn!(
+            thread_id = %id, field = "labels", error = %e,
+            "Corrupt JSON in thread row — using default"
+        ))
+        .unwrap_or_default();
 
     let concepts_json: String = row.get(19)?;
-    let concepts: Vec<String> = serde_json::from_str(&concepts_json).unwrap_or_default();
+    let concepts: Vec<String> = serde_json::from_str(&concepts_json)
+        .inspect_err(|e| tracing::warn!(
+            thread_id = %id, field = "concepts", error = %e,
+            "Corrupt JSON in thread row — using default"
+        ))
+        .unwrap_or_default();
 
     // Embedding: stored as BLOB (raw little-endian f32 bytes)
     let embedding_blob: Option<Vec<u8>> = row.get(20)?;
@@ -487,16 +518,35 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
     });
 
     let ratings_json: String = row.get(22)?;
-    let ratings: Vec<serde_json::Value> = serde_json::from_str(&ratings_json).unwrap_or_default();
+    let ratings: Vec<serde_json::Value> = serde_json::from_str(&ratings_json)
+        .inspect_err(|e| tracing::warn!(
+            thread_id = %id, field = "ratings", error = %e,
+            "Corrupt JSON in thread row — using default"
+        ))
+        .unwrap_or_default();
 
     let wc_json: Option<String> = row.get(23)?;
-    let work_context: Option<WorkContext> = wc_json.and_then(|s| serde_json::from_str(&s).ok());
+    let work_context: Option<WorkContext> = wc_json.and_then(|s|
+        serde_json::from_str(&s)
+            .inspect_err(|e| tracing::warn!(
+                thread_id = %id, field = "work_context", error = %e,
+                "Corrupt JSON in thread row — using None"
+            ))
+            .ok()
+    );
 
     let is_json: Option<String> = row.get(24)?;
-    let injection_stats: Option<InjectionStats> = is_json.and_then(|s| serde_json::from_str(&s).ok());
+    let injection_stats: Option<InjectionStats> = is_json.and_then(|s|
+        serde_json::from_str(&s)
+            .inspect_err(|e| tracing::warn!(
+                thread_id = %id, field = "injection_stats", error = %e,
+                "Corrupt JSON in thread row — using None"
+            ))
+            .ok()
+    );
 
     Ok(Thread {
-        id: row.get(0)?,
+        id,
         title: row.get(1)?,
         status,
         weight: row.get(3)?,
