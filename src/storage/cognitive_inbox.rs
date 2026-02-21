@@ -248,4 +248,48 @@ mod tests {
         ).unwrap();
         assert_eq!(dead_count, 1);
     }
+
+    #[test]
+    fn test_ack_latest_returns_most_recent() {
+        let conn = setup_agent_db();
+        let future = time_utils::to_sqlite(&(time_utils::now() + chrono::Duration::hours(24)));
+
+        // Insert 2 messages for agent-b
+        conn.execute(
+            "INSERT INTO cognitive_inbox (id, from_agent, to_agent, subject, content, priority, ttl_expiry, status, created_at)
+             VALUES ('m1', 'a', 'agent-b', 's1', 'c1', 'normal', ?1, 'pending', '2026-01-01T00:00:00Z')",
+            params![future],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO cognitive_inbox (id, from_agent, to_agent, subject, content, priority, ttl_expiry, status, created_at)
+             VALUES ('m2', 'a', 'agent-b', 's2', 'c2', 'normal', ?1, 'pending', '2026-01-02T00:00:00Z')",
+            params![future],
+        ).unwrap();
+
+        // Mark both as read
+        CognitiveInbox::read_pending(&conn, "agent-b").unwrap();
+
+        // ack_latest should return most recent (m2)
+        let latest = CognitiveInbox::ack_latest(&conn, "agent-b").unwrap();
+        assert_eq!(latest, Some("m2".to_string()));
+    }
+
+    #[test]
+    fn test_ack_latest_none_when_all_acked() {
+        let conn = setup_agent_db();
+        let future = time_utils::to_sqlite(&(time_utils::now() + chrono::Duration::hours(24)));
+
+        conn.execute(
+            "INSERT INTO cognitive_inbox (id, from_agent, to_agent, subject, content, priority, ttl_expiry, status, created_at)
+             VALUES ('m1', 'a', 'agent-b', 's1', 'c1', 'normal', ?1, 'pending', ?2)",
+            params![future, time_utils::to_sqlite(&time_utils::now())],
+        ).unwrap();
+
+        // Read then ack
+        CognitiveInbox::read_pending(&conn, "agent-b").unwrap();
+        CognitiveInbox::ack(&conn, "m1").unwrap();
+
+        let latest = CognitiveInbox::ack_latest(&conn, "agent-b").unwrap();
+        assert_eq!(latest, None, "All messages acked, should return None");
+    }
 }

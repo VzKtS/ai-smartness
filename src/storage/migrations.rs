@@ -425,3 +425,80 @@ pub fn migrate_registry_db(conn: &Connection) -> AiResult<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::setup_registry_db;
+
+    #[test]
+    fn test_registry_v4_columns_exist() {
+        let conn = setup_registry_db();
+        // V4 adds report_to, custom_role, workspace_path. Verify with a query.
+        let _result: String = conn.query_row(
+            "SELECT typeof(report_to) FROM agents LIMIT 0",
+            [],
+            |r| r.get(0),
+        ).unwrap_or_else(|_| {
+            // No rows, but the column parse worked — try PRAGMA instead
+            "ok".to_string()
+        });
+        // If no rows, verify columns exist via pragma
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(agents)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(cols.contains(&"report_to".to_string()), "V4 should add report_to");
+        assert!(cols.contains(&"custom_role".to_string()), "V4 should add custom_role");
+        assert!(cols.contains(&"workspace_path".to_string()), "V4 should add workspace_path");
+    }
+
+    #[test]
+    fn test_registry_v5_empty_to_null() {
+        // Create a DB at V4 (before V5 migration)
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+
+        // Run only V1-V4 migrations
+        conn.execute_batch(super::REGISTRY_DB_V1).unwrap();
+        set_schema_version(&conn, 1).unwrap();
+        conn.execute_batch(super::REGISTRY_DB_V2).unwrap();
+        set_schema_version(&conn, 2).unwrap();
+        conn.execute_batch("ALTER TABLE agents ADD COLUMN current_activity TEXT DEFAULT '';").unwrap();
+        set_schema_version(&conn, 3).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE agents ADD COLUMN report_to TEXT DEFAULT '';
+             ALTER TABLE agents ADD COLUMN custom_role TEXT DEFAULT '';
+             ALTER TABLE agents ADD COLUMN workspace_path TEXT DEFAULT '';"
+        ).unwrap();
+        set_schema_version(&conn, 4).unwrap();
+
+        // Insert a project + agent with empty report_to/custom_role
+        conn.execute(
+            "INSERT INTO projects (hash, path, created_at) VALUES ('ph1', '/tmp/test', datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO agents (id, project_hash, name, status, last_seen, registered_at, report_to, custom_role)
+             VALUES ('a1', 'ph1', 'test', 'active', datetime('now'), datetime('now'), '', '')",
+            [],
+        ).unwrap();
+
+        // Now run V5 migration
+        migrate_registry_db(&conn).unwrap();
+
+        // Verify empty strings became NULL
+        let report_to: Option<String> = conn.query_row(
+            "SELECT report_to FROM agents WHERE id = 'a1'", [], |r| r.get(0),
+        ).unwrap();
+        assert!(report_to.is_none(), "V5 should convert empty report_to to NULL");
+
+        let custom_role: Option<String> = conn.query_row(
+            "SELECT custom_role FROM agents WHERE id = 'a1'", [], |r| r.get(0),
+        ).unwrap();
+        assert!(custom_role.is_none(), "V5 should convert empty custom_role to NULL");
+    }
+}

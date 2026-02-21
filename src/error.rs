@@ -49,3 +49,32 @@ pub enum AiError {
 }
 
 pub type AiResult<T> = Result<T, AiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_from_rusqlite_error() {
+        let db_err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some("test error".to_string()),
+        );
+        let ai_err: AiError = db_err.into();
+        match ai_err {
+            AiError::Database(_) => {} // expected
+            other => panic!("Expected AiError::Database, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_from_chrono_parse_error() {
+        let parse_result: Result<chrono::DateTime<chrono::Utc>, _> = "not-a-date".parse();
+        let chrono_err = parse_result.unwrap_err();
+        let ai_err: AiError = chrono_err.into();
+        match ai_err {
+            AiError::DateParse(_) => {} // expected
+            other => panic!("Expected AiError::DateParse, got {:?}", other),
+        }
+    }
+}

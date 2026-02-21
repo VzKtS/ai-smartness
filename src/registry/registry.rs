@@ -788,3 +788,108 @@ impl<T> OptionalExt<T> for Result<T, rusqlite::Error> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::{Agent, AgentStatus, CoordinationMode, ThreadMode};
+    use crate::test_helpers::setup_registry_db;
+
+    const PH: &str = "test-project-hash";
+
+    fn insert_project(conn: &Connection) {
+        let now = time_utils::to_sqlite(&time_utils::now());
+        conn.execute(
+            "INSERT INTO projects (hash, path, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![PH, "/tmp/test-project", "test-project", now],
+        ).unwrap();
+    }
+
+    fn make_agent(id: &str) -> Agent {
+        let now = chrono::Utc::now();
+        Agent {
+            id: id.to_string(),
+            project_hash: PH.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            role: "programmer".to_string(),
+            capabilities: vec![],
+            status: AgentStatus::Active,
+            last_seen: now,
+            registered_at: now,
+            supervisor_id: None,
+            coordination_mode: CoordinationMode::Autonomous,
+            team: None,
+            specializations: vec![],
+            thread_mode: ThreadMode::Normal,
+            current_activity: String::new(),
+            report_to: None,
+            custom_role: None,
+            workspace_path: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_topology_fields_persist() {
+        let conn = setup_registry_db();
+        insert_project(&conn);
+        let mut agent = make_agent("coder1");
+        agent.report_to = Some("cor".to_string());
+        agent.custom_role = Some("senior-dev".to_string());
+        AgentRegistry::register(&conn, &agent).unwrap();
+
+        let got = AgentRegistry::get(&conn, "coder1", PH).unwrap().unwrap();
+        assert_eq!(got.report_to, Some("cor".to_string()));
+        assert_eq!(got.custom_role, Some("senior-dev".to_string()));
+    }
+
+    #[test]
+    fn test_delete_cascades_report_to() {
+        let conn = setup_registry_db();
+        insert_project(&conn);
+
+        // Register cor + coder1 that reports to cor
+        AgentRegistry::register(&conn, &make_agent("cor")).unwrap();
+        let mut coder = make_agent("coder1");
+        coder.report_to = Some("cor".to_string());
+        AgentRegistry::register(&conn, &coder).unwrap();
+
+        // Also register coder2 so cor isn't the last agent
+        AgentRegistry::register(&conn, &make_agent("coder2")).unwrap();
+
+        // Delete cor → coder1.report_to should be nullified
+        AgentRegistry::delete(&conn, "cor", PH).unwrap();
+        let got = AgentRegistry::get(&conn, "coder1", PH).unwrap().unwrap();
+        assert_eq!(got.report_to, None, "report_to should be nullified after target deleted");
+    }
+
+    #[test]
+    fn test_rename_propagates_report_to() {
+        let conn = setup_registry_db();
+        insert_project(&conn);
+
+        AgentRegistry::register(&conn, &make_agent("old-cor")).unwrap();
+        let mut coder = make_agent("coder1");
+        coder.report_to = Some("old-cor".to_string());
+        AgentRegistry::register(&conn, &coder).unwrap();
+
+        // Rename old-cor → new-cor
+        AgentRegistry::rename(&conn, "old-cor", "new-cor", PH).unwrap();
+
+        let got = AgentRegistry::get(&conn, "coder1", PH).unwrap().unwrap();
+        assert_eq!(got.report_to, Some("new-cor".to_string()), "report_to should follow rename");
+    }
+
+    #[test]
+    fn test_option_string_null_roundtrip() {
+        let conn = setup_registry_db();
+        insert_project(&conn);
+        let agent = make_agent("agent-null");
+        // report_to and custom_role are None by default
+        AgentRegistry::register(&conn, &agent).unwrap();
+
+        let got = AgentRegistry::get(&conn, "agent-null", PH).unwrap().unwrap();
+        assert_eq!(got.report_to, None);
+        assert_eq!(got.custom_role, None);
+    }
+}

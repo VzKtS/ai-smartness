@@ -564,3 +564,348 @@ fn thread_json(t: &ai_smartness::thread::Thread) -> serde_json::Value {
         "last_active": t.last_active.to_rfc3339(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ai_smartness::agent::{Agent, AgentStatus, CoordinationMode, ThreadMode};
+    use ai_smartness::registry::registry::AgentRegistry;
+    use ai_smartness::storage::threads::ThreadStorage;
+    use ai_smartness::thread::ThreadStatus;
+    use rusqlite::{params, Connection};
+
+    const PH: &str = "test-ph";
+    const AGENT: &str = "test-agent";
+
+    fn setup_agent_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_agent_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_registry_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_registry_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_shared_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_shared_db(&conn).unwrap();
+        conn
+    }
+
+    fn insert_project(conn: &Connection) {
+        let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+        conn.execute(
+            "INSERT INTO projects (hash, path, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![PH, "/tmp/test", "test", now],
+        ).unwrap();
+    }
+
+    fn register_agent(conn: &Connection, mode: ThreadMode) {
+        let now = chrono::Utc::now();
+        let agent = Agent {
+            id: AGENT.to_string(),
+            project_hash: PH.to_string(),
+            name: AGENT.to_string(),
+            description: String::new(),
+            role: "programmer".to_string(),
+            capabilities: vec![],
+            status: AgentStatus::Active,
+            last_seen: now,
+            registered_at: now,
+            supervisor_id: None,
+            coordination_mode: CoordinationMode::Autonomous,
+            team: None,
+            specializations: vec![],
+            thread_mode: mode,
+            current_activity: String::new(),
+            report_to: None,
+            custom_role: None,
+            workspace_path: String::new(),
+        };
+        AgentRegistry::register(conn, &agent).unwrap();
+    }
+
+    fn insert_active_threads(conn: &Connection, count: usize) {
+        for i in 0..count {
+            let t = ai_smartness::thread::Thread {
+                id: format!("t-{}", i),
+                title: format!("Thread {}", i),
+                status: ThreadStatus::Active,
+                summary: None,
+                origin_type: ai_smartness::thread::OriginType::Prompt,
+                parent_id: None,
+                child_ids: vec![],
+                weight: 0.5,
+                importance: 0.5,
+                importance_manually_set: false,
+                relevance_score: 1.0,
+                activation_count: 1,
+                split_locked: false,
+                split_locked_until: None,
+                topics: vec![],
+                tags: vec![],
+                labels: vec![],
+                concepts: vec![],
+                drift_history: vec![],
+                ratings: vec![],
+                work_context: None,
+                injection_stats: None,
+                embedding: None,
+                created_at: chrono::Utc::now(),
+                last_active: chrono::Utc::now(),
+            };
+            ThreadStorage::insert(conn, &t).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_create_rejects_at_quota() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, ThreadMode::Light); // quota=15
+        insert_active_threads(&agent_conn, 15);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        let params = serde_json::json!({"title": "new thread", "content": "hello"});
+        let result = handle_thread_create(&params, &ctx);
+        assert!(result.is_err(), "Should reject when at quota");
+    }
+
+    #[test]
+    fn test_create_succeeds_under_quota() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, ThreadMode::Light); // quota=15
+        insert_active_threads(&agent_conn, 14);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        let params = serde_json::json!({"title": "new thread", "content": "hello"});
+        let result = handle_thread_create(&params, &ctx);
+        assert!(result.is_ok(), "Should succeed under quota");
+    }
+
+    #[test]
+    fn test_activate_rejects_exceeding_quota() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, ThreadMode::Light); // quota=15
+        insert_active_threads(&agent_conn, 15);
+
+        // Insert a suspended thread to try activating
+        let t = ai_smartness::thread::Thread {
+            id: "suspended-1".to_string(),
+            title: "Suspended".to_string(),
+            status: ThreadStatus::Suspended,
+            summary: None,
+            origin_type: ai_smartness::thread::OriginType::Prompt,
+            parent_id: None,
+            child_ids: vec![],
+            weight: 0.5,
+            importance: 0.5,
+            importance_manually_set: false,
+            relevance_score: 1.0,
+            activation_count: 1,
+            split_locked: false,
+            split_locked_until: None,
+            topics: vec![],
+            tags: vec![],
+            labels: vec![],
+            concepts: vec![],
+            drift_history: vec![],
+            ratings: vec![],
+            work_context: None,
+            injection_stats: None,
+            embedding: None,
+            created_at: chrono::Utc::now(),
+            last_active: chrono::Utc::now(),
+        };
+        ThreadStorage::insert(&agent_conn, &t).unwrap();
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        let params = serde_json::json!({"thread_ids": ["suspended-1"], "confirm": true});
+        let result = handle_thread_activate(&params, &ctx);
+        assert!(result.is_err(), "Should reject activation when at quota");
+    }
+
+    #[test]
+    fn test_activate_succeeds_within_quota() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, ThreadMode::Light); // quota=15
+        insert_active_threads(&agent_conn, 14);
+
+        // Insert a suspended thread
+        let t = ai_smartness::thread::Thread {
+            id: "suspended-1".to_string(),
+            title: "Suspended".to_string(),
+            status: ThreadStatus::Suspended,
+            summary: None,
+            origin_type: ai_smartness::thread::OriginType::Prompt,
+            parent_id: None,
+            child_ids: vec![],
+            weight: 0.5,
+            importance: 0.5,
+            importance_manually_set: false,
+            relevance_score: 1.0,
+            activation_count: 1,
+            split_locked: false,
+            split_locked_until: None,
+            topics: vec![],
+            tags: vec![],
+            labels: vec![],
+            concepts: vec![],
+            drift_history: vec![],
+            ratings: vec![],
+            work_context: None,
+            injection_stats: None,
+            embedding: None,
+            created_at: chrono::Utc::now(),
+            last_active: chrono::Utc::now(),
+        };
+        ThreadStorage::insert(&agent_conn, &t).unwrap();
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        let params = serde_json::json!({"thread_ids": ["suspended-1"], "confirm": true});
+        let result = handle_thread_activate(&params, &ctx);
+        assert!(result.is_ok(), "Should succeed within quota");
+    }
+
+    #[test]
+    fn test_reactivate_rejects_at_quota() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, ThreadMode::Light); // quota=15
+        insert_active_threads(&agent_conn, 15);
+
+        // Insert a suspended thread
+        let t = ai_smartness::thread::Thread {
+            id: "suspended-1".to_string(),
+            title: "Suspended".to_string(),
+            status: ThreadStatus::Suspended,
+            summary: None,
+            origin_type: ai_smartness::thread::OriginType::Prompt,
+            parent_id: None,
+            child_ids: vec![],
+            weight: 0.5,
+            importance: 0.5,
+            importance_manually_set: false,
+            relevance_score: 1.0,
+            activation_count: 1,
+            split_locked: false,
+            split_locked_until: None,
+            topics: vec![],
+            tags: vec![],
+            labels: vec![],
+            concepts: vec![],
+            drift_history: vec![],
+            ratings: vec![],
+            work_context: None,
+            injection_stats: None,
+            embedding: None,
+            created_at: chrono::Utc::now(),
+            last_active: chrono::Utc::now(),
+        };
+        ThreadStorage::insert(&agent_conn, &t).unwrap();
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        let params = serde_json::json!({"thread_id": "suspended-1"});
+        let result = handle_reactivate(&params, &ctx);
+        assert!(result.is_err(), "Should reject reactivation when at quota");
+    }
+
+    #[test]
+    fn test_reactivate_skips_check_for_active() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, ThreadMode::Light); // quota=15
+        insert_active_threads(&agent_conn, 15);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: AGENT,
+        };
+
+        // Reactivate an already-active thread — should skip quota check
+        let params = serde_json::json!({"thread_id": "t-0"});
+        let result = handle_reactivate(&params, &ctx);
+        assert!(result.is_ok(), "Should skip quota check for already-active thread");
+    }
+
+    #[test]
+    fn test_quota_zero_edge_case() {
+        // When agent is not in registry, fallback quota=50
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        // Do NOT register agent — fallback to default quota=50
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: "nonexistent-agent",
+        };
+
+        let (active, quota) = check_thread_quota(&ctx).unwrap();
+        assert_eq!(active, 0);
+        assert_eq!(quota, 50, "Fallback quota should be 50 for unknown agent");
+    }
+}
