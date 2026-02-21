@@ -5,14 +5,23 @@ use ai_smartness::registry::registry::AgentRegistry;
 use ai_smartness::storage::threads::ThreadStorage;
 
 use super::{
-    optional_bool, optional_f64, optional_str, optional_usize, parse_object_array,
-    parse_string_or_array, required_array, required_str, ToolContext,
+    check_thread_quota, optional_bool, optional_f64, optional_str, optional_usize,
+    parse_object_array, parse_string_or_array, required_array, required_str, ToolContext,
 };
 
 pub fn handle_thread_create(
     params: &serde_json::Value,
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
+    // Quota guard
+    let (active, quota) = check_thread_quota(ctx)?;
+    if active >= quota {
+        return Err(ai_smartness::AiError::InvalidInput(format!(
+            "Thread quota exceeded ({}/{}). Suspend or delete threads first.",
+            active, quota
+        )));
+    }
+
     let title = required_str(params, "title")?;
     let content = required_str(params, "content")?;
     let topics: Vec<String> = params
@@ -145,6 +154,20 @@ pub fn handle_thread_activate(
         return Ok(serde_json::json!({"dry_run": true, "threads": preview}));
     }
 
+    // Quota guard: count how many will actually be activated
+    let (active, quota) = check_thread_quota(ctx)?;
+    let to_activate = ids
+        .iter()
+        .filter_map(|id| ThreadStorage::get(ctx.agent_conn, id).ok().flatten())
+        .filter(|t| t.status != ThreadStatus::Active)
+        .count();
+    if active + to_activate > quota {
+        return Err(ai_smartness::AiError::InvalidInput(format!(
+            "Would exceed quota: {}/{}",
+            active + to_activate, quota
+        )));
+    }
+
     let mut count = 0;
     for id in &ids {
         if let Ok(Some(t)) = ThreadStorage::get(ctx.agent_conn, id) {
@@ -193,6 +216,18 @@ pub fn handle_reactivate(
     let id = required_str(params, "thread_id")?;
     let t = ThreadStorage::get(ctx.agent_conn, &id)?
         .ok_or_else(|| ai_smartness::AiError::ThreadNotFound(id.clone()))?;
+
+    // Quota guard (only if not already active)
+    if t.status != ThreadStatus::Active {
+        let (active, quota) = check_thread_quota(ctx)?;
+        if active >= quota {
+            return Err(ai_smartness::AiError::InvalidInput(format!(
+                "Thread quota exceeded ({}/{}). Suspend or delete threads first.",
+                active, quota
+            )));
+        }
+    }
+
     ThreadStorage::update_status(ctx.agent_conn, &id, ThreadStatus::Active)?;
     if t.weight < 0.3 {
         ThreadStorage::update_weight(ctx.agent_conn, &id, 0.3)?;
