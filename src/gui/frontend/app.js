@@ -1810,6 +1810,10 @@ let graphDrag = null;
 let graphHoveredNode = null;
 let graphSelectedNode = null;
 let graphAnimFrame = null;
+let graphSearchMatches = null;  // F1: Set of matching node IDs, null = no active search
+let graphColorMode = 'status';  // F2/F5: 'status' | 'topic' | 'label' | 'origin' | 'decay'
+let graphFocusIndex = -1;       // F10: keyboard nav index
+let graphRAF = null;            // F0: rAF throttle handle
 
 const GRAPH_COLORS = {
     active: '#4caf50',
@@ -1896,6 +1900,9 @@ function buildGraph(threads, bridges) {
         importance: t.importance || 0.5,
         weight: t.weight || 0.5,
         topics: t.topics || [],
+        labels: t.labels || [],
+        origin: t.origin_type || 'prompt',
+        lastActive: t.last_active || null,
         x: (Math.random() - 0.5) * 600,
         y: (Math.random() - 0.5) * 400,
         vx: 0, vy: 0,
@@ -2074,8 +2081,8 @@ function forceLayout(iterations) {
 
 function centerGraph() {
     if (graphNodes.length === 0) return;
-    const canvas = document.getElementById('graph-canvas');
-    const rect = canvas.getBoundingClientRect();
+    const container = document.getElementById('graph-container');
+    const rect = container.getBoundingClientRect();
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const n of graphNodes) {
         if (n.x < minX) minX = n.x;
@@ -2095,29 +2102,76 @@ function centerGraph() {
     };
 }
 
-function drawGraph() {
-    const canvas = document.getElementById('graph-canvas');
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * (window.devicePixelRatio || 1);
-    canvas.height = rect.height * (window.devicePixelRatio || 1);
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+// ─── Canvas layer helpers (F0) ──────────────────────────────
 
+function prepCanvas(canvasId) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return null;
+    const container = document.getElementById('graph-container');
+    const rect = container.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w: rect.width, h: rect.height };
+}
+
+function isOnScreen(sx, sy, margin, w, h) {
+    return sx > -margin && sx < w + margin && sy > -margin && sy < h + margin;
+}
+
+// ─── Color helpers (F2/F5) ──────────────────────────────────
+
+function hashToHSL(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    return `hsl(${Math.abs(hash) % 360}, 70%, 55%)`;
+}
+
+function getNodeColor(node) {
+    switch (graphColorMode) {
+        case 'topic':
+            return node.topics.length > 0 ? hashToHSL(node.topics[0]) : '#666';
+        case 'label':
+            return node.labels.length > 0 ? hashToHSL(node.labels[0]) : '#666';
+        case 'origin':
+            return hashToHSL(node.origin || 'prompt');
+        case 'decay': {
+            const days = node.lastActive
+                ? (Date.now() - new Date(node.lastActive).getTime()) / 86400000
+                : 30;
+            const sat = Math.max(0.2, 1 - days / 30);
+            return `hsl(120, ${Math.round(sat * 100)}%, 50%)`;
+        }
+        default: // 'status'
+            return GRAPH_COLORS[node.status] || GRAPH_COLORS.active;
+    }
+}
+
+// ─── Layer 0: Edges ─────────────────────────────────────────
+
+function drawEdgesLayer() {
+    const layer = prepCanvas('graph-canvas-edges');
+    if (!layer) return;
+    const { ctx, w, h } = layer;
     const { x: tx, y: ty, scale } = graphTransform;
     const showLabels = document.getElementById('graph-show-labels')?.checked;
     const showWeights = document.getElementById('graph-show-weights')?.checked;
 
-    ctx.clearRect(0, 0, rect.width, rect.height);
-
     const nodeMap = {};
     graphNodes.forEach(n => { nodeMap[n.id] = n; });
 
-    // Draw edges
+    ctx.clearRect(0, 0, w, h);
+
     for (const e of graphEdges) {
         const a = nodeMap[e.source], b = nodeMap[e.target];
         if (!a || !b) continue;
         const ax = a.x * scale + tx, ay = a.y * scale + ty;
         const bx = b.x * scale + tx, by = b.y * scale + ty;
+
+        // Off-screen culling: skip if both endpoints outside viewport
+        if (!isOnScreen(ax, ay, 50, w, h) && !isOnScreen(bx, by, 50, w, h)) continue;
 
         const isHighlight = graphSelectedNode &&
             (e.source === graphSelectedNode.id || e.target === graphSelectedNode.id);
@@ -2133,27 +2187,39 @@ function drawGraph() {
         ctx.stroke();
         ctx.globalAlpha = 1;
 
-        // F1: Edge labels (relation_type + weight)
         if (showLabels || showWeights) {
             const mx = (ax + bx) / 2, my = (ay + by) / 2;
-            ctx.font = '9px monospace';
-            ctx.fillStyle = '#aaa';
-            let edgeLabel = '';
-            if (showLabels) edgeLabel += e.relation;
-            if (showLabels && showWeights) edgeLabel += ' ';
-            if (showWeights) edgeLabel += e.weight.toFixed(2);
-            ctx.fillText(edgeLabel, mx + 2, my - 2);
+            if (isOnScreen(mx, my, 20, w, h)) {
+                ctx.font = '9px monospace';
+                ctx.fillStyle = '#aaa';
+                let edgeLabel = '';
+                if (showLabels) edgeLabel += e.relation;
+                if (showLabels && showWeights) edgeLabel += ' ';
+                if (showWeights) edgeLabel += e.weight.toFixed(2);
+                ctx.fillText(edgeLabel, mx + 2, my - 2);
+            }
         }
     }
+}
 
-    // Draw nodes as labeled rectangles
+// ─── Layer 1: Nodes ─────────────────────────────────────────
+
+function drawNodesLayer() {
+    const layer = prepCanvas('graph-canvas-nodes');
+    if (!layer) return;
+    const { ctx, w, h } = layer;
+    const { x: tx, y: ty, scale } = graphTransform;
+    const isDimming = graphSearchMatches !== null;
+
+    ctx.clearRect(0, 0, w, h);
+
     for (const n of graphNodes) {
         const nx = n.x * scale + tx, ny = n.y * scale + ty;
-        const isHovered = graphHoveredNode === n;
-        const isSelected = graphSelectedNode === n;
+
+        // Off-screen culling
+        if (!isOnScreen(nx, ny, 120, w, h)) continue;
 
         const label = n.title.length > 22 ? n.title.substring(0, 20) + '..' : n.title;
-        // F3: Scale font & padding with importance (range 0.8x to 1.3x)
         const impScale = 0.8 + (n.importance || 0.5) * 0.5;
         const fontSize = Math.max(9, 11 * Math.sqrt(scale) * impScale);
         ctx.font = `${fontSize}px sans-serif`;
@@ -2167,29 +2233,72 @@ function drawGraph() {
         n._rh = rh / scale;
 
         const rx = nx - rw / 2, ry = ny - rh / 2;
-        const cr = 4;
+        const dimmed = isDimming && !graphSearchMatches.has(n.id);
 
         ctx.beginPath();
-        ctx.roundRect(rx, ry, rw, rh, cr);
-        ctx.fillStyle = GRAPH_COLORS[n.status] || GRAPH_COLORS.active;
-        ctx.globalAlpha = 0.3 + n.weight * 0.7;
+        ctx.roundRect(rx, ry, rw, rh, 4);
+        ctx.fillStyle = getNodeColor(n);
+        ctx.globalAlpha = dimmed ? 0.15 : (0.3 + n.weight * 0.7);
         ctx.fill();
         ctx.globalAlpha = 1;
 
-        if (isHovered || isSelected) {
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        }
-
-        // Draw label inside rectangle
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = dimmed ? 'rgba(255,255,255,0.2)' : '#fff';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, nx, ny);
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
     }
+}
+
+// ─── Layer 2: Overlay (hover/selection highlights) ──────────
+
+function drawOverlayLayer() {
+    const layer = prepCanvas('graph-canvas-overlay');
+    if (!layer) return;
+    const { ctx, w, h } = layer;
+    const { x: tx, y: ty, scale } = graphTransform;
+
+    ctx.clearRect(0, 0, w, h);
+
+    const highlights = [];
+    if (graphFocusIndex >= 0 && graphFocusIndex < graphNodes.length) {
+        const fn = graphNodes[graphFocusIndex];
+        if (fn !== graphSelectedNode && fn !== graphHoveredNode) {
+            highlights.push({ node: fn, color: '#ffd740', width: 2 });
+        }
+    }
+    if (graphHoveredNode) highlights.push({ node: graphHoveredNode, color: '#fff', width: 2 });
+    if (graphSelectedNode) highlights.push({ node: graphSelectedNode, color: '#4fc3f7', width: 2.5 });
+
+    for (const { node, color, width } of highlights) {
+        const nx = node.x * scale + tx, ny = node.y * scale + ty;
+        const rw = (node._rw || node.radius * 2) * scale;
+        const rh = (node._rh || node.radius * 2) * scale;
+        const rx = nx - rw / 2 - 2, ry = ny - rh / 2 - 2;
+
+        ctx.beginPath();
+        ctx.roundRect(rx, ry, rw + 4, rh + 4, 5);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.stroke();
+    }
+}
+
+// ─── Unified draw ───────────────────────────────────────────
+
+function drawGraph() {
+    drawEdgesLayer();
+    drawNodesLayer();
+    drawOverlayLayer();
+}
+
+function drawOverlayOnly() {
+    if (graphRAF) return;
+    graphRAF = requestAnimationFrame(() => {
+        graphRAF = null;
+        drawOverlayLayer();
+    });
 }
 
 // ─── Graph interaction ──────────────────────────────────────
@@ -2209,7 +2318,7 @@ function graphNodeAt(wx, wy) {
     return null;
 }
 
-const graphCanvas = document.getElementById('graph-canvas');
+const graphCanvas = document.getElementById('graph-canvas-overlay');
 if (graphCanvas) {
     graphCanvas.addEventListener('mousedown', (e) => {
         const rect = graphCanvas.getBoundingClientRect();
@@ -2245,10 +2354,10 @@ if (graphCanvas) {
         if (node !== graphHoveredNode) {
             graphHoveredNode = node;
             graphCanvas.style.cursor = node ? 'pointer' : 'grab';
-            drawGraph();
+            drawOverlayOnly(); // F0: only redraw overlay layer on hover
         }
 
-        // F0: Tooltip on hover
+        // Tooltip on hover
         const tooltip = document.getElementById('graph-tooltip');
         if (node) {
             const bridgeCount = graphEdges.filter(e => e.source === node.id || e.target === node.id).length;
@@ -2259,10 +2368,8 @@ if (graphCanvas) {
                 `Weight: ${node.weight.toFixed(2)} &nbsp; Bridges: ${bridgeCount}` +
                 (node.topics.length > 0 ? `<br><span style="color:#8ad4ff">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '');
             const containerRect = graphCanvas.parentElement.getBoundingClientRect();
-            const canvasRect = graphCanvas.getBoundingClientRect();
             let tipX = e.clientX - containerRect.left + 14;
             let tipY = e.clientY - containerRect.top + 14;
-            // Keep tooltip within container bounds
             tooltip.style.display = 'block';
             if (tipX + 280 > containerRect.width) tipX = tipX - 300;
             if (tipY + 120 > containerRect.height) tipY = tipY - 130;
@@ -2286,7 +2393,7 @@ if (graphCanvas) {
         graphDrag = null;
         graphHoveredNode = null;
         document.getElementById('graph-tooltip').style.display = 'none';
-        drawGraph();
+        drawOverlayOnly();
     });
 
     graphCanvas.addEventListener('wheel', (e) => {
@@ -2295,7 +2402,6 @@ if (graphCanvas) {
         const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
         const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
         const newScale = Math.max(0.1, Math.min(5, graphTransform.scale * factor));
-        // Zoom toward cursor
         graphTransform.x = sx - (sx - graphTransform.x) * (newScale / graphTransform.scale);
         graphTransform.y = sy - (sy - graphTransform.y) * (newScale / graphTransform.scale);
         graphTransform.scale = newScale;
@@ -2344,7 +2450,7 @@ document.getElementById('graph-filter')?.addEventListener('change', loadGraph);
 document.getElementById('graph-show-labels')?.addEventListener('change', drawGraph);
 document.getElementById('graph-show-weights')?.addEventListener('change', drawGraph);
 
-// F2: Legend — render relation colors + status colors
+// Legend — adapts to active color mode
 function renderGraphLegend() {
     const legend = document.getElementById('graph-legend');
     if (!legend) return;
@@ -2352,10 +2458,33 @@ function renderGraphLegend() {
     if (!showLegend) { legend.style.display = 'none'; return; }
     legend.style.display = 'block';
     let html = '<strong style="color:#fff;font-size:12px">Legend</strong><br>';
+
+    // Node coloring legend depends on active mode
     html += '<span style="color:#888">— Nodes —</span><br>';
-    html += `<span style="color:${GRAPH_COLORS.active}">●</span> Active &nbsp; `;
-    html += `<span style="color:${GRAPH_COLORS.suspended}">●</span> Suspended &nbsp; `;
-    html += `<span style="color:${GRAPH_COLORS.archived}">●</span> Archived<br>`;
+    if (graphColorMode === 'status') {
+        html += `<span style="color:${GRAPH_COLORS.active}">●</span> Active &nbsp; `;
+        html += `<span style="color:${GRAPH_COLORS.suspended}">●</span> Suspended &nbsp; `;
+        html += `<span style="color:${GRAPH_COLORS.archived}">●</span> Archived<br>`;
+    } else if (graphColorMode === 'decay') {
+        html += '<span style="color:hsl(120,100%,50%)">●</span> Recent &nbsp; ';
+        html += '<span style="color:hsl(120,50%,50%)">●</span> Aging &nbsp; ';
+        html += '<span style="color:hsl(120,20%,50%)">●</span> Stale<br>';
+    } else {
+        // Topic/Label/Origin: show unique values from current graph
+        const vals = new Set();
+        for (const n of graphNodes) {
+            if (graphColorMode === 'topic' && n.topics.length > 0) vals.add(n.topics[0]);
+            else if (graphColorMode === 'label' && n.labels.length > 0) vals.add(n.labels[0]);
+            else if (graphColorMode === 'origin') vals.add(n.origin || 'prompt');
+        }
+        let count = 0;
+        for (const v of vals) {
+            if (count++ >= 8) { html += '...'; break; }
+            html += `<span style="color:${hashToHSL(v)}">●</span> ${esc(v)} &nbsp; `;
+        }
+        html += '<br>';
+    }
+
     html += '<span style="color:#888">— Edges —</span><br>';
     for (const [rel, color] of Object.entries(RELATION_COLORS)) {
         html += `<span style="color:${color}">━</span> ${rel} &nbsp; `;
@@ -2367,9 +2496,9 @@ document.getElementById('graph-show-legend')?.addEventListener('change', renderG
 
 // F4: Zoom controls (+, -, fit)
 function graphZoom(factor) {
-    const canvas = document.getElementById('graph-canvas');
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
+    const container = document.getElementById('graph-container');
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
     const cx = rect.width / 2, cy = rect.height / 2;
     const newScale = Math.max(0.1, Math.min(5, graphTransform.scale * factor));
     graphTransform.x = cx - (cx - graphTransform.x) * (newScale / graphTransform.scale);
@@ -2382,4 +2511,140 @@ document.getElementById('btn-graph-zoom-out')?.addEventListener('click', () => g
 document.getElementById('btn-graph-zoom-fit')?.addEventListener('click', () => {
     centerGraph();
     drawGraph();
+});
+
+// ─── F1: Search with contextual focus ───────────────────────
+
+function graphSearchUpdate(query) {
+    graphSearchQuery = query.trim().toLowerCase();
+    if (!graphSearchQuery) {
+        graphSearchMatches = null;
+    } else {
+        graphSearchMatches = new Set();
+        for (const n of graphNodes) {
+            const hay = (n.title + ' ' + n.topics.join(' ') + ' ' + n.labels.join(' ')).toLowerCase();
+            if (hay.includes(graphSearchQuery)) graphSearchMatches.add(n.id);
+        }
+    }
+    drawGraph();
+}
+
+function graphSearchFocusFirst() {
+    if (!graphSearchMatches || graphSearchMatches.size === 0) return;
+    const firstId = graphSearchMatches.values().next().value;
+    const node = graphNodes.find(n => n.id === firstId);
+    if (!node) return;
+    // Center on the matched node
+    const container = document.getElementById('graph-container');
+    const rect = container.getBoundingClientRect();
+    graphTransform.x = rect.width / 2 - node.x * graphTransform.scale;
+    graphTransform.y = rect.height / 2 - node.y * graphTransform.scale;
+    graphSelectedNode = node;
+    showGraphDetail(node);
+    drawGraph();
+}
+
+const graphSearchInput = document.getElementById('graph-search');
+if (graphSearchInput) {
+    graphSearchInput.addEventListener('input', (e) => graphSearchUpdate(e.target.value));
+    graphSearchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); graphSearchFocusFirst(); }
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            graphSearchInput.value = '';
+            graphSearchUpdate('');
+            graphSearchInput.blur();
+        }
+        e.stopPropagation(); // prevent keyboard nav while typing in search
+    });
+}
+
+// ─── F2/F5: Color mode (radio buttons) ─────────────────────
+
+document.querySelectorAll('input[name="graph-color-mode"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        graphColorMode = e.target.value;
+        drawGraph();
+        renderGraphLegend();
+    });
+});
+
+// ─── F10: Keyboard navigation ───────────────────────────────
+
+document.addEventListener('keydown', (e) => {
+    // Only handle when graph panel is visible
+    const graphPanel = document.getElementById('graph');
+    if (!graphPanel || graphPanel.style.display === 'none') return;
+    // Don't capture when typing in inputs (except Escape)
+    const tag = document.activeElement?.tagName;
+    if ((tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') && e.key !== 'Escape') return;
+
+    switch (e.key) {
+        case 'Tab': {
+            e.preventDefault();
+            if (graphNodes.length === 0) return;
+            graphFocusIndex = e.shiftKey
+                ? (graphFocusIndex <= 0 ? graphNodes.length - 1 : graphFocusIndex - 1)
+                : (graphFocusIndex + 1) % graphNodes.length;
+            const focusNode = graphNodes[graphFocusIndex];
+            graphSelectedNode = focusNode;
+            showGraphDetail(focusNode);
+            // Center on focused node
+            const container = document.getElementById('graph-container');
+            const rect = container.getBoundingClientRect();
+            const sx = focusNode.x * graphTransform.scale + graphTransform.x;
+            const sy = focusNode.y * graphTransform.scale + graphTransform.y;
+            if (sx < 50 || sx > rect.width - 50 || sy < 50 || sy > rect.height - 50) {
+                graphTransform.x = rect.width / 2 - focusNode.x * graphTransform.scale;
+                graphTransform.y = rect.height / 2 - focusNode.y * graphTransform.scale;
+            }
+            drawGraph();
+            break;
+        }
+        case 'Escape':
+            graphSelectedNode = null;
+            graphFocusIndex = -1;
+            document.getElementById('graph-detail').style.display = 'none';
+            if (graphSearchInput && graphSearchInput.value) {
+                graphSearchInput.value = '';
+                graphSearchUpdate('');
+            }
+            drawGraph();
+            break;
+        case '+':
+        case '=':
+            graphZoom(1.3);
+            break;
+        case '-':
+            graphZoom(1 / 1.3);
+            break;
+        case 'ArrowUp':
+            e.preventDefault();
+            graphTransform.y += 40;
+            drawGraph();
+            break;
+        case 'ArrowDown':
+            e.preventDefault();
+            graphTransform.y -= 40;
+            drawGraph();
+            break;
+        case 'ArrowLeft':
+            graphTransform.x += 40;
+            drawGraph();
+            break;
+        case 'ArrowRight':
+            graphTransform.x -= 40;
+            drawGraph();
+            break;
+        case 'Enter':
+            if (graphSelectedNode) showGraphDetail(graphSelectedNode);
+            break;
+        case 'f':
+        case 'F':
+            if (graphSearchInput) {
+                e.preventDefault();
+                graphSearchInput.focus();
+            }
+            break;
+    }
 });
