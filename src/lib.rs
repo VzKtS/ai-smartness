@@ -34,6 +34,9 @@ pub mod tracing_init;
 pub mod hook_setup;
 pub mod config_sync;
 
+#[cfg(test)]
+pub mod test_helpers;
+
 // Re-exports for convenience
 pub use error::{AiError, AiResult};
 
