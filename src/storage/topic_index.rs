@@ -3,7 +3,7 @@
 //! Maintains an inverted index: topic → set of thread_ids.
 //! Built incrementally from the threads table.
 //! Used by EngramRetriever Phase 1 to pre-filter candidates
-//! before running the 8 validators.
+//! before running the 9 validators.
 //!
 //! Complexity:
 //!   - Build: O(N × T) where N=threads, T=avg topics per thread
