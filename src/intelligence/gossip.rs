@@ -211,10 +211,11 @@ impl Gossip {
     }
 
     /// Compute bridge weight from concept overlap metrics.
-    /// weight = overlap_ratio × 0.5 + richness × 0.5
+    /// weight = overlap_ratio × GOSSIP_OVERLAP_WEIGHT + richness × GOSSIP_RICHNESS_WEIGHT
     fn compute_weight(shared_count: usize, overlap_ratio: f64) -> f64 {
-        let richness = (shared_count as f64 / 5.0).min(1.0);
-        overlap_ratio * 0.5 + richness * 0.5
+        use crate::constants::{GOSSIP_OVERLAP_WEIGHT, GOSSIP_RICHNESS_WEIGHT, GOSSIP_RICHNESS_NORMALIZATION};
+        let richness = (shared_count as f64 / GOSSIP_RICHNESS_NORMALIZATION).min(1.0);
+        overlap_ratio * GOSSIP_OVERLAP_WEIGHT + richness * GOSSIP_RICHNESS_WEIGHT
     }
 
     /// Legacy topic overlap for threads without concepts (backward compat).
