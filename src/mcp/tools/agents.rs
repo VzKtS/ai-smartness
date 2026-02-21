@@ -4,9 +4,11 @@ use ai_smartness::registry::registry::AgentRegistry;
 use ai_smartness::registry::tasks::AgentTaskStorage;
 use ai_smartness::{id_gen, time_utils};
 use ai_smartness::agent::{AgentTask, TaskPriority, TaskStatus};
+use ai_smartness::constants::{truncate_safe, MAX_MESSAGE_SIZE_BYTES};
 use ai_smartness::AiResult;
 
 use super::{optional_str, required_str, ToolContext, ToolOutput};
+use super::messaging::emit_wake_signal;
 
 pub fn handle_agent_list(
     _params: &serde_json::Value,
@@ -299,7 +301,9 @@ pub fn handle_task_delegate(
         assigned_to: to.clone(),
         assigned_by: ctx.agent_id.to_string(),
         title: task_desc,
-        description: String::new(),
+        description: optional_str(params, "context")
+            .map(|c| truncate_safe(&c, MAX_MESSAGE_SIZE_BYTES).to_string())
+            .unwrap_or_default(),
         priority: priority_str.parse().unwrap_or(TaskPriority::Normal),
         status: TaskStatus::Pending,
         created_at: now,
@@ -310,6 +314,7 @@ pub fn handle_task_delegate(
     };
 
     AgentTaskStorage::create_task(ctx.registry_conn, &task)?;
+    emit_wake_signal(&to, ctx.agent_id, &format!("Task delegated: {}", task.title), "inbox");
     Ok(serde_json::json!({"delegated": true, "task_id": task.id, "to": to}))
 }
 
@@ -327,6 +332,7 @@ pub fn handle_task_status(
             "status": task.status.as_str(),
             "priority": task.priority.as_str(),
             "result": task.result,
+            "description": task.description,
         }))
     } else {
         Err(ai_smartness::AiError::InvalidInput(format!(
