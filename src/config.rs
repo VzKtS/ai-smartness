@@ -19,7 +19,9 @@ use std::path::Path;
 /// The actual model ID is resolved at runtime by claude CLI.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ClaudeModel {
+    #[default]
     Haiku,      // Fast, cheap — ideal for high-frequency tasks
     Sonnet,     // Balanced quality/cost — good for moderate tasks
     Opus,       // Maximum quality — for critical decisions
@@ -35,9 +37,6 @@ impl ClaudeModel {
     }
 }
 
-impl Default for ClaudeModel {
-    fn default() -> Self { Self::Haiku }
-}
 
 fn parse_model(s: &str) -> ClaudeModel {
     match s.to_lowercase().as_str() {
@@ -428,6 +427,7 @@ pub struct LabelSuggestionConfig {
     pub llm: TaskLlmConfig,
     pub auto_suggest_on_extraction: bool,    // default: true
     pub label_vocabulary: Vec<String>,
+    /// NOTE: Runtime filtering uses constants::LABEL_BLOCKLIST. This field is for GUI/config overrides.
     pub label_blocklist: Vec<String>,
     pub allow_custom_labels: bool,           // default: true
     pub batch_size: usize,                   // default: 10
@@ -635,7 +635,7 @@ pub struct EngramConfig {
     pub validator_weights: ValidatorWeights,
 
     /// Consensus thresholds.
-    pub strong_inject_min_votes: u8,             // default: 5 (out of 8)
+    pub strong_inject_min_votes: u8,             // default: 5 (out of 9)
     pub weak_inject_min_votes: u8,               // default: 3
 
     /// Max threads returned for injection.
@@ -670,9 +670,9 @@ pub struct ValidatorWeights {
 fn default_concept_coherence_weight() -> f64 { 0.7 }
 
 impl ValidatorWeights {
-    /// Convert to array for indexed access by validator.
-    pub fn to_array(&self) -> [f64; 9] {
-        [
+    /// Convert to Vec for indexed access by validator.
+    pub fn to_vec(&self) -> Vec<f64> {
+        vec![
             self.semantic_similarity,
             self.topic_overlap,
             self.temporal_proximity,
@@ -965,6 +965,7 @@ impl Default for DecayConfig {
 
 /// LLM health state — tracked by Guardian for HealthGuard alerts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct LlmHealthState {
     pub consecutive_failures: u32,
     pub last_success: Option<String>,
@@ -974,18 +975,6 @@ pub struct LlmHealthState {
     pub task_successes: HashMap<String, u32>,
 }
 
-impl Default for LlmHealthState {
-    fn default() -> Self {
-        Self {
-            consecutive_failures: 0,
-            last_success: None,
-            last_failure_reason: None,
-            in_fallback_mode: false,
-            task_failures: HashMap::new(),
-            task_successes: HashMap::new(),
-        }
-    }
-}
 
 // ============================================================================
 // GLOBAL GUARDIAN CONFIG
@@ -1117,19 +1106,13 @@ impl Default for HooksConfig {
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct CaptureConfig {
     /// Per-tool capture toggles.
     #[serde(default)]
     pub tools: CaptureToolToggles,
 }
 
-impl Default for CaptureConfig {
-    fn default() -> Self {
-        Self {
-            tools: CaptureToolToggles::default(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureToolToggles {
@@ -1503,5 +1486,42 @@ impl GuardianConfig {
         }
 
         gc
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_guardian_config_default_values() {
+        let gc = GuardianConfig::default();
+        assert!(gc.enabled);
+        assert_eq!(gc.extraction.llm.model, ClaudeModel::Haiku);
+        assert_eq!(gc.extraction.max_content_chars, 15000);
+        assert_eq!(gc.coherence.child_threshold, 0.6);
+        assert_eq!(gc.decay.thread_suspend_threshold, 0.1);
+        assert_eq!(gc.engram.strong_inject_min_votes, 5);
+        assert!(gc.guardcode.enabled);
+    }
+
+    #[test]
+    fn test_capture_tool_toggles() {
+        let toggles = CaptureToolToggles::default();
+        assert!(toggles.is_enabled("Read"));
+        assert!(toggles.is_enabled("Bash"));
+        // Unknown tools default to enabled
+        assert!(toggles.is_enabled("UnknownTool"));
+    }
+
+    #[test]
+    fn test_embedding_system_active_threshold() {
+        let cfg = EmbeddingSystemConfig {
+            mode: EmbeddingMode::OnnxWithFallback,
+            onnx_threshold: 0.75,
+            tfidf_threshold: 0.55,
+        };
+        assert_eq!(cfg.active_threshold(true), 0.75);
+        assert_eq!(cfg.active_threshold(false), 0.55);
     }
 }

@@ -35,11 +35,11 @@ use crate::intelligence::validators::{
 /// Injection decision after multi-validator consensus.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InjectionDecision {
-    /// ≥5/8 validators pass → inject at top of context, full content.
+    /// ≥5/9 validators pass → inject at top of context, full content.
     StrongInject,
-    /// 3-4/8 validators pass → inject at bottom of context, condensed.
+    /// 3-4/9 validators pass → inject at bottom of context, condensed.
     WeakInject,
-    /// <3/8 validators pass → skip injection.
+    /// <3/9 validators pass → skip injection.
     Skip,
 }
 
@@ -59,7 +59,7 @@ pub struct EngramScore {
 /// for multi-signal consensus on memory injection decisions.
 pub struct EngramRetriever {
     validators: Vec<Box<dyn Validator>>,
-    validator_weights: [f64; 9],
+    validator_weights: Vec<f64>,
     topic_index: TopicIndex,
     concept_index: ConceptIndex,
     config: EngramConfig,
@@ -90,7 +90,7 @@ impl EngramRetriever {
             Box::new(ConceptCoherenceValidator { min_shared: 2 }),  // V9
         ];
 
-        let validator_weights = config.validator_weights.to_array();
+        let validator_weights = config.validator_weights.to_vec();
         let strong = config.strong_inject_min_votes;
         let weak = config.weak_inject_min_votes;
 
@@ -371,10 +371,8 @@ fn load_active_thread_ids(
         Ok(r) => r,
         Err(_) => return Ok(ids),
     };
-    for row in rows {
-        if let Ok(id) = row {
-            ids.insert(id);
-        }
+    for id in rows.flatten() {
+        ids.insert(id);
     }
     Ok(ids)
 }
@@ -388,7 +386,7 @@ fn load_threads_by_ids(
         return Ok(Vec::new());
     }
 
-    let placeholders = std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(",");
     let sql = format!(
         "SELECT id, title, status, weight, importance, importance_manually_set, \
          created_at, last_active, activation_count, split_locked, split_locked_until, \
@@ -413,10 +411,8 @@ fn load_threads_by_ids(
     };
 
     let mut threads = Vec::new();
-    for row in rows {
-        if let Ok(t) = row {
-            threads.push(t);
-        }
+    for t in rows.flatten() {
+        threads.push(t);
     }
     Ok(threads)
 }
@@ -688,10 +684,38 @@ fn search_threads_by_text(
     };
 
     let mut threads = Vec::new();
-    for row in rows {
-        if let Ok(t) = row {
-            threads.push(t);
-        }
+    for t in rows.flatten() {
+        threads.push(t);
     }
     Ok(threads)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::EngramConfig;
+
+    #[test]
+    fn test_engram_validator_count_matches_quorum() {
+        let config = EngramConfig::default();
+        let num_validators: u8 = 9; // V1..V9
+        let weights = config.validator_weights.to_vec();
+
+        assert_eq!(
+            weights.len(),
+            num_validators as usize,
+            "validator_weights length must match number of validators"
+        );
+        assert!(
+            config.strong_inject_min_votes <= num_validators,
+            "strong_inject_min_votes ({}) must be <= num_validators ({})",
+            config.strong_inject_min_votes,
+            num_validators
+        );
+        assert!(
+            config.weak_inject_min_votes <= config.strong_inject_min_votes,
+            "weak_inject_min_votes ({}) must be <= strong_inject_min_votes ({})",
+            config.weak_inject_min_votes,
+            config.strong_inject_min_votes
+        );
+    }
 }
