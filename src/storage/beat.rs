@@ -45,6 +45,9 @@ pub struct BeatState {
     /// When context tracking was last updated.
     #[serde(default)]
     pub context_updated_at: Option<String>,
+    /// Current tool/activity the agent is performing.
+    #[serde(default)]
+    pub current_activity: String,
 }
 
 impl Default for BeatState {
@@ -64,6 +67,7 @@ impl Default for BeatState {
             context_tokens: None,
             context_percent: None,
             context_updated_at: None,
+            current_activity: String::new(),
         }
     }
 }

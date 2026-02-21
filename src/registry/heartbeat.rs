@@ -31,15 +31,15 @@ impl Default for HeartbeatConfig {
 pub struct Heartbeat;
 
 impl Heartbeat {
-    /// Update heartbeat for an agent.
-    pub fn update(conn: &Connection, agent_id: &str, project_hash: &str) -> AiResult<()> {
+    /// Update heartbeat for an agent. Optionally sets `current_activity`.
+    pub fn update(conn: &Connection, agent_id: &str, project_hash: &str, activity: Option<&str>) -> AiResult<()> {
         let now = time_utils::to_sqlite(&time_utils::now());
         tracing::info!(agent = agent_id, project = project_hash, "Heartbeat update");
         let affected = conn
             .execute(
-                "UPDATE agents SET last_seen = ?1, status = 'active' \
+                "UPDATE agents SET last_seen = ?1, status = 'active', current_activity = ?4 \
                  WHERE id = ?2 AND project_hash = ?3",
-                params![now, agent_id, project_hash],
+                params![now, agent_id, project_hash, activity.unwrap_or("")],
             )
             .map_err(|e| AiError::Storage(format!("Heartbeat update failed: {}", e)))?;
 

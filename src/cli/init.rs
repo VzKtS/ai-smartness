@@ -91,6 +91,7 @@ pub fn run(path: Option<&str>) -> Result<()> {
         team: None,
         specializations: vec![],
         thread_mode: ai_smartness::agent::ThreadMode::Normal,
+        current_activity: String::new(),
     };
     ai_smartness::registry::registry::AgentRegistry::register(&reg_conn2, &agent)
         .context("Failed to register main agent")?;

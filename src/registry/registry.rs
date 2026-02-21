@@ -42,6 +42,10 @@ pub(crate) fn agent_from_row(row: &Row) -> rusqlite::Result<Agent> {
             .flatten()
             .and_then(|s| s.parse().ok())
             .unwrap_or(ThreadMode::Normal),
+        current_activity: row.get::<_, Option<String>>("current_activity")
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
     })
 }
 
