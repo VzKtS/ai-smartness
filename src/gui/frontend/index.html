@@ -214,6 +214,7 @@
                 <h2>Memory Graph</h2>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                     <select id="graph-agent-select" title="Select agent"></select>
+                    <label style="font-size:12px" title="Show threads from all agents in the project"><input type="checkbox" id="graph-all-agents"> All agents</label>
                     <button id="btn-graph-filters-toggle" class="btn-sm" title="Toggle filters">Filters ▾</button>
                     <button id="btn-graph-refresh" class="btn-sm">Refresh</button>
                     <input id="graph-search" type="text" placeholder="Search nodes... (F)" style="width:150px;padding:2px 6px;font-size:12px;background:var(--bg-alt,#1a1a2e);color:var(--text,#ccc);border:1px solid var(--border,#333);border-radius:3px" title="Search by title/topics/labels. Enter=focus, Escape=clear">
@@ -221,6 +222,8 @@
                     <label style="font-size:12px"><input type="checkbox" id="graph-show-weights"> Weights</label>
                     <label style="font-size:12px"><input type="checkbox" id="graph-show-legend" checked> Legend</label>
                     <label style="font-size:12px"><input type="checkbox" id="graph-show-minimap" checked> Minimap</label>
+                    <label style="font-size:12px"><input type="checkbox" id="graph-show-glyphs" checked> Glyphs</label>
+                    <label style="font-size:12px"><input type="checkbox" id="graph-combo-labels"> Group labels</label>
                     <span style="border-left:1px solid var(--border,#333);height:16px;margin:0 2px"></span>
                     <button id="btn-graph-export-png" class="btn-sm" title="Export as PNG">PNG</button>
                     <button id="btn-graph-export-json" class="btn-sm" title="Export as JSON">JSON</button>

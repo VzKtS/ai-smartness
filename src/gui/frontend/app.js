@@ -3219,3 +3219,306 @@ function exportGraphSVG() {
 document.getElementById('btn-graph-export-png')?.addEventListener('click', exportGraphPNG);
 document.getElementById('btn-graph-export-json')?.addEventListener('click', exportGraphJSON);
 document.getElementById('btn-graph-export-svg')?.addEventListener('click', exportGraphSVG);
+
+// ═══════════════════════════════════════════════════════════════
+// F13: Combo nodes — group by label when threshold exceeded
+// ═══════════════════════════════════════════════════════════════
+
+const COMBO_THRESHOLD = 5;  // min threads per label to form a combo
+let graphComboEnabled = false;
+let graphComboGroups = new Map();  // label → { nodes: [], expanded: bool, x, y, id }
+let graphComboActive = false;     // true when combos are currently applied
+
+function computeComboGroups() {
+    graphComboGroups.clear();
+    if (!graphComboEnabled || graphNodes.length === 0) return;
+
+    // Count threads per label
+    const labelMap = new Map();
+    for (const n of graphNodes) {
+        for (const lab of (n.labels || [])) {
+            if (!labelMap.has(lab)) labelMap.set(lab, []);
+            labelMap.get(lab).push(n);
+        }
+    }
+
+    // Only create combos for labels exceeding threshold
+    for (const [label, nodes] of labelMap) {
+        if (nodes.length >= COMBO_THRESHOLD) {
+            // Average position of member nodes
+            let cx = 0, cy = 0;
+            for (const n of nodes) { cx += n.x; cy += n.y; }
+            cx /= nodes.length; cy /= nodes.length;
+            graphComboGroups.set(label, {
+                id: '__combo__' + label,
+                label,
+                nodes,
+                nodeIds: new Set(nodes.map(n => n.id)),
+                expanded: false,
+                x: cx, y: cy,
+                _rw: 0, _rh: 0,
+            });
+        }
+    }
+}
+
+function applyComboGrouping() {
+    if (!graphComboEnabled || graphComboGroups.size === 0) {
+        graphComboActive = false;
+        return;
+    }
+    graphComboActive = true;
+
+    // Collect all node IDs that belong to a collapsed combo
+    const collapsedIds = new Set();
+    for (const [, combo] of graphComboGroups) {
+        if (!combo.expanded) {
+            for (const id of combo.nodeIds) collapsedIds.add(id);
+        }
+    }
+
+    // Replace collapsed nodes with combo nodes in graphNodes
+    const keptNodes = graphNodes.filter(n => !collapsedIds.has(n.id));
+
+    for (const [, combo] of graphComboGroups) {
+        if (!combo.expanded) {
+            keptNodes.push({
+                id: combo.id,
+                title: `${combo.label} (${combo.nodes.length})`,
+                status: 'active',
+                importance: 0.8,
+                weight: 0.9,
+                topics: [],
+                labels: [combo.label],
+                concepts: [],
+                summary: '',
+                origin: 'combo',
+                lastActive: null,
+                createdAt: null,
+                injectionStats: null,
+                x: combo.x, y: combo.y,
+                vx: 0, vy: 0,
+                radius: 12 + combo.nodes.length * 2,
+                _isCombo: true,
+                _comboLabel: combo.label,
+                _comboCount: combo.nodes.length,
+            });
+        }
+    }
+
+    graphNodes = keptNodes;
+
+    // Reroute edges: edges to/from collapsed nodes → point to combo node
+    graphEdges = graphEdges.map(e => {
+        let src = e.source, tgt = e.target;
+        for (const [, combo] of graphComboGroups) {
+            if (!combo.expanded) {
+                if (combo.nodeIds.has(src)) src = combo.id;
+                if (combo.nodeIds.has(tgt)) tgt = combo.id;
+            }
+        }
+        // Skip internal edges (both endpoints in same combo)
+        if (src === tgt) return null;
+        return { ...e, source: src, target: tgt };
+    }).filter(Boolean);
+
+    // Deduplicate edges between same pair
+    const edgeKey = e => e.source < e.target ? `${e.source}|${e.target}` : `${e.target}|${e.source}`;
+    const seen = new Map();
+    for (const e of graphEdges) {
+        const k = edgeKey(e);
+        if (!seen.has(k) || e.weight > seen.get(k).weight) seen.set(k, e);
+    }
+    graphEdges = [...seen.values()];
+}
+
+function toggleComboExpand(label) {
+    const combo = graphComboGroups.get(label);
+    if (!combo) return;
+    combo.expanded = !combo.expanded;
+
+    if (combo.expanded) {
+        // Restore individual nodes with offset from combo position
+        const angle = (2 * Math.PI) / combo.nodes.length;
+        const radius = 30 + combo.nodes.length * 5;
+        combo.nodes.forEach((n, i) => {
+            n.x = combo.x + Math.cos(angle * i) * radius;
+            n.y = combo.y + Math.sin(angle * i) * radius;
+        });
+    } else {
+        // Recalculate combo position from average of members
+        let cx = 0, cy = 0;
+        for (const n of combo.nodes) { cx += n.x; cy += n.y; }
+        combo.x = cx / combo.nodes.length;
+        combo.y = cy / combo.nodes.length;
+    }
+
+    // Re-apply grouping from raw data
+    if (graphRawThreads.length) applyGraphFilters();
+}
+
+// Hook combo into buildGraph via override (non-invasive)
+{
+    const _origBuildGraph = buildGraph;
+    buildGraph = function(threads, bridges) {
+        _origBuildGraph(threads, bridges);
+        computeComboGroups();
+        applyComboGrouping();
+    };
+}
+
+// Hook combo node click into mouseup
+{
+    const _origGraphCanvas = document.getElementById('graph-canvas-overlay');
+    if (_origGraphCanvas) {
+        _origGraphCanvas.addEventListener('dblclick', (e) => {
+            if (!graphComboActive) return;
+            const rect = _origGraphCanvas.getBoundingClientRect();
+            const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+            const { x: wx, y: wy } = graphScreenToWorld(sx, sy);
+            const node = graphNodeAt(wx, wy);
+            if (node && node._isCombo) {
+                e.stopPropagation();
+                toggleComboExpand(node._comboLabel);
+            }
+        });
+    }
+}
+
+// Checkbox toggle
+document.getElementById('graph-combo-labels')?.addEventListener('change', (e) => {
+    graphComboEnabled = e.target.checked;
+    if (graphRawThreads.length) applyGraphFilters();
+});
+
+// ═══════════════════════════════════════════════════════════════
+// F14: Semantic zoom — LOD-based node rendering
+// ═══════════════════════════════════════════════════════════════
+
+// Override drawNodesLayer with LOD-aware version (non-invasive)
+{
+    const _origDrawNodesLayer = drawNodesLayer;
+
+    drawNodesLayer = function() {
+        const scale = graphTransform.scale;
+
+        // LOD 2 (0.8-1.5): existing behavior — no override needed
+        if (scale >= 0.8 && scale <= 1.5) {
+            return _origDrawNodesLayer();
+        }
+
+        const layer = prepCanvas('graph-canvas-nodes');
+        if (!layer) return;
+        const { ctx, w, h } = layer;
+        const { x: tx, y: ty } = graphTransform;
+        const isDimming = graphSearchMatches !== null;
+
+        ctx.clearRect(0, 0, w, h);
+
+        for (const n of graphNodes) {
+            const nx = n.x * scale + tx, ny = n.y * scale + ty;
+            if (!isOnScreen(nx, ny, 120, w, h)) continue;
+
+            const dimmed = isDimming && !graphSearchMatches.has(n.id);
+
+            if (scale < 0.4) {
+                // LOD 0: Simple colored circles, no text
+                const r = Math.max(3, (n._isCombo ? 8 : 4) * Math.sqrt(scale));
+                ctx.beginPath();
+                ctx.arc(nx, ny, r, 0, Math.PI * 2);
+                ctx.fillStyle = getNodeColor(n);
+                ctx.globalAlpha = dimmed ? 0.15 : (0.4 + n.weight * 0.6);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+                // Store hit dimensions
+                n._rw = r * 2 / scale;
+                n._rh = r * 2 / scale;
+
+            } else if (scale < 0.8) {
+                // LOD 1: Rectangles with short title (8 chars)
+                const label = n._isCombo
+                    ? n.title
+                    : (n.title.length > 8 ? n.title.substring(0, 7) + '\u2026' : n.title);
+                const impScale = 0.8 + (n.importance || 0.5) * 0.5;
+                const fontSize = Math.max(8, 9 * Math.sqrt(scale) * impScale);
+                ctx.font = `${fontSize}px sans-serif`;
+                const tw = ctx.measureText(label).width;
+                const padX = 4 * impScale, padY = 3 * impScale;
+                const rw = tw + padX * 2, rh = fontSize + padY * 2;
+                n._rw = rw / scale;
+                n._rh = rh / scale;
+                const rx = nx - rw / 2, ry = ny - rh / 2;
+
+                ctx.beginPath();
+                ctx.roundRect(rx, ry, rw, rh, 3);
+                ctx.fillStyle = getNodeColor(n);
+                ctx.globalAlpha = dimmed ? 0.15 : (0.3 + n.weight * 0.7);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+
+                ctx.fillStyle = dimmed ? 'rgba(255,255,255,0.2)' : '#fff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(label, nx, ny);
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'alphabetic';
+
+            } else {
+                // LOD 3 (scale > 1.5): Extended — full title + labels/topics subline
+                const fullTitle = n._isCombo ? n.title : n.title;
+                const impScale = 0.8 + (n.importance || 0.5) * 0.5;
+                const fontSize = Math.max(10, 12 * Math.sqrt(scale) * impScale);
+                const subFontSize = Math.max(8, fontSize * 0.7);
+                ctx.font = `${fontSize}px sans-serif`;
+                const tw = ctx.measureText(fullTitle).width;
+
+                // Build subtitle from labels + topics
+                const subs = [];
+                if (n.labels && n.labels.length > 0) subs.push(n.labels.slice(0, 3).join(', '));
+                if (n.topics && n.topics.length > 0) subs.push(n.topics.slice(0, 3).join(', '));
+                const subtitle = subs.join(' | ');
+                ctx.font = `${subFontSize}px sans-serif`;
+                const stw = subtitle ? ctx.measureText(subtitle).width : 0;
+
+                const padX = 10 * impScale, padY = 6 * impScale;
+                const rw = Math.max(tw, stw) + padX * 2;
+                const rh = fontSize + (subtitle ? subFontSize + 4 : 0) + padY * 2;
+                n._rw = rw / scale;
+                n._rh = rh / scale;
+                const rx = nx - rw / 2, ry = ny - rh / 2;
+
+                ctx.beginPath();
+                ctx.roundRect(rx, ry, rw, rh, 5);
+                ctx.fillStyle = getNodeColor(n);
+                ctx.globalAlpha = dimmed ? 0.15 : (0.3 + n.weight * 0.7);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+
+                // Combo nodes: thicker border
+                if (n._isCombo) {
+                    ctx.strokeStyle = hashToHSL(n._comboLabel);
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+
+                // Title
+                const textY = subtitle ? ny - subFontSize / 2 : ny;
+                ctx.font = `${fontSize}px sans-serif`;
+                ctx.fillStyle = dimmed ? 'rgba(255,255,255,0.2)' : '#fff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(fullTitle, nx, textY);
+
+                // Subtitle
+                if (subtitle) {
+                    ctx.font = `${subFontSize}px sans-serif`;
+                    ctx.fillStyle = dimmed ? 'rgba(255,255,255,0.1)' : 'rgba(200,200,200,0.7)';
+                    ctx.fillText(subtitle, nx, textY + fontSize * 0.7 + 2);
+                }
+
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'alphabetic';
+            }
+        }
+    };
+}
