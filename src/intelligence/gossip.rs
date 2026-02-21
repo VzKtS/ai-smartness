@@ -49,9 +49,9 @@ impl Gossip {
         // One-time v1 bridge migration (idempotent — 0 rows after first run)
         Self::migrate_v1_bridges(conn)?;
 
-        // Load active + suspended threads (exclude archived — no new bridges for dead threads)
-        let mut all_threads = ThreadStorage::list_active(conn)?;
-        all_threads.extend(ThreadStorage::list_by_status(conn, &ThreadStatus::Suspended)?);
+        // Load all threads including archived — archived memories can bridge to active topics
+        // when a related subject resurfaces (enables reactivation/merge of long-term memory)
+        let all_threads = ThreadStorage::list_all(conn)?;
         if all_threads.len() < 2 {
             tracing::debug!(threads = all_threads.len(), "Gossip v2 skipped: not enough threads");
             return Ok((0, vec![]));
