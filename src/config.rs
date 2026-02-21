@@ -1539,7 +1539,7 @@ impl GuardianConfig {
         }
         if self.decay.bridge_half_life <= 0.0 {
             tracing::warn!(field = "decay.bridge_half_life", "Must be > 0, resetting to default");
-            self.decay.bridge_half_life = 2.0;
+            self.decay.bridge_half_life = 4.0;
         }
         if self.decay.archive_after_hours <= 0.0 {
             tracing::warn!(field = "decay.archive_after_hours", "Must be > 0, resetting to default");
