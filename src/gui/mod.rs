@@ -55,6 +55,7 @@ pub fn launch() {
                 commands::delete_backup,
                 commands::reindex_agent,
                 commands::check_update,
+                commands::get_all_agents_threads,
             ])
             .run(tauri::generate_context!())
             .expect("Failed to launch AI Smartness GUI");

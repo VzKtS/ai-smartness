@@ -1515,6 +1515,80 @@ pub fn check_update() -> Result<serde_json::Value, String> {
     }))
 }
 
+// ─── F16: Multi-agent graph ─────────────────────────────────
+
+#[tauri::command]
+pub fn get_all_agents_threads(
+    project_hash: String,
+    status_filter: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tracing::info!(project = %&project_hash[..8.min(project_hash.len())], "GUI: get_all_agents_threads");
+
+    // 1. List agents from registry
+    let reg_path = path_utils::registry_db_path();
+    let reg_conn = open_connection(&reg_path, ConnectionRole::Cli)
+        .map_err(|e| e.to_string())?;
+    migrations::migrate_registry_db(&reg_conn).map_err(|e| e.to_string())?;
+
+    let agents = AgentRegistry::list(&reg_conn, Some(&project_hash), None, None)
+        .map_err(|e| e.to_string())?;
+
+    // 2. For each agent, open DB and fetch threads
+    let mut result: Vec<serde_json::Value> = Vec::new();
+
+    for agent in &agents {
+        let agent_db = path_utils::agent_db_path(&project_hash, &agent.id);
+        let conn = match open_connection(&agent_db, ConnectionRole::Cli) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let _ = migrations::migrate_agent_db(&conn);
+
+        let threads = match status_filter.as_deref() {
+            Some("all") => ThreadStorage::list_all(&conn),
+            Some("suspended") => ThreadStorage::list_by_status(&conn, &ThreadStatus::Suspended),
+            Some("archived") => ThreadStorage::list_by_status(&conn, &ThreadStatus::Archived),
+            _ => ThreadStorage::list_by_status(&conn, &ThreadStatus::Active),
+        }.unwrap_or_default();
+
+        let thread_values: Vec<serde_json::Value> = threads.iter().map(|t| {
+            let injection_stats = t.injection_stats.as_ref().map(|s| {
+                serde_json::json!({
+                    "injection_count": s.injection_count,
+                    "used_count": s.used_count,
+                    "last_injected_at": s.last_injected_at,
+                })
+            });
+            serde_json::json!({
+                "id": t.id,
+                "title": t.title,
+                "status": format!("{:?}", t.status),
+                "weight": t.weight,
+                "importance": t.importance,
+                "topics": t.topics,
+                "labels": t.labels,
+                "concepts": t.concepts,
+                "summary": t.summary,
+                "origin_type": format!("{:?}", t.origin_type),
+                "injection_stats": injection_stats,
+                "message_count": t.activation_count,
+                "created_at": t.created_at.to_rfc3339(),
+                "last_active": t.last_active.to_rfc3339(),
+                "owner_agent": agent.id,
+            })
+        }).collect();
+
+        result.push(serde_json::json!({
+            "agent_id": agent.id,
+            "agent_role": agent.role,
+            "agent_name": agent.name,
+            "threads": thread_values,
+        }));
+    }
+
+    Ok(serde_json::json!(result))
+}
+
 // ─── Helpers ─────────────────────────────────────────────────
 
 /// Expand ~ to home directory in paths (delegates to shared impl).

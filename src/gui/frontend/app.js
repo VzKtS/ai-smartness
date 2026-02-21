@@ -3522,3 +3522,288 @@ document.getElementById('graph-combo-labels')?.addEventListener('change', (e) =>
         }
     };
 }
+
+// ═══════════════════════════════════════════════════════════════
+// F15: Node glyphs — small icon badges on nodes
+// ═══════════════════════════════════════════════════════════════
+
+let glyphsEnabled = true;
+
+function drawGlyphs() {
+    if (!glyphsEnabled || graphNodes.length === 0) return;
+    const canvas = document.getElementById('graph-canvas-overlay');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const { x: tx, y: ty, scale } = graphTransform;
+    const now = Date.now();
+
+    for (const n of graphNodes) {
+        if (n._timeHidden) continue;
+        const sx = tx + n.x * scale;
+        const sy = ty + n.y * scale;
+        const r = n.radius * scale;
+        if (r < 3) continue; // too small for glyphs
+        const gs = Math.max(5, Math.min(8, r * 0.5)); // glyph size
+
+        // Star (top-right): importance >= 0.8
+        if (n.importance >= 0.8) {
+            drawStarGlyph(ctx, sx + r - gs * 0.2, sy - r + gs * 0.2, gs);
+        }
+        // Clock (top-left): active in last 2 hours
+        if (n.lastActive) {
+            const age = now - new Date(n.lastActive).getTime();
+            if (age < 7200000) { // 2 hours
+                drawClockGlyph(ctx, sx - r + gs * 0.2, sy - r + gs * 0.2, gs);
+            }
+        }
+        // Arrow in (bottom-left): injection_count > 5
+        if (n.injectionStats && n.injectionStats.injection_count > 5) {
+            drawArrowInGlyph(ctx, sx - r + gs * 0.2, sy + r - gs * 0.2, gs);
+        }
+        // Exclamation (bottom-right): no labels AND no concepts
+        if ((!n.labels || n.labels.length === 0) && (!n.concepts || n.concepts.length === 0)) {
+            drawExclamGlyph(ctx, sx + r - gs * 0.2, sy + r - gs * 0.2, gs);
+        }
+    }
+}
+
+function drawStarGlyph(ctx, cx, cy, s) {
+    ctx.fillStyle = '#ffd700';
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+        const a = (i * 72 - 90) * Math.PI / 180;
+        const ai = ((i * 72) + 36 - 90) * Math.PI / 180;
+        const ox = cx + Math.cos(a) * s * 0.5;
+        const oy = cy + Math.sin(a) * s * 0.5;
+        const ix = cx + Math.cos(ai) * s * 0.2;
+        const iy = cy + Math.sin(ai) * s * 0.2;
+        if (i === 0) ctx.moveTo(ox, oy);
+        else ctx.lineTo(ox, oy);
+        ctx.lineTo(ix, iy);
+    }
+    ctx.closePath();
+    ctx.fill();
+}
+
+function drawClockGlyph(ctx, cx, cy, s) {
+    const r = s * 0.4;
+    ctx.strokeStyle = '#4af';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx, cy - r * 0.7);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + r * 0.5, cy);
+    ctx.stroke();
+}
+
+function drawArrowInGlyph(ctx, cx, cy, s) {
+    ctx.fillStyle = '#8f8';
+    ctx.beginPath();
+    const h = s * 0.5;
+    ctx.moveTo(cx - h, cy - h);
+    ctx.lineTo(cx + h * 0.3, cy + h * 0.3);
+    ctx.lineTo(cx + h * 0.3, cy - h * 0.2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(cx + h * 0.3, cy + h * 0.3);
+    ctx.lineTo(cx - h * 0.1, cy + h * 0.3);
+    ctx.lineTo(cx + h * 0.3, cy - h * 0.1);
+    ctx.closePath();
+    ctx.fill();
+}
+
+function drawExclamGlyph(ctx, cx, cy, s) {
+    ctx.fillStyle = '#f66';
+    const w = s * 0.15;
+    ctx.fillRect(cx - w, cy - s * 0.4, w * 2, s * 0.5);
+    ctx.beginPath();
+    ctx.arc(cx, cy + s * 0.3, w * 1.2, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+// Hook glyphs into overlay layer via override (non-invasive)
+{
+    const _origDrawOverlayLayer = drawOverlayLayer;
+    drawOverlayLayer = function() {
+        _origDrawOverlayLayer();
+        drawGlyphs();
+    };
+}
+
+document.getElementById('graph-show-glyphs')?.addEventListener('change', (e) => {
+    glyphsEnabled = e.target.checked;
+    drawGraph();
+});
+
+// ═══════════════════════════════════════════════════════════════
+// F16: Multi-agent view — all agents in one graph
+// ═══════════════════════════════════════════════════════════════
+
+let graphMultiAgentMode = false;
+let graphAgentColors = {};    // agent_id -> color
+let graphMultiAgentData = []; // raw multi-agent response
+
+const AGENT_COLOR_PALETTE = [
+    '#4af', '#f4a', '#4fa', '#fa4', '#a4f', '#af4', '#f44', '#44f',
+    '#4ff', '#ff4', '#f4f', '#aaf', '#faa', '#afa', '#aff', '#ffa',
+];
+
+function assignAgentColors(agentIds) {
+    graphAgentColors = {};
+    agentIds.forEach((id, i) => {
+        graphAgentColors[id] = AGENT_COLOR_PALETTE[i % AGENT_COLOR_PALETTE.length];
+    });
+}
+
+// Override loadGraph to handle multi-agent mode
+{
+    const _origLoadGraph = loadGraph;
+    loadGraph = async function() {
+        if (!graphMultiAgentMode) return _origLoadGraph();
+        if (!projectHash) {
+            document.getElementById('graph-stats').textContent = 'Select a project to view the memory graph.';
+            return;
+        }
+        try {
+            const needAll = document.querySelector('.graph-filter-status[value="suspended"]:checked') ||
+                document.querySelector('.graph-filter-status[value="archived"]:checked');
+            const statusFilter = needAll ? 'all' : 'active';
+            const agentsData = await invoke('get_all_agents_threads', { projectHash, statusFilter });
+            graphMultiAgentData = agentsData;
+
+            // Flatten threads with owner_agent tag
+            const allThreads = [];
+            const agentIds = [];
+            for (const entry of agentsData) {
+                agentIds.push(entry.agent_id);
+                for (const t of entry.threads) {
+                    t.owner_agent = entry.agent_id;
+                    allThreads.push(t);
+                }
+            }
+            assignAgentColors(agentIds);
+
+            // Load bridges for each agent
+            let allBridges = [];
+            for (const entry of agentsData) {
+                try {
+                    const bridges = await invoke('get_bridges', { projectHash, agentId: entry.agent_id });
+                    allBridges = allBridges.concat(bridges);
+                } catch (_) { /* agent may not have bridges */ }
+            }
+
+            graphRawThreads = allThreads;
+            graphRawBridges = allBridges;
+            applyGraphFilters();
+
+            const agentCount = agentsData.length;
+            document.getElementById('graph-stats').textContent =
+                `${graphNodes.length} threads, ${graphEdges.length} bridges (${agentCount} agents)`;
+        } catch (e) {
+            console.error('Multi-agent graph load:', e);
+            document.getElementById('graph-stats').textContent = 'Error: ' + e;
+        }
+    };
+}
+
+// Override drawNodesLayer to add agent-colored outlines
+{
+    const _origDrawNodesLayerF16 = drawNodesLayer;
+    drawNodesLayer = function() {
+        _origDrawNodesLayerF16();
+        if (!graphMultiAgentMode || Object.keys(graphAgentColors).length === 0) return;
+        const canvas = document.getElementById('graph-canvas-nodes');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const { x: tx, y: ty, scale } = graphTransform;
+        for (const n of graphNodes) {
+            if (n._timeHidden) continue;
+            const agentColor = graphAgentColors[n.ownerAgent];
+            if (!agentColor) continue;
+            const sx = tx + n.x * scale;
+            const sy = ty + n.y * scale;
+            const r = n.radius * scale + 3;
+            ctx.strokeStyle = agentColor;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(sx, sy, r, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+    };
+}
+
+// Override drawEdgesLayer to style cross-agent bridges as dashed
+{
+    const _origDrawEdgesLayerF16 = drawEdgesLayer;
+    drawEdgesLayer = function() {
+        _origDrawEdgesLayerF16();
+        if (!graphMultiAgentMode) return;
+        const canvas = document.getElementById('graph-canvas-edges');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const { x: tx, y: ty, scale } = graphTransform;
+        for (const e of graphEdges) {
+            const src = graphNodes.find(n => n.id === e.source);
+            const tgt = graphNodes.find(n => n.id === e.target);
+            if (!src || !tgt) continue;
+            if (src.ownerAgent === tgt.ownerAgent) continue;
+            const x1 = tx + src.x * scale, y1 = ty + src.y * scale;
+            const x2 = tx + tgt.x * scale, y2 = ty + tgt.y * scale;
+            ctx.strokeStyle = 'rgba(255,200,100,0.6)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 4]);
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+    };
+}
+
+// Override buildGraph to pass owner_agent through to nodes
+{
+    const _origBuildGraphF16 = buildGraph;
+    buildGraph = function(threads, bridges) {
+        _origBuildGraphF16(threads, bridges);
+        if (graphMultiAgentMode) {
+            for (const n of graphNodes) {
+                const t = threads.find(th => th.id === n.id);
+                if (t && t.owner_agent) n.ownerAgent = t.owner_agent;
+            }
+        }
+    };
+}
+
+// Override renderGraphLegend to show agent colors
+{
+    const _origRenderGraphLegend = renderGraphLegend;
+    renderGraphLegend = function() {
+        _origRenderGraphLegend();
+        if (!graphMultiAgentMode || Object.keys(graphAgentColors).length === 0) return;
+        const legend = document.getElementById('graph-legend');
+        if (!legend || legend.style.display === 'none') return;
+        let html = legend.innerHTML;
+        html += '<br><span style="color:#888">— Agents —</span><br>';
+        for (const [agentId, color] of Object.entries(graphAgentColors)) {
+            const label = graphMultiAgentData.find(d => d.agent_id === agentId);
+            const name = label ? (label.agent_name || agentId) : agentId;
+            html += `<span style="color:${color}">&#9673;</span> ${esc(name)} &nbsp; `;
+        }
+        html += '<br><span style="color:rgba(255,200,100,0.6)">&#9477;&#9477;</span> Cross-agent bridge';
+        legend.innerHTML = html;
+    };
+}
+
+// Toggle multi-agent mode
+document.getElementById('graph-all-agents')?.addEventListener('change', (e) => {
+    graphMultiAgentMode = e.target.checked;
+    loadGraph();
+});
