@@ -118,6 +118,17 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     }
     profile.save(&agent_data);
 
+    // Pre-fetch agent identity + authoritative quota from registry.
+    // Called early so agent_quota is available to layers 1.7, 4, and 6.
+    // The identity string is injected later at Layer 5.
+    let (agent_identity, agent_quota) = match build_agent_identity(project_hash, agent_id) {
+        Some((ctx, quota)) => (Some(ctx), quota),
+        None => {
+            tracing::debug!(agent = agent_id, "Agent not found in registry, using beat.json quota fallback");
+            (None, beat_state.quota)
+        }
+    };
+
     // Layer 1: Lightweight context + beat + session_id
     match build_lightweight_context(&conn, &agent_data, session_id) {
         Some(ctx) => {
@@ -149,7 +160,7 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     }
 
     // Layer 1.7: Cognitive nudge (conditional maintenance reminder)
-    if let Some((nudge_type, nudge_msg)) = build_cognitive_nudge(&conn, &beat_state) {
+    if let Some((nudge_type, nudge_msg)) = build_cognitive_nudge(&conn, &beat_state, agent_quota) {
         let truncated = if nudge_msg.len() > 300 { &nudge_msg[..300] } else { &nudge_msg };
         let layer = format!("<system-reminder>\nCognitive maintenance: {}\n</system-reminder>", truncated);
         if layer.len() < budget {
@@ -200,7 +211,7 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     }
 
     // Layer 4: Memory retrieval (similar threads — the main layer)
-    match build_memory_context(&conn, &message, &beat_state) {
+    match build_memory_context(&conn, &message, agent_quota) {
         Some(ctx) => {
             let layer = format!("<system-reminder>\n{}\n</system-reminder>", ctx);
             if layer.len() < budget {
@@ -218,7 +229,8 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     // Layer 5: Agent identity — injected on every prompt.
     // Per-session agent files (keyed by session_id) ensure correct agent resolution
     // even with multiple panels open simultaneously.
-    match build_agent_identity(project_hash, agent_id) {
+    // (build_agent_identity was called earlier to also extract agent_quota)
+    match agent_identity {
         Some(ctx) => {
             let layer = format!("<system-reminder>\n{}\n</system-reminder>", ctx);
             if layer.len() < budget {
@@ -245,7 +257,7 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     }
 
     // Layer 6: HealthGuard — merge candidates, capacity alerts (imposed on agent)
-    match build_healthguard_injection(&conn, &agent_data, project_hash, &beat_state) {
+    match build_healthguard_injection(&conn, &agent_data, project_hash, &beat_state, agent_quota) {
         Some(ctx) => {
             let layer = format!("<system-reminder>\n{}\n</system-reminder>", ctx);
             if layer.len() < budget {
@@ -433,7 +445,7 @@ fn build_pins_context(conn: &Connection, agent_data_dir: &Path) -> Option<String
 }
 
 /// Layer 4: Memory retrieval — find similar threads via Engram 9-validator pipeline.
-fn build_memory_context(conn: &Connection, message: &str, beat_state: &BeatState) -> Option<String> {
+fn build_memory_context(conn: &Connection, message: &str, agent_quota: usize) -> Option<String> {
     let engram = EngramRetriever::new(conn, EngramConfig::default()).ok()?;
     let threads = engram.get_relevant_context(conn, message, 5).ok()?;
     if threads.is_empty() {
@@ -447,7 +459,7 @@ fn build_memory_context(conn: &Connection, message: &str, beat_state: &BeatState
         match thread.status {
             ThreadStatus::Suspended | ThreadStatus::Archived => {
                 // Cap reactivations: max 3 per cycle, don't exceed quota
-                if reactivated >= 3 || active_count + reactivated >= beat_state.quota {
+                if reactivated >= 3 || active_count + reactivated >= agent_quota {
                     tracing::debug!(thread_id = %thread.id, "Re-injection skipped: quota or max reactivations reached");
                 } else if let Err(e) = ai_smartness::intelligence::thread_manager::ThreadManager::reactivate_thread(conn, &thread.id) {
                     tracing::warn!(thread_id = %thread.id, error = %e, "Re-injection reactivation failed");
@@ -505,7 +517,7 @@ fn build_memory_context(conn: &Connection, message: &str, beat_state: &BeatState
 }
 
 /// Layer 5: Agent identity — role, hierarchy, subordinates.
-fn build_agent_identity(project_hash: &str, agent_id: &str) -> Option<String> {
+fn build_agent_identity(project_hash: &str, agent_id: &str) -> Option<(String, usize)> {
     let registry_db = path_utils::registry_db_path();
     if !registry_db.exists() {
         tracing::debug!("Layer 5: registry DB not found");
@@ -518,6 +530,8 @@ fn build_agent_identity(project_hash: &str, agent_id: &str) -> Option<String> {
         ai_smartness::registry::registry::AgentRegistry::get(&conn, agent_id, project_hash)
             .ok()
             .flatten()?;
+
+    let agent_quota = agent.thread_mode.quota();
 
     let mut ctx = format!("Agent Identity: {} (role: {})\n", agent.name, agent.role);
 
@@ -568,7 +582,7 @@ fn build_agent_identity(project_hash: &str, agent_id: &str) -> Option<String> {
          After switching, tell the user the change takes effect from their next message.\n",
     );
 
-    Some(ctx)
+    Some((ctx, agent_quota))
 }
 
 /// Layer 0.5: Onboarding prompt — injected once at first session.
@@ -720,6 +734,7 @@ fn build_session_context(session: &SessionState, beat: &BeatState) -> Option<Str
 fn build_cognitive_nudge(
     conn: &Connection,
     beat_state: &BeatState,
+    agent_quota: usize,
 ) -> Option<(String, String)> {
     let beat = beat_state.beat;
     let cooldown = 10u64;
@@ -740,7 +755,7 @@ fn build_cognitive_nudge(
     }
 
     // 2. Capacity warning (80% of quota)
-    let quota = beat_state.quota;
+    let quota = agent_quota;
     if quota > 0
         && active as f64 / quota as f64 > 0.80
         && (beat_state.last_nudge_type != "capacity"
@@ -793,6 +808,7 @@ fn build_healthguard_injection(
     agent_data_dir: &Path,
     project_hash: &str,
     beat_state: &BeatState,
+    agent_quota: usize,
 ) -> Option<String> {
     let _ = project_hash; // available for future per-project config
 
@@ -805,7 +821,7 @@ fn build_healthguard_injection(
 
     let hg = HealthGuard::new(guardian.healthguard.clone());
 
-    let quota_override = if beat_state.quota > 0 { Some(beat_state.quota) } else { None };
+    let quota_override = if agent_quota > 0 { Some(agent_quota) } else { None };
     let findings = hg.analyze(conn, agent_data_dir, &guardian.gossip, quota_override)?;
 
     // High/Critical: always injected
@@ -929,7 +945,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = build_cognitive_nudge(&conn, &bs);
+        let result = build_cognitive_nudge(&conn, &bs, bs.quota);
         assert!(result.is_some());
         assert_eq!(result.unwrap().0, "recall");
     }
@@ -946,14 +962,14 @@ mod tests {
             ..Default::default()
         };
 
-        let result = build_cognitive_nudge(&conn, &bs);
+        let result = build_cognitive_nudge(&conn, &bs, bs.quota);
         assert!(result.is_some());
         assert_eq!(result.unwrap().0, "capacity");
 
         // 30 labeled threads → 30/100 = 30% < 80% → no capacity
         let conn2 = setup_agent_db();
         insert_threads(&conn2, "t", 30, true);
-        let result2 = build_cognitive_nudge(&conn2, &bs);
+        let result2 = build_cognitive_nudge(&conn2, &bs, bs.quota);
         assert!(result2.is_none(), "30/100 should not trigger any nudge");
     }
 
@@ -971,7 +987,7 @@ mod tests {
         };
 
         // 10 total, 5 unlabeled active → 5/10 = 50% > 40%
-        let result = build_cognitive_nudge(&conn, &bs);
+        let result = build_cognitive_nudge(&conn, &bs, bs.quota);
         assert!(result.is_some());
         assert_eq!(result.unwrap().0, "unlabeled");
     }
@@ -989,7 +1005,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = build_cognitive_nudge(&conn, &bs);
+        let result = build_cognitive_nudge(&conn, &bs, bs.quota);
         assert!(result.is_some());
         assert_eq!(result.unwrap().0, "maintenance");
     }
@@ -1009,7 +1025,7 @@ mod tests {
         };
 
         // Recall in cooldown → skips to unlabeled (12/12 = 100% > 40%)
-        let result = build_cognitive_nudge(&conn, &bs);
+        let result = build_cognitive_nudge(&conn, &bs, bs.quota);
         assert!(result.is_some());
         assert_eq!(result.unwrap().0, "unlabeled");
     }
@@ -1027,7 +1043,7 @@ mod tests {
         };
 
         // Both recall and capacity could trigger — recall has priority
-        let result = build_cognitive_nudge(&conn, &bs);
+        let result = build_cognitive_nudge(&conn, &bs, bs.quota);
         assert!(result.is_some());
         assert_eq!(result.unwrap().0, "recall");
     }
