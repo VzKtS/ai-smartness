@@ -182,7 +182,14 @@ nav { display: flex; gap: 4px; }
 main { padding: 24px; padding-bottom: 60px; }
 .panel { display: none; }
 .panel.active { display: block; }
-#graph.active { display: flex; }
+
+#graph.active {
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    height: calc(100vh - 140px);
+}
 
 /* ─── Cards (Dashboard) ─── */
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; }

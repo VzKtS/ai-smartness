@@ -2748,7 +2748,7 @@ document.querySelectorAll('input[name="graph-color-mode"]').forEach(radio => {
 document.addEventListener('keydown', (e) => {
     // Only handle when graph panel is visible
     const graphPanel = document.getElementById('graph');
-    if (!graphPanel || graphPanel.style.display === 'none') return;
+    if (!graphPanel || !graphPanel.classList.contains('active')) return;
     // Don't capture when typing in inputs (except Escape)
     const tag = document.activeElement?.tagName;
     if ((tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') && e.key !== 'Escape') return;
@@ -2822,6 +2822,22 @@ document.addEventListener('keydown', (e) => {
             break;
     }
 });
+
+// ─── ResizeObserver: redraw on container resize ─────────────
+if (typeof ResizeObserver !== 'undefined') {
+    const _graphContainer = document.getElementById('graph-container');
+    if (_graphContainer) {
+        let _graphResizeTimer;
+        new ResizeObserver(() => {
+            clearTimeout(_graphResizeTimer);
+            _graphResizeTimer = setTimeout(() => {
+                if (document.getElementById('graph').classList.contains('active') && graphNodes.length > 0) {
+                    drawGraph();
+                }
+            }, 150);
+        }).observe(_graphContainer);
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // F7: Minimap — small overview canvas with viewport rectangle
