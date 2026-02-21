@@ -5,6 +5,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Smartness</title>
     <link rel="stylesheet" href="style.css">
+    <style>
+        /* F9: Dual-range slider thumb styling */
+        #graph-time-min::-webkit-slider-thumb,
+        #graph-time-max::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            pointer-events: all;
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            background: rgba(100,200,255,0.9);
+            border: 1px solid rgba(100,200,255,0.5);
+            cursor: pointer;
+        }
+        #graph-time-min::-moz-range-thumb,
+        #graph-time-max::-moz-range-thumb {
+            pointer-events: all;
+            width: 12px; height: 12px;
+            border-radius: 50%;
+            background: rgba(100,200,255,0.9);
+            border: 1px solid rgba(100,200,255,0.5);
+            cursor: pointer;
+        }
+    </style>
 </head>
 <body>
     <header>
