@@ -23,13 +23,7 @@ use crate::{AiError, AiResult};
 use rusqlite::Connection;
 
 use super::gossip::MergeCandidate;
-
-/// Max chars for the merge evaluation prompt (two threads combined).
-const MERGE_MAX_CHARS: usize = 30_000;
-/// Max messages per thread in the prompt.
-const MERGE_MAX_MESSAGES: usize = 5;
-/// Max chars per message in the prompt.
-const MERGE_MSG_MAX_CHARS: usize = 500;
+use crate::constants::{MERGE_EVALUATOR_MAX_CHARS, MERGE_EVALUATOR_MAX_MESSAGES, MERGE_EVALUATOR_MSG_MAX_CHARS};
 
 /// Result of the LLM merge evaluation.
 #[derive(Debug)]
@@ -184,8 +178,8 @@ or
         );
 
         // Truncate if too long
-        if prompt.len() > MERGE_MAX_CHARS {
-            Ok(truncate_safe(&prompt, MERGE_MAX_CHARS).to_string())
+        if prompt.len() > MERGE_EVALUATOR_MAX_CHARS {
+            Ok(truncate_safe(&prompt, MERGE_EVALUATOR_MAX_CHARS).to_string())
         } else {
             Ok(prompt)
         }
@@ -199,7 +193,7 @@ or
         }
 
         // Take first 2 + last 3 if >5 messages, otherwise all
-        let selected: Vec<&crate::thread::ThreadMessage> = if msgs.len() > MERGE_MAX_MESSAGES {
+        let selected: Vec<&crate::thread::ThreadMessage> = if msgs.len() > MERGE_EVALUATOR_MAX_MESSAGES {
             let mut sel = Vec::new();
             sel.extend(msgs.iter().take(2));
             sel.extend(msgs.iter().rev().take(3).collect::<Vec<_>>().into_iter().rev());
@@ -211,8 +205,8 @@ or
         let lines: Vec<String> = selected
             .iter()
             .map(|m| {
-                let content = if m.content.len() > MERGE_MSG_MAX_CHARS {
-                    format!("{}...", truncate_safe(&m.content, MERGE_MSG_MAX_CHARS - 3))
+                let content = if m.content.len() > MERGE_EVALUATOR_MSG_MAX_CHARS {
+                    format!("{}...", truncate_safe(&m.content, MERGE_EVALUATOR_MSG_MAX_CHARS - 3))
                 } else {
                     m.content.clone()
                 };

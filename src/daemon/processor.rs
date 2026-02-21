@@ -19,7 +19,7 @@ use rusqlite::Connection;
 
 /// Pending context for coherence-based child linking.
 /// Stores the last capture's content + thread_id.
-/// Expires after PENDING_CONTEXT_TTL_SECS (10 minutes).
+/// Expires after config.extraction.pending_context_ttl_secs (default: 10 minutes).
 pub struct PendingContext {
     pub content: String,
     pub thread_id: String,
@@ -27,11 +27,9 @@ pub struct PendingContext {
     pub timestamp: Instant,
 }
 
-const PENDING_CONTEXT_TTL_SECS: u64 = 600; // 10 minutes
-
 impl PendingContext {
-    pub fn is_expired(&self) -> bool {
-        self.timestamp.elapsed().as_secs() > PENDING_CONTEXT_TTL_SECS
+    pub fn is_expired(&self, ttl: u64) -> bool {
+        self.timestamp.elapsed().as_secs() > ttl
     }
 }
 
@@ -67,9 +65,10 @@ pub fn process_capture(
     };
 
     // Build agent context from PendingContext (recent activity) for importance scoring
+    let ttl = guardian.extraction.pending_context_ttl_secs;
     let agent_context = pending
         .as_ref()
-        .filter(|p| !p.is_expired())
+        .filter(|p| !p.is_expired(ttl))
         .map(|ctx| ctx.content.as_str());
 
     let extraction = extractor::extract(
@@ -95,7 +94,7 @@ pub fn process_capture(
 
     // 4. Coherence gate — determine relationship with pending context
     let coherence_cfg = &guardian.coherence;
-    let parent_hint = if let Some(ref ctx) = pending.as_ref().filter(|p| !p.is_expired()) {
+    let parent_hint = if let Some(ctx) = pending.as_ref().filter(|p| !p.is_expired(ttl)) {
         // Pending context exists — run coherence check
         let coherence_result = coherence::check_coherence(
             &ctx.content,

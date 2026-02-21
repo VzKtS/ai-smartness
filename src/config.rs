@@ -273,6 +273,9 @@ pub struct ExtractionConfig {
     pub skip_tools: Vec<String>,
     /// Enable skip signal detection.
     pub enable_skip_signal: bool,           // default: true
+    /// TTL for pending context in the daemon processor (seconds).
+    #[serde(default = "default_pending_context_ttl")]
+    pub pending_context_ttl_secs: u64,      // default: 600
 }
 
 impl Default for ExtractionConfig {
@@ -295,6 +298,7 @@ impl Default for ExtractionConfig {
             min_topic_frequency: 1,
             skip_tools: vec![],
             enable_skip_signal: true,
+            pending_context_ttl_secs: default_pending_context_ttl(),
         }
     }
 }
@@ -763,7 +767,19 @@ impl Default for RecallConfig {
 pub struct ThreadMatchingConfig {
     pub mode: ThreadMatchingMode,
     pub embedding: EmbeddingSystemConfig,
+    #[serde(default = "default_continue_threshold")]
+    pub continue_threshold: f64,
+    #[serde(default = "default_reactivate_threshold")]
+    pub reactivate_threshold: f64,
+    #[serde(default = "default_capacity_suspend_threshold")]
+    pub capacity_suspend_threshold: f64,
 }
+
+fn default_pending_context_ttl() -> u64 { 600 }
+
+fn default_continue_threshold() -> f64 { 0.25 }
+fn default_reactivate_threshold() -> f64 { 0.50 }
+fn default_capacity_suspend_threshold() -> f64 { 0.85 }
 
 impl Default for ThreadMatchingConfig {
     fn default() -> Self {
@@ -774,6 +790,9 @@ impl Default for ThreadMatchingConfig {
                 onnx_threshold: 0.60,
                 tfidf_threshold: 0.45,
             },
+            continue_threshold: default_continue_threshold(),
+            reactivate_threshold: default_reactivate_threshold(),
+            capacity_suspend_threshold: default_capacity_suspend_threshold(),
         }
     }
 }

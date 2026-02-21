@@ -18,13 +18,21 @@ pub const ORPHAN_HALVING_HOURS: f64 = 6.0;        // half-life halves every 6h w
 pub const ORPHAN_MIN_HALF_LIFE_FACTOR: f64 = 0.1;  // floor: half-life can't go below 10% of base
 
 // === Bridge Decay ===
-pub const BRIDGE_HALF_LIFE: f64 = 4.0;
 pub const BRIDGE_DEATH_THRESHOLD: f64 = 0.05;
 pub const BRIDGE_USE_BOOST: f64 = 0.1;
+pub const BRIDGE_WEAK_THRESHOLD: f64 = 0.15;
 
 // === Gossip v2 ===
 pub const GOSSIP_MERGE_MAX_PER_CYCLE: usize = 3;    // max auto merges per gossip cycle
 pub const GOSSIP_MERGE_REJECTION_PENALTY: f64 = 0.2; // confidence reduction on merge reject
+pub const GOSSIP_OVERLAP_WEIGHT: f64 = 0.5;
+pub const GOSSIP_RICHNESS_WEIGHT: f64 = 0.5;
+pub const GOSSIP_RICHNESS_NORMALIZATION: f64 = 5.0;
+
+// === Merge Evaluator ===
+pub const MERGE_EVALUATOR_MAX_CHARS: usize = 30_000;
+pub const MERGE_EVALUATOR_MAX_MESSAGES: usize = 5;
+pub const MERGE_EVALUATOR_MSG_MAX_CHARS: usize = 500;
 
 // === Retrieval ===
 pub const RETRIEVAL_ACTIVE_MIN: f64 = 0.05;
@@ -114,4 +122,57 @@ pub fn filter_blocked_labels(labels: &[String]) -> Vec<String> {
         })
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_safe_ascii() {
+        assert_eq!(truncate_safe("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_safe_multibyte() {
+        // 'e' with combining accent = 2 bytes for the accent
+        let s = "caf\u{00e9}s"; // cafe with e-acute (2 bytes for e-acute)
+        let result = truncate_safe(s, 4);
+        // Should truncate on char boundary
+        assert!(result.len() <= 4);
+        assert!(result.is_char_boundary(result.len()));
+    }
+
+    #[test]
+    fn test_truncate_safe_no_truncation() {
+        assert_eq!(truncate_safe("short", 100), "short");
+    }
+
+    #[test]
+    fn test_truncate_safe_empty() {
+        assert_eq!(truncate_safe("", 10), "");
+    }
+
+    #[test]
+    fn test_filter_blocked_labels_filters_known() {
+        let labels: Vec<String> = vec!["action", "rust", "metadata", "testing"]
+            .into_iter().map(String::from).collect();
+        let result = filter_blocked_labels(&labels);
+        assert_eq!(result, vec!["rust", "testing"]);
+    }
+
+    #[test]
+    fn test_filter_blocked_labels_case_insensitive() {
+        let labels: Vec<String> = vec!["Action", "METADATA", "Empty Result"]
+            .into_iter().map(String::from).collect();
+        let result = filter_blocked_labels(&labels);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_blocked_labels_empty_input() {
+        let labels: Vec<String> = vec![];
+        let result = filter_blocked_labels(&labels);
+        assert!(result.is_empty());
+    }
 }

@@ -28,9 +28,7 @@ pub enum ThreadAction {
     Reactivate { thread_id: String },
 }
 
-const CONTINUE_THRESHOLD: f64 = 0.25;
-const REACTIVATE_THRESHOLD: f64 = 0.50;
-const AUTO_MERGE_THRESHOLD: f64 = 0.85;
+use crate::config::ThreadMatchingConfig;
 
 // LABEL_BLOCKLIST and filter_blocked_labels imported via `use crate::constants::*`
 
@@ -110,28 +108,29 @@ impl ThreadManager {
                 None => 0.0, // Embeddings disabled → skip similarity
             };
 
+            let tm_config = &guardian.thread_matching;
             tracing::debug!(
                 parent_id = %parent_id,
                 parent_sim = parent_sim,
-                threshold = CONTINUE_THRESHOLD,
+                threshold = tm_config.continue_threshold,
                 "Dual gate: checking parent similarity"
             );
 
-            if parent_sim >= CONTINUE_THRESHOLD {
+            if parent_sim >= tm_config.continue_threshold {
                 // Coherent AND similar → continue in parent thread
                 ThreadAction::Continue { thread_id: parent_id.to_string() }
             } else {
                 // Coherent but not similar → search for better match
-                Self::decide_action(conn, extraction, embeddings, embed_mode)?
+                Self::decide_action(conn, extraction, embeddings, embed_mode, tm_config)?
             }
         } else {
-            Self::decide_action(conn, extraction, embeddings, embed_mode)?
+            Self::decide_action(conn, extraction, embeddings, embed_mode, &guardian.thread_matching)?
         };
 
         match action {
             ThreadAction::NewThread => {
                 tracing::info!(action = "NewThread", "Action decided");
-                Self::ensure_capacity(conn, thread_quota, embeddings)?;
+                Self::ensure_capacity(conn, thread_quota, embeddings, &guardian.thread_matching)?;
                 let id = Self::create_thread(
                     conn, extraction, content, source_type, None, file_path, embed_mode,
                 )?;
@@ -164,7 +163,7 @@ impl ThreadManager {
             }
             ThreadAction::Fork { parent_id } => {
                 tracing::info!(action = "Fork", parent_id = %parent_id, "Action decided");
-                Self::ensure_capacity(conn, thread_quota, embeddings)?;
+                Self::ensure_capacity(conn, thread_quota, embeddings, &guardian.thread_matching)?;
                 let id = Self::create_thread(
                     conn,
                     extraction,
@@ -391,6 +390,7 @@ impl ThreadManager {
         extraction: &Extraction,
         embeddings: &EmbeddingManager,
         embed_mode: &EmbeddingMode,
+        config: &ThreadMatchingConfig,
     ) -> AiResult<ThreadAction> {
         let embed_text = build_enriched_embed_text(extraction);
         let query_emb = match embeddings.embed_with_mode(&embed_text, embed_mode) {
@@ -418,9 +418,9 @@ impl ThreadManager {
             }
         }
 
-        tracing::debug!(best_sim = best_sim, threshold = CONTINUE_THRESHOLD, "Active similarity search");
+        tracing::debug!(best_sim = best_sim, threshold = config.continue_threshold, "Active similarity search");
 
-        if best_sim >= CONTINUE_THRESHOLD {
+        if best_sim >= config.continue_threshold {
             if let Some(id) = best_id {
                 tracing::debug!(action = "Continue", thread_id = %id, similarity = best_sim, "Decided by similarity");
                 return Ok(ThreadAction::Continue { thread_id: id });
@@ -443,9 +443,9 @@ impl ThreadManager {
             }
         }
 
-        tracing::debug!(best_susp_sim = best_susp_sim, threshold = REACTIVATE_THRESHOLD, "Suspended similarity search");
+        tracing::debug!(best_susp_sim = best_susp_sim, threshold = config.reactivate_threshold, "Suspended similarity search");
 
-        if best_susp_sim >= REACTIVATE_THRESHOLD {
+        if best_susp_sim >= config.reactivate_threshold {
             if let Some(id) = best_susp_id {
                 tracing::debug!(action = "Reactivate", thread_id = %id, similarity = best_susp_sim, "Decided by similarity");
                 return Ok(ThreadAction::Reactivate { thread_id: id });
@@ -461,6 +461,7 @@ impl ThreadManager {
         conn: &Connection,
         thread_quota: usize,
         embeddings: &EmbeddingManager,
+        config: &ThreadMatchingConfig,
     ) -> AiResult<()> {
         let count = ThreadStorage::count_by_status(conn, &ThreadStatus::Active)?;
         tracing::debug!(active = count, quota = thread_quota, "ThreadManager: capacity check");
@@ -494,7 +495,7 @@ impl ThreadManager {
             }
         }
 
-        if best_pair_sim >= AUTO_MERGE_THRESHOLD {
+        if best_pair_sim >= config.capacity_suspend_threshold {
             if let Some(id) = merge_target {
                 tracing::warn!(thread_id = %id, similarity = best_pair_sim, reason = "capacity_merge", "Thread suspended for capacity");
                 ThreadStorage::update_status(conn, &id, ThreadStatus::Suspended)?;
