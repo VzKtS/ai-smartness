@@ -70,6 +70,7 @@ impl Decayer {
             let new_weight = bridge.weight * decay_factor;
 
             if new_weight < cfg.bridge_death_threshold {
+                BridgeStorage::update_weight(conn, &bridge.id, 0.0)?;
                 BridgeStorage::update_status(conn, &bridge.id, BridgeStatus::Invalid)?;
             } else if new_weight < crate::constants::BRIDGE_WEAK_THRESHOLD {
                 BridgeStorage::update_status(conn, &bridge.id, BridgeStatus::Weak)?;

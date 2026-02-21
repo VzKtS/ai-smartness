@@ -11,7 +11,7 @@
 use crate::{id_gen, time_utils};
 use crate::bridge::{BridgeStatus, BridgeType, ThinkBridge};
 use crate::config::GossipConfig;
-use crate::thread::Thread;
+use crate::thread::{Thread, ThreadStatus};
 use crate::AiResult;
 use crate::storage::bridges::BridgeStorage;
 use crate::storage::concept_index::ConceptIndex;
@@ -49,8 +49,9 @@ impl Gossip {
         // One-time v1 bridge migration (idempotent — 0 rows after first run)
         Self::migrate_v1_bridges(conn)?;
 
-        // Load ALL threads (active + suspended + archived) for inclusive gossip
-        let all_threads = ThreadStorage::list_all(conn)?;
+        // Load active + suspended threads (exclude archived — no new bridges for dead threads)
+        let mut all_threads = ThreadStorage::list_active(conn)?;
+        all_threads.extend(ThreadStorage::list_by_status(conn, &ThreadStatus::Suspended)?);
         if all_threads.len() < 2 {
             tracing::debug!(threads = all_threads.len(), "Gossip v2 skipped: not enough threads");
             return Ok((0, vec![]));
@@ -102,7 +103,7 @@ impl Gossip {
                             self.concept_index.overlap_score(thread_a, thread_b);
                         let new_weight = Self::compute_weight(*shared_count, overlap_ratio);
                         if new_weight > existing.weight {
-                            BridgeStorage::update_weight(conn, &existing.id, new_weight)?;
+                            BridgeStorage::reinforce_weight(conn, &existing.id, new_weight)?;
                             tracing::debug!(
                                 bridge = %&existing.id[..8.min(existing.id.len())],
                                 old_weight = format!("{:.3}", existing.weight).as_str(),

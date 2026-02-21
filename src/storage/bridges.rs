@@ -201,6 +201,16 @@ impl BridgeStorage {
         Ok(())
     }
 
+    pub fn reinforce_weight(conn: &Connection, id: &str, weight: f64) -> AiResult<()> {
+        let now = time_utils::to_sqlite(&time_utils::now());
+        conn.execute(
+            "UPDATE bridges SET weight = ?1, last_reinforced = ?2 WHERE id = ?3",
+            params![weight, now, id],
+        )
+        .map_err(|e| AiError::Storage(format!("Reinforce bridge weight failed: {}", e)))?;
+        Ok(())
+    }
+
     pub fn update_status(conn: &Connection, id: &str, status: BridgeStatus) -> AiResult<()> {
         conn.execute(
             "UPDATE bridges SET status = ?1 WHERE id = ?2",
