@@ -1856,6 +1856,7 @@ async function loadGraph() {
         forceLayout(150);
         centerGraph();
         drawGraph();
+        renderGraphLegend();
         document.getElementById('graph-stats').textContent =
             `${graphNodes.length} threads, ${graphEdges.length} bridges`;
     } catch (e) {
@@ -2132,11 +2133,16 @@ function drawGraph() {
         ctx.stroke();
         ctx.globalAlpha = 1;
 
-        if (showWeights) {
+        // F1: Edge labels (relation_type + weight)
+        if (showLabels || showWeights) {
             const mx = (ax + bx) / 2, my = (ay + by) / 2;
             ctx.font = '9px monospace';
-            ctx.fillStyle = '#888';
-            ctx.fillText(e.weight.toFixed(2), mx + 2, my - 2);
+            ctx.fillStyle = '#aaa';
+            let edgeLabel = '';
+            if (showLabels) edgeLabel += e.relation;
+            if (showLabels && showWeights) edgeLabel += ' ';
+            if (showWeights) edgeLabel += e.weight.toFixed(2);
+            ctx.fillText(edgeLabel, mx + 2, my - 2);
         }
     }
 
@@ -2147,10 +2153,12 @@ function drawGraph() {
         const isSelected = graphSelectedNode === n;
 
         const label = n.title.length > 22 ? n.title.substring(0, 20) + '..' : n.title;
-        const fontSize = Math.max(9, 11 * Math.sqrt(scale));
+        // F3: Scale font & padding with importance (range 0.8x to 1.3x)
+        const impScale = 0.8 + (n.importance || 0.5) * 0.5;
+        const fontSize = Math.max(9, 11 * Math.sqrt(scale) * impScale);
         ctx.font = `${fontSize}px sans-serif`;
         const tw = ctx.measureText(label).width;
-        const padX = 8, padY = 5;
+        const padX = 8 * impScale, padY = 5 * impScale;
         const rw = tw + padX * 2;
         const rh = fontSize + padY * 2;
 
@@ -2239,6 +2247,30 @@ if (graphCanvas) {
             graphCanvas.style.cursor = node ? 'pointer' : 'grab';
             drawGraph();
         }
+
+        // F0: Tooltip on hover
+        const tooltip = document.getElementById('graph-tooltip');
+        if (node) {
+            const bridgeCount = graphEdges.filter(e => e.source === node.id || e.target === node.id).length;
+            tooltip.innerHTML =
+                `<strong style="color:#fff">${esc(node.title)}</strong><br>` +
+                `<span style="color:${GRAPH_COLORS[node.status] || '#6cf'}">● ${node.status}</span>` +
+                ` &nbsp; Importance: <strong>${node.importance.toFixed(2)}</strong><br>` +
+                `Weight: ${node.weight.toFixed(2)} &nbsp; Bridges: ${bridgeCount}` +
+                (node.topics.length > 0 ? `<br><span style="color:#8ad4ff">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '');
+            const containerRect = graphCanvas.parentElement.getBoundingClientRect();
+            const canvasRect = graphCanvas.getBoundingClientRect();
+            let tipX = e.clientX - containerRect.left + 14;
+            let tipY = e.clientY - containerRect.top + 14;
+            // Keep tooltip within container bounds
+            tooltip.style.display = 'block';
+            if (tipX + 280 > containerRect.width) tipX = tipX - 300;
+            if (tipY + 120 > containerRect.height) tipY = tipY - 130;
+            tooltip.style.left = tipX + 'px';
+            tooltip.style.top = tipY + 'px';
+        } else {
+            tooltip.style.display = 'none';
+        }
     });
 
     graphCanvas.addEventListener('mouseup', (e) => {
@@ -2253,6 +2285,7 @@ if (graphCanvas) {
     graphCanvas.addEventListener('mouseleave', () => {
         graphDrag = null;
         graphHoveredNode = null;
+        document.getElementById('graph-tooltip').style.display = 'none';
         drawGraph();
     });
 
@@ -2310,3 +2343,43 @@ document.getElementById('graph-agent-select')?.addEventListener('change', loadGr
 document.getElementById('graph-filter')?.addEventListener('change', loadGraph);
 document.getElementById('graph-show-labels')?.addEventListener('change', drawGraph);
 document.getElementById('graph-show-weights')?.addEventListener('change', drawGraph);
+
+// F2: Legend — render relation colors + status colors
+function renderGraphLegend() {
+    const legend = document.getElementById('graph-legend');
+    if (!legend) return;
+    const showLegend = document.getElementById('graph-show-legend')?.checked;
+    if (!showLegend) { legend.style.display = 'none'; return; }
+    legend.style.display = 'block';
+    let html = '<strong style="color:#fff;font-size:12px">Legend</strong><br>';
+    html += '<span style="color:#888">— Nodes —</span><br>';
+    html += `<span style="color:${GRAPH_COLORS.active}">●</span> Active &nbsp; `;
+    html += `<span style="color:${GRAPH_COLORS.suspended}">●</span> Suspended &nbsp; `;
+    html += `<span style="color:${GRAPH_COLORS.archived}">●</span> Archived<br>`;
+    html += '<span style="color:#888">— Edges —</span><br>';
+    for (const [rel, color] of Object.entries(RELATION_COLORS)) {
+        html += `<span style="color:${color}">━</span> ${rel} &nbsp; `;
+    }
+    html += '<br><span style="color:#888;font-size:10px">Node size ∝ importance</span>';
+    legend.innerHTML = html;
+}
+document.getElementById('graph-show-legend')?.addEventListener('change', renderGraphLegend);
+
+// F4: Zoom controls (+, -, fit)
+function graphZoom(factor) {
+    const canvas = document.getElementById('graph-canvas');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const cx = rect.width / 2, cy = rect.height / 2;
+    const newScale = Math.max(0.1, Math.min(5, graphTransform.scale * factor));
+    graphTransform.x = cx - (cx - graphTransform.x) * (newScale / graphTransform.scale);
+    graphTransform.y = cy - (cy - graphTransform.y) * (newScale / graphTransform.scale);
+    graphTransform.scale = newScale;
+    drawGraph();
+}
+document.getElementById('btn-graph-zoom-in')?.addEventListener('click', () => graphZoom(1.3));
+document.getElementById('btn-graph-zoom-out')?.addEventListener('click', () => graphZoom(1 / 1.3));
+document.getElementById('btn-graph-zoom-fit')?.addEventListener('click', () => {
+    centerGraph();
+    drawGraph();
+});
