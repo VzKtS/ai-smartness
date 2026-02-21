@@ -1,7 +1,7 @@
 use crate::time_utils;
 use crate::message::{Attachment, Message, MessagePriority, MessageStatus};
 use crate::{AiError, AiResult};
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
 pub struct CognitiveInbox;
 
@@ -130,6 +130,21 @@ impl CognitiveInbox {
         )
         .map_err(|e| AiError::Storage(format!("Ack message failed: {}", e)))?;
         Ok(())
+    }
+
+    /// Find the most recent read-but-unacked message for this agent.
+    pub fn ack_latest(conn: &Connection, agent_id: &str) -> AiResult<Option<String>> {
+        let result: Option<String> = conn
+            .query_row(
+                "SELECT id FROM cognitive_inbox \
+                 WHERE to_agent = ?1 AND status = 'read' AND acked_at IS NULL \
+                 ORDER BY created_at DESC LIMIT 1",
+                params![agent_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+        Ok(result)
     }
 
     /// Deplace les messages expires vers dead_letters
