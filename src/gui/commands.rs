@@ -344,19 +344,22 @@ pub fn get_threads(
     let conn = open_connection(&agent_db, ConnectionRole::Cli)
         .map_err(|e| e.to_string())?;
 
-    let status = status_filter.as_deref().and_then(|s| match s {
-        "active" => Some(ThreadStatus::Active),
-        "suspended" => Some(ThreadStatus::Suspended),
-        "archived" => Some(ThreadStatus::Archived),
-        _ => None,
-    });
-
-    let threads = match status {
-        Some(s) => ThreadStorage::list_by_status(&conn, &s),
-        None => ThreadStorage::list_by_status(&conn, &ThreadStatus::Active),
+    let threads = match status_filter.as_deref() {
+        Some("all") => ThreadStorage::list_all(&conn),
+        Some("suspended") => ThreadStorage::list_by_status(&conn, &ThreadStatus::Suspended),
+        Some("archived") => ThreadStorage::list_by_status(&conn, &ThreadStatus::Archived),
+        _ => ThreadStorage::list_by_status(&conn, &ThreadStatus::Active),
     }.map_err(|e| e.to_string())?;
 
     let result: Vec<serde_json::Value> = threads.iter().map(|t| {
+        let injection_stats = t.injection_stats.as_ref().map(|s| {
+            serde_json::json!({
+                "injection_count": s.injection_count,
+                "used_count": s.used_count,
+                "last_injected_at": s.last_injected_at,
+            })
+        });
+
         serde_json::json!({
             "id": t.id,
             "title": t.title,
@@ -365,6 +368,10 @@ pub fn get_threads(
             "importance": t.importance,
             "topics": t.topics,
             "labels": t.labels,
+            "concepts": t.concepts,
+            "summary": t.summary,
+            "origin_type": format!("{:?}", t.origin_type),
+            "injection_stats": injection_stats,
             "message_count": t.activation_count,
             "created_at": t.created_at.to_rfc3339(),
             "last_active": t.last_active.to_rfc3339(),
@@ -512,6 +519,9 @@ pub fn get_bridges(
             "relation_type": format!("{:?}", b.relation_type),
             "weight": b.weight,
             "confidence": b.confidence,
+            "status": format!("{:?}", b.status),
+            "shared_concepts": b.shared_concepts,
+            "use_count": b.use_count,
             "reason": b.reason,
         })
     }).collect();
