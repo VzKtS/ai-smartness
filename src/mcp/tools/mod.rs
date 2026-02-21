@@ -12,6 +12,7 @@ pub mod threads;
 pub mod windows;
 
 use ai_smartness::AiResult;
+use ai_smartness::registry::heartbeat::Heartbeat;
 use rusqlite::Connection;
 
 /// Shared context passed to every tool handler.
@@ -42,6 +43,11 @@ pub fn route_tool(
     ctx: &ToolContext,
 ) -> AiResult<ToolOutput> {
     tracing::info!(tool = %name, "MCP tool called");
+
+    // Update current_activity in registry (non-critical)
+    if let Err(e) = Heartbeat::update(ctx.registry_conn, ctx.agent_id, ctx.project_hash, Some(&format!("tool:{}", name))) {
+        tracing::debug!(error = %e, "Activity update failed (non-critical)");
+    }
 
     // Tools that produce side-effects
     let result = match name {

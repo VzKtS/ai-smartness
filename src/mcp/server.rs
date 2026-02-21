@@ -308,7 +308,7 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
 
         // 1a. Update registry DB last_seen + status=active (prevents mark_stale)
         if let Some(ref conn) = registry_conn {
-            if let Err(e) = Heartbeat::update(conn, &agent_id, project_hash) {
+            if let Err(e) = Heartbeat::update(conn, &agent_id, project_hash, None) {
                 tracing::warn!(agent = %agent_id, "Heartbeat registry update failed: {}", e);
             }
         }

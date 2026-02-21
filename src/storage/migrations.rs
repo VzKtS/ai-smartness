@@ -396,5 +396,13 @@ pub fn migrate_registry_db(conn: &Connection) -> AiResult<()> {
         set_schema_version(conn, 2)?;
     }
 
+    // V3: add current_activity column to agents
+    if version < 3 {
+        conn.execute_batch(
+            "ALTER TABLE agents ADD COLUMN current_activity TEXT DEFAULT '';"
+        ).map_err(|e| AiError::Storage(format!("Registry DB V3 migration failed: {}", e)))?;
+        set_schema_version(conn, 3)?;
+    }
+
     Ok(())
 }

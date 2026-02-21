@@ -94,6 +94,7 @@ pub fn add(
         team: team.map(|t| t.to_string()),
         specializations: vec![],
         thread_mode: ai_smartness::agent::ThreadMode::Normal,
+        current_activity: String::new(),
     };
 
     AgentRegistry::register(&reg_conn, &agent)

@@ -86,6 +86,7 @@ pub fn handle_agent_status(
             "coordination_mode": agent.coordination_mode.as_str(),
             "team": agent.team,
             "description": agent.description,
+            "current_activity": agent.current_activity,
         },
         "is_alive": alive,
         "subordinates": subordinates.iter().map(|a| serde_json::json!({"id": a.id, "name": a.name})).collect::<Vec<_>>(),

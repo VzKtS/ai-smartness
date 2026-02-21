@@ -166,6 +166,9 @@ pub struct Agent {
 
     // --- Thread quota ---
     pub thread_mode: ThreadMode,
+
+    // --- Activity tracking ---
+    pub current_activity: String,
 }
 
 // ── Role Templates ──

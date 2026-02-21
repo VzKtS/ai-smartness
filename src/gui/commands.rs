@@ -952,6 +952,7 @@ pub fn add_agent(
             .as_deref()
             .and_then(|s| s.parse().ok())
             .unwrap_or(ai_smartness::agent::ThreadMode::Normal),
+        current_activity: String::new(),
     };
 
     AgentRegistry::register(&reg_conn, &agent)
