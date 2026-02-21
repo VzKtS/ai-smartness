@@ -2155,6 +2155,7 @@ function prepCanvas(canvasId) {
     if (!canvas) return null;
     const container = document.getElementById('graph-container');
     const rect = container.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null; // Tab not visible
     const dpr = window.devicePixelRatio || 1;
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
@@ -2197,8 +2198,8 @@ function getNodeColor(node) {
 
 // ─── Layer 0: Edges ─────────────────────────────────────────
 
-function drawEdgesLayer() {
-    const layer = prepCanvas('graph-canvas-edges');
+function drawEdgesLayer(layer) {
+    layer = layer || prepCanvas('graph-canvas-edges');
     if (!layer) return;
     const { ctx, w, h } = layer;
     const { x: tx, y: ty, scale } = graphTransform;
@@ -2260,8 +2261,8 @@ function drawEdgesLayer() {
 
 // ─── Layer 1: Nodes ─────────────────────────────────────────
 
-function drawNodesLayer() {
-    const layer = prepCanvas('graph-canvas-nodes');
+function drawNodesLayer(layer) {
+    layer = layer || prepCanvas('graph-canvas-nodes');
     if (!layer) return;
     const { ctx, w, h } = layer;
     const { x: tx, y: ty, scale } = graphTransform;
@@ -2309,8 +2310,8 @@ function drawNodesLayer() {
 
 // ─── Layer 2: Overlay (hover/selection highlights) ──────────
 
-function drawOverlayLayer() {
-    const layer = prepCanvas('graph-canvas-overlay');
+function drawOverlayLayer(layer) {
+    layer = layer || prepCanvas('graph-canvas-overlay');
     if (!layer) return;
     const { ctx, w, h } = layer;
     const { x: tx, y: ty, scale } = graphTransform;
@@ -2344,9 +2345,13 @@ function drawOverlayLayer() {
 // ─── Unified draw ───────────────────────────────────────────
 
 function drawGraph() {
-    drawEdgesLayer();
-    drawNodesLayer();
-    drawOverlayLayer();
+    const edgesLayer = prepCanvas('graph-canvas-edges');
+    const nodesLayer = prepCanvas('graph-canvas-nodes');
+    const overlayLayer = prepCanvas('graph-canvas-overlay');
+    if (!edgesLayer || !nodesLayer || !overlayLayer) return;
+    drawEdgesLayer(edgesLayer);
+    drawNodesLayer(nodesLayer);
+    drawOverlayLayer(overlayLayer);
 }
 
 function drawOverlayOnly() {
@@ -3070,24 +3075,24 @@ function applyTimeFilter() {
     const _origDrawEdgesLayer = drawEdgesLayer;
     const _origDrawNodesLayer = drawNodesLayer;
 
-    drawEdgesLayer = function() {
-        if (!graphTimeFilterActive) return _origDrawEdgesLayer();
+    drawEdgesLayer = function(layer) {
+        if (!graphTimeFilterActive) return _origDrawEdgesLayer(layer);
         // Temporarily swap graphNodes/graphEdges with filtered versions
         const hiddenIds = new Set(graphNodes.filter(n => n._timeHidden).map(n => n.id));
         const savedNodes = graphNodes;
         const savedEdges = graphEdges;
         graphNodes = savedNodes.filter(n => !n._timeHidden);
         graphEdges = savedEdges.filter(e => !hiddenIds.has(e.source) && !hiddenIds.has(e.target));
-        _origDrawEdgesLayer();
+        _origDrawEdgesLayer(layer);
         graphNodes = savedNodes;
         graphEdges = savedEdges;
     };
 
-    drawNodesLayer = function() {
-        if (!graphTimeFilterActive) return _origDrawNodesLayer();
+    drawNodesLayer = function(layer) {
+        if (!graphTimeFilterActive) return _origDrawNodesLayer(layer);
         const savedNodes = graphNodes;
         graphNodes = savedNodes.filter(n => !n._timeHidden);
-        _origDrawNodesLayer();
+        _origDrawNodesLayer(layer);
         graphNodes = savedNodes;
     };
 }
@@ -3417,15 +3422,15 @@ document.getElementById('graph-combo-labels')?.addEventListener('change', (e) =>
 {
     const _origDrawNodesLayer = drawNodesLayer;
 
-    drawNodesLayer = function() {
+    drawNodesLayer = function(layer) {
         const scale = graphTransform.scale;
 
         // LOD 2 (0.8-1.5): existing behavior — no override needed
         if (scale >= 0.8 && scale <= 1.5) {
-            return _origDrawNodesLayer();
+            return _origDrawNodesLayer(layer);
         }
 
-        const layer = prepCanvas('graph-canvas-nodes');
+        layer = layer || prepCanvas('graph-canvas-nodes');
         if (!layer) return;
         const { ctx, w, h } = layer;
         const { x: tx, y: ty } = graphTransform;
@@ -3649,8 +3654,8 @@ function drawExclamGlyph(ctx, cx, cy, s) {
 // Hook glyphs into overlay layer via override (non-invasive)
 {
     const _origDrawOverlayLayer = drawOverlayLayer;
-    drawOverlayLayer = function() {
-        _origDrawOverlayLayer();
+    drawOverlayLayer = function(layer) {
+        _origDrawOverlayLayer(layer);
         drawGlyphs();
     };
 }
@@ -3734,8 +3739,8 @@ function assignAgentColors(agentIds) {
 // Override drawNodesLayer to add agent-colored outlines
 {
     const _origDrawNodesLayerF16 = drawNodesLayer;
-    drawNodesLayer = function() {
-        _origDrawNodesLayerF16();
+    drawNodesLayer = function(layer) {
+        _origDrawNodesLayerF16(layer);
         if (!graphMultiAgentMode || Object.keys(graphAgentColors).length === 0) return;
         const canvas = document.getElementById('graph-canvas-nodes');
         if (!canvas) return;
@@ -3760,8 +3765,8 @@ function assignAgentColors(agentIds) {
 // Override drawEdgesLayer to style cross-agent bridges as dashed
 {
     const _origDrawEdgesLayerF16 = drawEdgesLayer;
-    drawEdgesLayer = function() {
-        _origDrawEdgesLayerF16();
+    drawEdgesLayer = function(layer) {
+        _origDrawEdgesLayerF16(layer);
         if (!graphMultiAgentMode) return;
         const canvas = document.getElementById('graph-canvas-edges');
         if (!canvas) return;
