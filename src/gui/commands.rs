@@ -840,6 +840,8 @@ pub fn list_agents(project_hash: String) -> Result<serde_json::Value, String> {
             "thread_quota": a.thread_mode.quota(),
             "last_seen": a.last_seen.to_rfc3339(),
             "registered_at": a.registered_at.to_rfc3339(),
+            "report_to": a.report_to,
+            "custom_role": a.custom_role,
         })
     }).collect();
 
@@ -856,6 +858,8 @@ pub fn add_agent(
     team: Option<String>,
     is_supervisor: Option<bool>,
     thread_mode: Option<String>,
+    report_to: Option<String>,
+    custom_role: Option<String>,
 ) -> Result<serde_json::Value, String> {
     tracing::info!(
         agent = %agent_id, name = %name, role = %role,
@@ -903,8 +907,8 @@ pub fn add_agent(
             specializations: None,
             capabilities: None,
             thread_mode: thread_mode.clone(),
-            report_to: None,
-            custom_role: None,
+            report_to: report_to.clone(),
+            custom_role: custom_role.clone(),
             workspace_path: None,
         };
         AgentRegistry::update(&reg_conn, &agent_id, &project_hash, &update)
@@ -956,8 +960,8 @@ pub fn add_agent(
             .and_then(|s| s.parse().ok())
             .unwrap_or(ai_smartness::agent::ThreadMode::Normal),
         current_activity: String::new(),
-        report_to: None,
-        custom_role: None,
+        report_to,
+        custom_role,
         workspace_path: String::new(),
     };
 
@@ -1011,6 +1015,8 @@ pub fn update_agent(
     capabilities: Option<Vec<String>>,
     specializations: Option<Vec<String>>,
     thread_mode: Option<String>,
+    report_to: Option<String>,
+    custom_role: Option<String>,
 ) -> Result<serde_json::Value, String> {
     tracing::info!(
         agent = %agent_id, name = ?name, role = ?role, is_supervisor = ?is_supervisor,
@@ -1052,8 +1058,8 @@ pub fn update_agent(
         specializations,
         capabilities,
         thread_mode: thread_mode.clone(),
-        report_to: None,
-        custom_role: None,
+        report_to,
+        custom_role,
         workspace_path: None,
     };
 

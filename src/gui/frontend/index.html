@@ -988,6 +988,16 @@
                 <input type="checkbox" id="new-agent-supervisor-flag">
                 <label for="new-agent-supervisor-flag" data-i18n="modal.issupervisor" title="Mark this agent as a supervisor node in the hierarchy. Supervisors appear as parent nodes in the team tree and can coordinate subordinate agents.">Is Supervisor</label>
             </div>
+            <div class="modal-field">
+                <label for="new-agent-custom-role" data-i18n="modal.customrole" title="Free-text role description beyond the fixed role list. Injected into the agent's system prompt for behavioral context. Examples: 'quality reviewer for frontend', 'auditor under cor authority'.">Custom Role (optional)</label>
+                <input type="text" id="new-agent-custom-role" placeholder="e.g. auditor/researcher under cor authority">
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-report-to" data-i18n="modal.reportto" title="Agent to whom this agent sends completed work. Different from Supervisor (who assigns tasks). Example: dev has supervisor=cor but report_to=pub (reviewer).">Report To (optional)</label>
+                <select id="new-agent-report-to">
+                    <option value="">— None —</option>
+                </select>
+            </div>
             <div id="add-agent-error" style="color: var(--danger); font-size: 12px; min-height: 18px;"></div>
             <div class="modal-actions">
                 <button id="btn-cancel-agent" class="btn-sm" data-i18n="btn.cancel">Cancel</button>
