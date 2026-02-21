@@ -456,6 +456,14 @@ document.getElementById('btn-add-agent').addEventListener('click', async () => {
             }
         } catch (_) {}
     }
+    // Toggle custom role field visibility
+    const roleSelect = document.getElementById('new-agent-role');
+    const crField = document.getElementById('new-agent-custom-role-field');
+    roleSelect.value = 'programmer';
+    crField.style.display = 'none';
+    roleSelect.addEventListener('change', () => {
+        crField.style.display = roleSelect.value === 'custom' ? '' : 'none';
+    });
     document.getElementById('new-agent-id').focus();
 });
 document.getElementById('btn-cancel-agent').addEventListener('click', () => {
@@ -999,7 +1007,7 @@ function toggleAgentEditRow(tr, agent, toggleBtn) {
     }
 
     const isSup = agent.coordination_mode === 'coordinator';
-    const roles = ['programmer', 'coordinator', 'reviewer', 'researcher', 'architect'];
+    const roles = ['programmer', 'coordinator', 'reviewer', 'researcher', 'architect', 'custom'];
     const roleOptions = roles.map(r => `<option value="${r}" ${r === agent.role ? 'selected' : ''}>${r}</option>`).join('');
     const curMode = agent.thread_mode || 'normal';
     const threadModes = [
@@ -1024,7 +1032,7 @@ function toggleAgentEditRow(tr, agent, toggleBtn) {
                 <label>Description
                     <input type="text" class="ae-description" value="${esc(agent.description || '')}">
                 </label>
-                <label>Custom Role
+                <label class="ae-custom-role-label" style="display:${agent.role === 'custom' ? '' : 'none'}">Custom Role
                     <input type="text" class="ae-custom-role" value="${esc(agent.custom_role || '')}" placeholder="e.g. auditor/researcher">
                 </label>
                 <label>Report To
@@ -1061,6 +1069,12 @@ function toggleAgentEditRow(tr, agent, toggleBtn) {
 
     tr.after(editTr);
     editTr.querySelector('.ae-name').focus();
+    // Toggle custom role field when role changes
+    const aeRole = editTr.querySelector('.ae-role');
+    const aeCrLabel = editTr.querySelector('.ae-custom-role-label');
+    aeRole.addEventListener('change', () => {
+        aeCrLabel.style.display = aeRole.value === 'custom' ? '' : 'none';
+    });
     editTr.querySelector('.ae-save').addEventListener('click', () => saveAgentEdit(editTr, agent));
     editTr.querySelector('.ae-cancel').addEventListener('click', () => {
         const openBtn = document.querySelector('.btn-agent-toggle.open');
