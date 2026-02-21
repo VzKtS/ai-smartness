@@ -279,7 +279,7 @@ document.getElementById('project-select').addEventListener('change', (e) => {
     const activeTab = document.querySelector('.tab:not(.tab-debug).active');
     if (activeTab) {
         const tab = activeTab.dataset.tab;
-        if (tab === 'threads') loadThreads();
+        if (tab === 'threads') { loadThreads(); loadLabelOptions(); loadTopicOptions(); }
         if (tab === 'agents') loadAgents();
         if (tab === 'settings') loadSettings();
         if (tab === 'graph') { document.getElementById('graph-agent-select').innerHTML = ''; loadGraph(); }
@@ -864,6 +864,8 @@ function selectThreadAgent(selectedId) {
         }
     });
     loadThreads();
+    loadLabelOptions();
+    loadTopicOptions();
 }
 
 async function loadThreads() {
