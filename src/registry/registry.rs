@@ -48,12 +48,10 @@ pub(crate) fn agent_from_row(row: &Row) -> rusqlite::Result<Agent> {
             .unwrap_or_default(),
         report_to: row.get::<_, Option<String>>("report_to")
             .ok()
-            .flatten()
-            .unwrap_or_default(),
+            .flatten(),
         custom_role: row.get::<_, Option<String>>("custom_role")
             .ok()
-            .flatten()
-            .unwrap_or_default(),
+            .flatten(),
         workspace_path: row.get::<_, Option<String>>("workspace_path")
             .ok()
             .flatten()
@@ -177,6 +175,13 @@ impl AgentRegistry {
         )
         .map_err(|e| AiError::Storage(e.to_string()))?;
 
+        // Cascade: nullify report_to references to deleted agent
+        conn.execute(
+            "UPDATE agents SET report_to = NULL WHERE report_to = ?1 AND project_hash = ?2",
+            params![agent_id, project_hash],
+        )
+        .map_err(|e| AiError::Storage(e.to_string()))?;
+
         // Delete agent
         conn.execute(
             "DELETE FROM agents WHERE id = ?1 AND project_hash = ?2",
@@ -265,6 +270,13 @@ impl AgentRegistry {
 
         tx.execute(
             "UPDATE agents SET supervisor_id = ?1 WHERE supervisor_id = ?2 AND project_hash = ?3",
+            params![new_id, old_id, project_hash],
+        )
+        .map_err(|e| AiError::Storage(e.to_string()))?;
+
+        // Cascade report_to references
+        tx.execute(
+            "UPDATE agents SET report_to = ?1 WHERE report_to = ?2 AND project_hash = ?3",
             params![new_id, old_id, project_hash],
         )
         .map_err(|e| AiError::Storage(e.to_string()))?;

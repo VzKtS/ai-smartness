@@ -544,6 +544,14 @@ fn build_agent_identity(project_hash: &str, agent_id: &str) -> Option<String> {
         ctx.push_str(&format!("Subordinates: {}\n", names.join(", ")));
     }
 
+    // Topology
+    if let Some(ref rt) = agent.report_to {
+        ctx.push_str(&format!("Reports to: {}\n", rt));
+    }
+    if let Some(ref cr) = agent.custom_role {
+        ctx.push_str(&format!("Custom role: {}\n", cr));
+    }
+
     // Agent switching instructions
     ctx.push_str(
         "\nAgent switching: If the user asks to use a different agent \

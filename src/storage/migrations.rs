@@ -414,5 +414,14 @@ pub fn migrate_registry_db(conn: &Connection) -> AiResult<()> {
         set_schema_version(conn, 4)?;
     }
 
+    // V5: normalize report_to/custom_role — empty strings → NULL
+    if version < 5 {
+        conn.execute_batch(
+            "UPDATE agents SET report_to = NULL WHERE report_to = '';
+             UPDATE agents SET custom_role = NULL WHERE custom_role = '';"
+        ).map_err(|e| AiError::Storage(format!("Registry DB V5 migration failed: {}", e)))?;
+        set_schema_version(conn, 5)?;
+    }
+
     Ok(())
 }

@@ -234,26 +234,6 @@ impl HealthGuard {
         Some(findings)
     }
 
-    /// Partition findings into (injectable, suggestible).
-    ///
-    /// High/Critical → injection (imposed on agent via stdin)
-    /// Low/Medium → suggestions (optional, via ai_suggestions)
-    pub fn partition_findings(
-        findings: &[HealthFinding],
-    ) -> (Vec<&HealthFinding>, Vec<&HealthFinding>) {
-        let mut inject = Vec::new();
-        let mut suggest = Vec::new();
-
-        for f in findings {
-            match f.priority {
-                HealthPriority::High | HealthPriority::Critical => inject.push(f),
-                HealthPriority::Low | HealthPriority::Medium => suggest.push(f),
-            }
-        }
-
-        (inject, suggest)
-    }
-
     /// Partition findings into (high_critical, medium, low).
     pub fn partition_findings_by_priority(
         findings: &[HealthFinding],

@@ -1,6 +1,5 @@
 //! Health check SQL queries — individual checks called by HealthGuard.analyze().
 
-use crate::storage::beat::BeatState;
 use crate::thread::ThreadStatus;
 use crate::storage::threads::ThreadStorage;
 use crate::AiResult;
@@ -160,37 +159,6 @@ pub fn check_disk_usage(
             action: "Use ai_backup and consider archiving old threads".to_string(),
             metric_value: size as f64,
             threshold: config.disk_warning_bytes as f64,
-        })
-    } else {
-        None
-    }
-}
-
-/// Check 7: Recall staleness — agent hasn't used ai_recall recently despite rich memory.
-pub fn check_recall_staleness(
-    conn: &Connection,
-    _config: &HealthGuardConfig,
-    beat_state: &BeatState,
-) -> Option<HealthFinding> {
-    let active = ThreadStorage::count_by_status(conn, &ThreadStatus::Active).ok()?;
-    if active < 10 {
-        return None; // Not enough threads to warrant recall
-    }
-
-    let beats_since_recall = beat_state.beat.saturating_sub(beat_state.last_recall_beat);
-    let threshold = 15u64; // ~75 minutes at 5-min beats
-
-    if beats_since_recall > threshold {
-        Some(HealthFinding {
-            priority: HealthPriority::Medium,
-            category: "recall_staleness".to_string(),
-            message: format!(
-                "No ai_recall usage in {} prompts with {} active threads. Memory context may be stale.",
-                beats_since_recall, active
-            ),
-            action: "Run ai_recall with keywords related to your current task.".to_string(),
-            metric_value: beats_since_recall as f64,
-            threshold: threshold as f64,
         })
     } else {
         None

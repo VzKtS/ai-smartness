@@ -171,8 +171,8 @@ pub struct Agent {
     pub current_activity: String,
 
     // --- Topology ---
-    pub report_to: String,
-    pub custom_role: String,
+    pub report_to: Option<String>,
+    pub custom_role: Option<String>,
 
     // --- Workspace isolation ---
     pub workspace_path: String,

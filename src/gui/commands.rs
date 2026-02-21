@@ -956,8 +956,8 @@ pub fn add_agent(
             .and_then(|s| s.parse().ok())
             .unwrap_or(ai_smartness::agent::ThreadMode::Normal),
         current_activity: String::new(),
-        report_to: String::new(),
-        custom_role: String::new(),
+        report_to: None,
+        custom_role: None,
         workspace_path: String::new(),
     };
 

@@ -92,8 +92,8 @@ pub fn run(path: Option<&str>) -> Result<()> {
         specializations: vec![],
         thread_mode: ai_smartness::agent::ThreadMode::Normal,
         current_activity: String::new(),
-        report_to: String::new(),
-        custom_role: String::new(),
+        report_to: None,
+        custom_role: None,
         workspace_path: String::new(),
     };
     ai_smartness::registry::registry::AgentRegistry::register(&reg_conn2, &agent)
