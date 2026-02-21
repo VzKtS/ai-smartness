@@ -619,14 +619,14 @@ impl Default for GossipConfig {
 // ENGRAM CONFIG (multi-validator retrieval — inspired by DeepSeek Engram)
 // ============================================================================
 
-/// Engram retrieval configuration — 8-validator consensus for memory injection.
+/// Engram retrieval configuration — 9-validator consensus for memory injection.
 ///
 /// Replaces single-signal cosine scoring with multi-validator voting:
 ///   Phase 1: TopicIndex hash lookup O(1) → candidate pre-filter
-///   Phase 2: 8 validators vote (pass/fail + confidence)
-///   Phase 3: Consensus → StrongInject (≥5/8) / WeakInject (3-4/8) / Skip (<3/8)
+///   Phase 2: 9 validators vote (pass/fail + confidence)
+///   Phase 3: Consensus → StrongInject (≥5/9) / WeakInject (3-4/9) / Skip (<3/9)
 ///
-/// 7/8 validators are zero-cost (memory lookup). Only V1 (cosine) costs compute.
+/// 8/9 validators are zero-cost (memory lookup). Only V1 (cosine) costs compute.
 ///
 /// Frequency: HIGH — called on every user prompt (replaces RecallConfig pipeline).
 #[derive(Debug, Clone, Serialize, Deserialize)]

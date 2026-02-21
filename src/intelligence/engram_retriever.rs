@@ -230,7 +230,7 @@ impl EngramRetriever {
         Ok(result)
     }
 
-    /// Score a thread using all 8 validators.
+    /// Score a thread using all 9 validators.
     fn score_thread_engram(
         &self,
         thread: &Thread,

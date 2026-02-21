@@ -1,5 +1,6 @@
 pub mod capture_queue;
 pub mod connection_pool;
+pub mod controller;
 pub mod ipc_server;
 pub mod periodic_tasks;
 pub mod processor;
@@ -124,6 +125,14 @@ pub fn run() {
         })
     };
 
+    // Start controller loop thread (CLI-first fallback injection)
+    let controller_handle = {
+        let running = running.clone();
+        std::thread::spawn(move || {
+            controller::run_controller_loop(running);
+        })
+    };
+
     // Signal handlers (cross-platform)
     signal_hook::flag::register(signal_hook::consts::SIGINT, running.clone()).ok();
     #[cfg(unix)]
@@ -156,6 +165,7 @@ pub fn run() {
     // Wait for threads
     let _ = ipc_handle.join();
     let _ = prune_handle.join();
+    let _ = controller_handle.join();
 
     tracing::info!("Global daemon shutdown complete");
 }

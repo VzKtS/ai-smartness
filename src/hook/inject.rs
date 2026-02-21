@@ -176,6 +176,22 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
         }
     }
 
+    // Layer 1.8: Inject queue (CLI-first fallback — controller-written prompts)
+    {
+        let queue_items = crate::daemon::controller::consume_inject_queue(project_hash, agent_id);
+        if !queue_items.is_empty() {
+            let combined = queue_items.join("\n\n");
+            let layer = format!("<system-reminder>\n{}\n</system-reminder>", combined);
+            if layer.len() < budget {
+                budget -= layer.len();
+                injections.push(layer);
+                tracing::info!(count = queue_items.len(), "Layer 1.8: inject_queue consumed");
+            } else {
+                tracing::debug!("Layer 1.8: exceeds budget, skipped");
+            }
+        }
+    }
+
     // Layer 2: Cognitive inbox
     // Only consume (mark read) on wake prompts — peek on normal prompts
     // so the message stays pending for the actual wake delivery.
