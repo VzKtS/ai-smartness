@@ -2820,3 +2820,402 @@ document.addEventListener('keydown', (e) => {
             break;
     }
 });
+
+// ═══════════════════════════════════════════════════════════════
+// F7: Minimap — small overview canvas with viewport rectangle
+// ═══════════════════════════════════════════════════════════════
+
+let minimapEnabled = true;
+
+function renderMinimap() {
+    const mmCanvas = document.getElementById('graph-minimap');
+    if (!mmCanvas) return;
+    if (!minimapEnabled || graphNodes.length === 0) {
+        mmCanvas.style.display = 'none';
+        return;
+    }
+    mmCanvas.style.display = 'block';
+    const ctx = mmCanvas.getContext('2d');
+    const W = mmCanvas.width, H = mmCanvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    // Compute bounding box of all nodes
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const n of graphNodes) {
+        if (n.x < minX) minX = n.x;
+        if (n.x > maxX) maxX = n.x;
+        if (n.y < minY) minY = n.y;
+        if (n.y > maxY) maxY = n.y;
+    }
+    const pad = 40;
+    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+    const worldW = maxX - minX || 1;
+    const worldH = maxY - minY || 1;
+    const scaleX = W / worldW;
+    const scaleY = H / worldH;
+    const mmScale = Math.min(scaleX, scaleY);
+    const offX = (W - worldW * mmScale) / 2;
+    const offY = (H - worldH * mmScale) / 2;
+
+    // Draw edges as thin lines
+    ctx.globalAlpha = 0.2;
+    ctx.strokeStyle = '#4af';
+    ctx.lineWidth = 0.5;
+    for (const e of graphEdges) {
+        const src = graphNodes.find(n => n.id === e.source);
+        const tgt = graphNodes.find(n => n.id === e.target);
+        if (!src || !tgt) continue;
+        ctx.beginPath();
+        ctx.moveTo(offX + (src.x - minX) * mmScale, offY + (src.y - minY) * mmScale);
+        ctx.lineTo(offX + (tgt.x - minX) * mmScale, offY + (tgt.y - minY) * mmScale);
+        ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // Draw nodes as colored dots
+    for (const n of graphNodes) {
+        const mx = offX + (n.x - minX) * mmScale;
+        const my = offY + (n.y - minY) * mmScale;
+        ctx.fillStyle = getNodeColor(n);
+        ctx.beginPath();
+        ctx.arc(mx, my, Math.max(1.5, n.radius * mmScale * 0.3), 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // Draw viewport rectangle
+    const container = document.getElementById('graph-container');
+    if (container) {
+        const rect = container.getBoundingClientRect();
+        // Visible world bounds
+        const vx0 = (0 - graphTransform.x) / graphTransform.scale;
+        const vy0 = (0 - graphTransform.y) / graphTransform.scale;
+        const vx1 = (rect.width - graphTransform.x) / graphTransform.scale;
+        const vy1 = (rect.height - graphTransform.y) / graphTransform.scale;
+
+        const rx = offX + (vx0 - minX) * mmScale;
+        const ry = offY + (vy0 - minY) * mmScale;
+        const rw = (vx1 - vx0) * mmScale;
+        const rh = (vy1 - vy0) * mmScale;
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(
+            Math.max(0, Math.min(rx, W)),
+            Math.max(0, Math.min(ry, H)),
+            Math.min(rw, W - Math.max(0, rx)),
+            Math.min(rh, H - Math.max(0, ry))
+        );
+    }
+
+    // Store transform for click-to-navigate
+    mmCanvas._mmTransform = { minX, minY, mmScale, offX, offY };
+}
+
+// Minimap click/drag to navigate main view
+(function setupMinimapInteraction() {
+    const mmCanvas = document.getElementById('graph-minimap');
+    if (!mmCanvas) return;
+    let dragging = false;
+
+    function navigateToMinimap(e) {
+        const t = mmCanvas._mmTransform;
+        if (!t) return;
+        const rect = mmCanvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        // Convert minimap coords to world coords
+        const wx = (mx - t.offX) / t.mmScale + t.minX;
+        const wy = (my - t.offY) / t.mmScale + t.minY;
+        // Center the main view on this world point
+        const container = document.getElementById('graph-container');
+        if (!container) return;
+        const cr = container.getBoundingClientRect();
+        graphTransform.x = cr.width / 2 - wx * graphTransform.scale;
+        graphTransform.y = cr.height / 2 - wy * graphTransform.scale;
+        drawGraph();
+    }
+
+    mmCanvas.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        dragging = true;
+        navigateToMinimap(e);
+    });
+    mmCanvas.addEventListener('mousemove', (e) => {
+        if (dragging) { e.stopPropagation(); navigateToMinimap(e); }
+    });
+    window.addEventListener('mouseup', () => { dragging = false; });
+})();
+
+// Toggle minimap
+document.getElementById('graph-show-minimap')?.addEventListener('change', (e) => {
+    minimapEnabled = e.target.checked;
+    renderMinimap();
+});
+
+// Hook minimap into drawGraph via override (non-invasive)
+{
+    const _origDrawGraph = drawGraph;
+    drawGraph = function() {
+        _origDrawGraph();
+        renderMinimap();
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// F9: Time slider — dual-range date filter on last_active
+// ═══════════════════════════════════════════════════════════════
+
+let graphTimeFilterActive = false;
+let graphTimeDates = [];  // sorted epoch ms array from graphNodes
+
+function initTimeSlider() {
+    if (graphNodes.length === 0) {
+        document.getElementById('graph-time-slider').style.display = 'none';
+        return;
+    }
+    // Collect all dates (lastActive or createdAt)
+    graphTimeDates = graphNodes
+        .map(n => n.lastActive || n.createdAt)
+        .filter(Boolean)
+        .map(d => new Date(d).getTime())
+        .filter(d => !isNaN(d))
+        .sort((a, b) => a - b);
+
+    if (graphTimeDates.length < 2) {
+        document.getElementById('graph-time-slider').style.display = 'none';
+        return;
+    }
+    document.getElementById('graph-time-slider').style.display = 'flex';
+
+    const minSlider = document.getElementById('graph-time-min');
+    const maxSlider = document.getElementById('graph-time-max');
+    minSlider.value = 0;
+    maxSlider.value = 1000;
+    graphTimeFilterActive = false;
+    updateTimeLabels();
+    updateTimeRangeBar();
+}
+
+function getTimeRange() {
+    if (graphTimeDates.length < 2) return { min: 0, max: Date.now() };
+    const first = graphTimeDates[0];
+    const last = graphTimeDates[graphTimeDates.length - 1];
+    const minVal = parseInt(document.getElementById('graph-time-min')?.value || '0');
+    const maxVal = parseInt(document.getElementById('graph-time-max')?.value || '1000');
+    return {
+        min: first + (last - first) * (minVal / 1000),
+        max: first + (last - first) * (maxVal / 1000),
+    };
+}
+
+function formatShortDate(epoch) {
+    const d = new Date(epoch);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+}
+
+function updateTimeLabels() {
+    const range = getTimeRange();
+    const minLabel = document.getElementById('graph-time-min-label');
+    const maxLabel = document.getElementById('graph-time-max-label');
+    if (minLabel) minLabel.textContent = formatShortDate(range.min);
+    if (maxLabel) maxLabel.textContent = formatShortDate(range.max);
+}
+
+function updateTimeRangeBar() {
+    const bar = document.getElementById('graph-time-range');
+    if (!bar) return;
+    const minVal = parseInt(document.getElementById('graph-time-min')?.value || '0');
+    const maxVal = parseInt(document.getElementById('graph-time-max')?.value || '1000');
+    bar.style.left = (minVal / 10) + '%';
+    bar.style.width = ((maxVal - minVal) / 10) + '%';
+}
+
+function applyTimeFilter() {
+    const range = getTimeRange();
+    const minVal = parseInt(document.getElementById('graph-time-min')?.value || '0');
+    const maxVal = parseInt(document.getElementById('graph-time-max')?.value || '1000');
+    graphTimeFilterActive = (minVal > 0 || maxVal < 1000);
+
+    if (!graphTimeFilterActive) {
+        for (const n of graphNodes) n._timeHidden = false;
+    } else {
+        for (const n of graphNodes) {
+            const epoch = new Date(n.lastActive || n.createdAt || 0).getTime();
+            n._timeHidden = isNaN(epoch) || epoch < range.min || epoch > range.max;
+        }
+    }
+    drawGraph();
+}
+
+// Hook time filter into draw layers via override (non-invasive)
+{
+    const _origDrawEdgesLayer = drawEdgesLayer;
+    const _origDrawNodesLayer = drawNodesLayer;
+
+    drawEdgesLayer = function() {
+        if (!graphTimeFilterActive) return _origDrawEdgesLayer();
+        // Temporarily swap graphNodes/graphEdges with filtered versions
+        const hiddenIds = new Set(graphNodes.filter(n => n._timeHidden).map(n => n.id));
+        const savedNodes = graphNodes;
+        const savedEdges = graphEdges;
+        graphNodes = savedNodes.filter(n => !n._timeHidden);
+        graphEdges = savedEdges.filter(e => !hiddenIds.has(e.source) && !hiddenIds.has(e.target));
+        _origDrawEdgesLayer();
+        graphNodes = savedNodes;
+        graphEdges = savedEdges;
+    };
+
+    drawNodesLayer = function() {
+        if (!graphTimeFilterActive) return _origDrawNodesLayer();
+        const savedNodes = graphNodes;
+        graphNodes = savedNodes.filter(n => !n._timeHidden);
+        _origDrawNodesLayer();
+        graphNodes = savedNodes;
+    };
+}
+
+// Slider event listeners
+['graph-time-min', 'graph-time-max'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', () => {
+        const minSlider = document.getElementById('graph-time-min');
+        const maxSlider = document.getElementById('graph-time-max');
+        if (parseInt(minSlider.value) > parseInt(maxSlider.value)) {
+            if (id === 'graph-time-min') minSlider.value = maxSlider.value;
+            else maxSlider.value = minSlider.value;
+        }
+        updateTimeLabels();
+        updateTimeRangeBar();
+        applyTimeFilter();
+    });
+});
+
+document.getElementById('btn-graph-time-reset')?.addEventListener('click', () => {
+    document.getElementById('graph-time-min').value = 0;
+    document.getElementById('graph-time-max').value = 1000;
+    updateTimeLabels();
+    updateTimeRangeBar();
+    applyTimeFilter();
+});
+
+// Initialize time slider when graph is loaded
+{
+    const _origBuildGraph = buildGraph;
+    buildGraph = function(threads, bridges) {
+        _origBuildGraph(threads, bridges);
+        initTimeSlider();
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// F11: Export — PNG, JSON, SVG
+// ═══════════════════════════════════════════════════════════════
+
+function exportGraphPNG() {
+    const container = document.getElementById('graph-container');
+    if (!container || graphNodes.length === 0) return;
+    const edgesC = document.getElementById('graph-canvas-edges');
+    const nodesC = document.getElementById('graph-canvas-nodes');
+    const overlayC = document.getElementById('graph-canvas-overlay');
+    if (!edgesC || !nodesC || !overlayC) return;
+
+    // Merge 3 layers onto a temp canvas
+    const w = edgesC.width, h = edgesC.height;
+    const merged = document.createElement('canvas');
+    merged.width = w;
+    merged.height = h;
+    const ctx = merged.getContext('2d');
+    ctx.fillStyle = '#0f0f23';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(edgesC, 0, 0);
+    ctx.drawImage(nodesC, 0, 0);
+    ctx.drawImage(overlayC, 0, 0);
+
+    // Download
+    const link = document.createElement('a');
+    link.download = 'memory-graph.png';
+    link.href = merged.toDataURL('image/png');
+    link.click();
+}
+
+function exportGraphJSON() {
+    if (graphNodes.length === 0) return;
+    const data = {
+        nodes: graphNodes.map(n => ({
+            id: n.id, title: n.title, status: n.status,
+            importance: n.importance, weight: n.weight,
+            topics: n.topics, labels: n.labels, concepts: n.concepts,
+            origin: n.origin, lastActive: n.lastActive,
+            x: Math.round(n.x), y: Math.round(n.y),
+        })),
+        edges: graphEdges.map(e => ({
+            source: e.source, target: e.target,
+            relation: e.relation, weight: e.weight,
+            status: e.status,
+        })),
+        meta: {
+            exported: new Date().toISOString(),
+            nodeCount: graphNodes.length,
+            edgeCount: graphEdges.length,
+        }
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.download = 'memory-graph.json';
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+}
+
+function exportGraphSVG() {
+    if (graphNodes.length === 0) return;
+    const container = document.getElementById('graph-container');
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const w = Math.round(rect.width), h = Math.round(rect.height);
+    const { x: tx, y: ty, scale } = graphTransform;
+
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">\n`;
+    svg += `<rect width="${w}" height="${h}" fill="#0f0f23"/>\n`;
+
+    // Edges
+    svg += '<g class="edges">\n';
+    for (const e of graphEdges) {
+        const src = graphNodes.find(n => n.id === e.source);
+        const tgt = graphNodes.find(n => n.id === e.target);
+        if (!src || !tgt) continue;
+        const x1 = tx + src.x * scale, y1 = ty + src.y * scale;
+        const x2 = tx + tgt.x * scale, y2 = ty + tgt.y * scale;
+        const color = typeof RELATION_COLORS !== 'undefined' && RELATION_COLORS[e.relation]
+            ? RELATION_COLORS[e.relation]
+            : 'rgba(160,220,255,0.5)';
+        svg += `  <line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-width="1" opacity="0.6"/>\n`;
+    }
+    svg += '</g>\n';
+
+    // Nodes
+    svg += '<g class="nodes">\n';
+    for (const n of graphNodes) {
+        const cx = tx + n.x * scale, cy = ty + n.y * scale;
+        const color = getNodeColor(n);
+        const r = n.radius * scale;
+        svg += `  <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${Math.max(2, r).toFixed(1)}" fill="${color}" opacity="0.85"/>\n`;
+        if (scale > 0.5) {
+            const escaped = (n.title || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            svg += `  <text x="${(cx + r + 4).toFixed(1)}" y="${(cy + 3).toFixed(1)}" fill="#ddd" font-size="${Math.max(8, 11 * scale).toFixed(0)}" font-family="sans-serif">${escaped}</text>\n`;
+        }
+    }
+    svg += '</g>\n';
+    svg += '</svg>';
+
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
+    const link = document.createElement('a');
+    link.download = 'memory-graph.svg';
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+}
+
+// Export button event listeners
+document.getElementById('btn-graph-export-png')?.addEventListener('click', exportGraphPNG);
+document.getElementById('btn-graph-export-json')?.addEventListener('click', exportGraphJSON);
+document.getElementById('btn-graph-export-svg')?.addEventListener('click', exportGraphSVG);
