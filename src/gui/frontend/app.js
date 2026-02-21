@@ -1772,15 +1772,15 @@ const GRAPH_COLORS = {
     active: '#4caf50',
     suspended: '#ff9800',
     archived: '#666',
-    edge_default: 'rgba(100,200,255,0.25)',
-    edge_highlight: 'rgba(100,200,255,0.8)',
+    edge_default: 'rgba(160,220,255,0.5)',
+    edge_highlight: 'rgba(180,230,255,0.95)',
 };
 
 const RELATION_COLORS = {
-    'ChildOf': '#6cf',
-    'SiblingOf': '#9c6',
-    'RelatedTo': '#fc6',
-    'Supersedes': '#c6f',
+    'ChildOf': '#8ad4ff',
+    'SiblingOf': '#b5e86c',
+    'RelatedTo': '#ffd56c',
+    'Supersedes': '#d68cff',
 };
 
 async function loadGraph() {
@@ -2084,8 +2084,8 @@ function drawGraph() {
         ctx.strokeStyle = isHighlight
             ? GRAPH_COLORS.edge_highlight
             : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default);
-        ctx.lineWidth = isHighlight ? 2 : Math.max(0.5, e.weight * 3);
-        ctx.globalAlpha = isHighlight ? 1 : 0.4 + e.weight * 0.4;
+        ctx.lineWidth = isHighlight ? 2.5 : Math.max(1, e.weight * 3);
+        ctx.globalAlpha = isHighlight ? 1 : 0.55 + e.weight * 0.4;
         ctx.stroke();
         ctx.globalAlpha = 1;
 
@@ -2097,15 +2097,29 @@ function drawGraph() {
         }
     }
 
-    // Draw nodes
+    // Draw nodes as labeled rectangles
     for (const n of graphNodes) {
         const nx = n.x * scale + tx, ny = n.y * scale + ty;
-        const r = n.radius * Math.sqrt(scale);
         const isHovered = graphHoveredNode === n;
         const isSelected = graphSelectedNode === n;
 
+        const label = n.title.length > 22 ? n.title.substring(0, 20) + '..' : n.title;
+        const fontSize = Math.max(9, 11 * Math.sqrt(scale));
+        ctx.font = `${fontSize}px sans-serif`;
+        const tw = ctx.measureText(label).width;
+        const padX = 8, padY = 5;
+        const rw = tw + padX * 2;
+        const rh = fontSize + padY * 2;
+
+        // Store world-space dimensions for hit detection
+        n._rw = rw / scale;
+        n._rh = rh / scale;
+
+        const rx = nx - rw / 2, ry = ny - rh / 2;
+        const cr = 4;
+
         ctx.beginPath();
-        ctx.arc(nx, ny, r, 0, Math.PI * 2);
+        ctx.roundRect(rx, ry, rw, rh, cr);
         ctx.fillStyle = GRAPH_COLORS[n.status] || GRAPH_COLORS.active;
         ctx.globalAlpha = 0.3 + n.weight * 0.7;
         ctx.fill();
@@ -2117,12 +2131,13 @@ function drawGraph() {
             ctx.stroke();
         }
 
-        if (showLabels && scale > 0.5) {
-            const label = n.title.length > 24 ? n.title.substring(0, 22) + '..' : n.title;
-            ctx.font = `${Math.max(9, 11 * Math.sqrt(scale))}px sans-serif`;
-            ctx.fillStyle = '#ccc';
-            ctx.fillText(label, nx + r + 3, ny + 3);
-        }
+        // Draw label inside rectangle
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, nx, ny);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
     }
 }
 
@@ -2136,8 +2151,9 @@ function graphScreenToWorld(sx, sy) {
 function graphNodeAt(wx, wy) {
     for (let i = graphNodes.length - 1; i >= 0; i--) {
         const n = graphNodes[i];
-        const dx = n.x - wx, dy = n.y - wy;
-        if (dx * dx + dy * dy <= (n.radius + 4) * (n.radius + 4)) return n;
+        const hw = (n._rw || n.radius * 2) / 2 + 4;
+        const hh = (n._rh || n.radius * 2) / 2 + 4;
+        if (Math.abs(n.x - wx) <= hw && Math.abs(n.y - wy) <= hh) return n;
     }
     return null;
 }
