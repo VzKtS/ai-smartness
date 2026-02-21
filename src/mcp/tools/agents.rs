@@ -315,7 +315,7 @@ pub fn handle_task_delegate(
     };
 
     AgentTaskStorage::create_task(ctx.registry_conn, &task)?;
-    emit_wake_signal(&to, ctx.agent_id, &format!("Task delegated: {}", task.title), "inbox");
+    emit_wake_signal(&to, ctx.agent_id, &format!("Task delegated: {}", task.title), "inbox", false);
     Ok(serde_json::json!({"delegated": true, "task_id": task.id, "to": to}))
 }
 

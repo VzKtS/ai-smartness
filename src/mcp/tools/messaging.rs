@@ -15,13 +15,15 @@ use super::{optional_array, optional_str, optional_usize, required_str, ToolCont
 
 /// Write a wake signal file so the VSCode extension can wake the target agent.
 /// `mode`: "cognitive" or "inbox" — tells the extension which prompt to inject.
-pub(crate) fn emit_wake_signal(target_agent: &str, from_agent: &str, subject: &str, mode: &str) {
+/// `interrupt`: if true, the extension bypasses idle-check and injects immediately.
+pub(crate) fn emit_wake_signal(target_agent: &str, from_agent: &str, subject: &str, mode: &str, interrupt: bool) {
     let signal_path = path_utils::wake_signal_path(target_agent);
     let signal = serde_json::json!({
         "agent_id": target_agent,
         "from": from_agent,
         "message": subject,
         "mode": mode,
+        "interrupt": interrupt,
         "timestamp": time_utils::now().to_rfc3339(),
         "acknowledged": false
     });
@@ -151,7 +153,7 @@ pub fn handle_msg_focus(
     migrations::migrate_agent_db(&target_conn)?;
     CognitiveInbox::send(&target_conn, &msg)?;
 
-    emit_wake_signal(&target, &msg.from_agent, &msg.subject, "cognitive");
+    emit_wake_signal(&target, &msg.from_agent, &msg.subject, "cognitive", false);
     Ok(serde_json::json!({"sent": true, "message_id": msg.id, "target": target, "attachments": att_count}))
 }
 
@@ -219,7 +221,8 @@ pub fn handle_msg_send(
     };
 
     McpMessages::send(ctx.shared_conn, &msg)?;
-    emit_wake_signal(&to, &msg.from_agent, &msg.subject, "inbox");
+    let interrupt = msg.priority == MessagePriority::Urgent;
+    emit_wake_signal(&to, &msg.from_agent, &msg.subject, "inbox", interrupt);
     Ok(serde_json::json!({"sent": true, "message_id": msg.id, "attachments": att_count}))
 }
 
@@ -267,7 +270,7 @@ pub fn handle_msg_broadcast(
     if let Ok(agents) = AgentRegistry::list(ctx.registry_conn, Some(ctx.project_hash), None, None) {
         for agent in &agents {
             if agent.id != ctx.agent_id {
-                emit_wake_signal(&agent.id, ctx.agent_id, &msg.subject, "inbox");
+                emit_wake_signal(&agent.id, ctx.agent_id, &msg.subject, "inbox", false);
             }
         }
     }
@@ -367,7 +370,7 @@ pub fn handle_msg_reply(
 
     McpMessages::reply(ctx.shared_conn, &message_id, &reply)?;
 
-    emit_wake_signal(&original_sender, &effective_agent, &reply.subject, "inbox");
+    emit_wake_signal(&original_sender, &effective_agent, &reply.subject, "inbox", false);
 
     Ok(serde_json::json!({"replied": true, "reply_id": reply.id}))
 }

@@ -122,6 +122,25 @@ export class AgentController {
             return;
         }
 
+        // Interrupt: bypass idle check, inject immediately
+        if (signal.interrupt) {
+            const mode = signal.mode || this.communicationMode;
+            const text = stdinInjection.buildPromptText(
+                this.agentId, signal.from, signal.message, mode
+            );
+            const ok = stdinInjection.tryInjectSync(
+                this.agentId, text, this.projectHash ?? undefined,
+                { skipIdleCheck: true },
+            );
+            if (ok) {
+                this.onLog(`Interrupt injected to ${this.agentId}`);
+                wakeSignals.acknowledgeSignal(this.agentId);
+                this.enterCooldown();
+                return;
+            }
+            // Fall through to normal pending path if injection failed
+        }
+
         this.currentSignal = signal;
         this.attempts = 0;
         this.state = 'pending';
@@ -150,7 +169,8 @@ export class AgentController {
             mode
         );
 
-        const ok = stdinInjection.tryInjectSync(this.agentId, text, this.projectHash ?? undefined);
+        const injectOpts = this.currentSignal.interrupt ? { skipIdleCheck: true } : undefined;
+        const ok = stdinInjection.tryInjectSync(this.agentId, text, this.projectHash ?? undefined, injectOpts);
 
         if (ok) {
             this.onLog(`Injected wake to ${this.agentId}`);

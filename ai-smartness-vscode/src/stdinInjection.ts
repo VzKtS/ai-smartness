@@ -245,10 +245,18 @@ export async function tryInject(agentId: string, text: string): Promise<boolean>
  * PID-targeted: reads beat.json to find the correct Claude process for this agent.
  * Falls back to first idle Claude process if PID not available.
  * Never blocks, never retries — the controller handles retry logic.
+ *
+ * options.skipIdleCheck: if true, bypass idle detection (used for urgent/interrupt signals).
  */
-export function tryInjectSync(agentId: string, text: string, projHash?: string): boolean {
+export function tryInjectSync(
+    agentId: string,
+    text: string,
+    projHash?: string,
+    options?: { skipIdleCheck?: boolean },
+): boolean {
     if (isDebounced(agentId)) { return false; }
 
+    const skip = options?.skipIdleCheck === true;
     const payload = buildPayload(text);
 
     // Strategy 1: PID-targeted (if projHash available)
@@ -256,7 +264,7 @@ export function tryInjectSync(agentId: string, text: string, projHash?: string):
         const targetPid = readAgentPid(projHash, agentId);
         if (targetPid) {
             const proc = findProcessByPid(targetPid);
-            if (proc?.stdin?.writable && isIdle(targetPid)) {
+            if (proc?.stdin?.writable && (skip || isIdle(targetPid))) {
                 try {
                     proc.stdin.write(payload);
                     lastInjectionTime.set(agentId, Date.now());
@@ -270,7 +278,7 @@ export function tryInjectSync(agentId: string, text: string, projHash?: string):
     // (single-agent compat). With multiple processes, PID targeting is required
     // to avoid injecting into the wrong panel.
     if (monitoredProcesses.size <= 1) {
-        const proc = findIdleClaudeProcess();
+        const proc = skip ? findClaudeProcess() : findIdleClaudeProcess();
         if (proc?.stdin?.writable) {
             try {
                 proc.stdin.write(payload);

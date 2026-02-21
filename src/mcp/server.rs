@@ -355,7 +355,7 @@ fn check_scheduled_wakes(agent_id: &str, data_dir: &Path) {
     let reasons: Vec<&str> = due.iter().map(|w| w.reason.as_str()).collect();
     let message = format!("Self-wake: {}", reasons.join(", "));
     tracing::info!(agent = agent_id, message = %message, "Scheduled wake triggered");
-    super::tools::messaging::emit_wake_signal(agent_id, "heartbeat", &message, "cognitive");
+    super::tools::messaging::emit_wake_signal(agent_id, "heartbeat", &message, "cognitive", false);
 }
 
 fn check_cognitive_proactive(project_hash: &str, agent_id: &str) {
@@ -392,7 +392,7 @@ fn check_cognitive_proactive(project_hash: &str, agent_id: &str) {
         pending = messages.len(),
         "Cognitive proactive: emitting wake signal"
     );
-    super::tools::messaging::emit_wake_signal(agent_id, "cognitive-inbox", "Pending cognitive messages", "cognitive");
+    super::tools::messaging::emit_wake_signal(agent_id, "cognitive-inbox", "Pending cognitive messages", "cognitive", false);
 }
 
 fn tool_definitions() -> Vec<serde_json::Value> {
