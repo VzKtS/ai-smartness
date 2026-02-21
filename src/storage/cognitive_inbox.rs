@@ -136,8 +136,11 @@ impl CognitiveInbox {
     pub fn expire_stale(conn: &Connection) -> AiResult<usize> {
         let now = time_utils::to_sqlite(&time_utils::now());
 
+        let tx = conn.unchecked_transaction()
+            .map_err(|e| AiError::Storage(format!("Begin transaction failed: {}", e)))?;
+
         // Move expired to dead_letters (including attachments)
-        let count: usize = conn
+        let count: usize = tx
             .execute(
                 "INSERT INTO dead_letters (id, from_agent, to_agent, subject, content, priority, original_ttl, expired_at, created_at, attachments)
                  SELECT id, from_agent, to_agent, subject, content, priority, ttl_expiry, ?1, created_at, attachments
@@ -148,12 +151,15 @@ impl CognitiveInbox {
             .map_err(|e| AiError::Storage(e.to_string()))?;
 
         // Delete expired from inbox
-        conn.execute(
+        tx.execute(
             "DELETE FROM cognitive_inbox
              WHERE ttl_expiry IS NOT NULL AND ttl_expiry < ?1 AND status != 'acked'",
             params![now],
         )
         .map_err(|e| AiError::Storage(e.to_string()))?;
+
+        tx.commit()
+            .map_err(|e| AiError::Storage(format!("Commit failed: {}", e)))?;
 
         if count > 0 {
             tracing::debug!(expired_count = count, "Cognitive messages expired");
@@ -192,5 +198,39 @@ impl CognitiveInbox {
             )
             .map_err(|e| AiError::Storage(e.to_string()))?;
         Ok(c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::setup_agent_db;
+
+    #[test]
+    fn test_expire_stale_atomic() {
+        let conn = setup_agent_db();
+        let past = "2020-01-01T00:00:00Z";
+        let now_str = time_utils::to_sqlite(&time_utils::now());
+
+        // Insert a message with expired TTL
+        conn.execute(
+            "INSERT INTO cognitive_inbox (id, from_agent, to_agent, subject, content, priority, ttl_expiry, status, created_at, attachments)
+             VALUES ('m1', 'agent-a', 'agent-b', 'test', 'hello', 'normal', ?1, 'pending', ?2, '[]')",
+            params![past, now_str],
+        ).unwrap();
+
+        let expired = CognitiveInbox::expire_stale(&conn).unwrap();
+        assert_eq!(expired, 1);
+
+        // Message should be gone from inbox AND present in dead_letters (atomic)
+        let inbox_count: usize = conn.query_row(
+            "SELECT COUNT(*) FROM cognitive_inbox", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(inbox_count, 0);
+
+        let dead_count: usize = conn.query_row(
+            "SELECT COUNT(*) FROM dead_letters", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(dead_count, 1);
     }
 }

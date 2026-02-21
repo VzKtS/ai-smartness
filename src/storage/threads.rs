@@ -488,7 +488,10 @@ impl ThreadStorage {
     }
 
     pub fn add_message(conn: &Connection, msg: &ThreadMessage) -> AiResult<()> {
-        conn.execute(
+        let tx = conn.unchecked_transaction()
+            .map_err(|e| AiError::Storage(format!("Begin transaction failed: {}", e)))?;
+
+        tx.execute(
             "INSERT INTO thread_messages (id, thread_id, content, source, source_type, timestamp, metadata, is_truncated)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
@@ -503,16 +506,19 @@ impl ThreadStorage {
             ],
         )
         .map_err(|e| AiError::Storage(format!("Insert message failed: {}", e)))?;
-        tracing::debug!(thread_id = %msg.thread_id, msg_id = %msg.msg_id, "Message added");
 
         // Update thread last_active
         let now = time_utils::to_sqlite(&time_utils::now());
-        conn.execute(
+        tx.execute(
             "UPDATE threads SET last_active = ?1, activation_count = activation_count + 1 WHERE id = ?2",
             params![now, msg.thread_id],
         )
         .map_err(|e| AiError::Storage(format!("Update thread last_active failed: {}", e)))?;
 
+        tx.commit()
+            .map_err(|e| AiError::Storage(format!("Commit failed: {}", e)))?;
+
+        tracing::debug!(thread_id = %msg.thread_id, msg_id = %msg.msg_id, "Message added");
         Ok(())
     }
 
@@ -557,19 +563,25 @@ impl ThreadStorage {
     /// Bulk delete all threads with a given status. Also removes their messages.
     /// Returns the number of threads deleted.
     pub fn delete_by_status(conn: &Connection, status: &ThreadStatus) -> AiResult<usize> {
+        let tx = conn.unchecked_transaction()
+            .map_err(|e| AiError::Storage(format!("Begin transaction failed: {}", e)))?;
+
         // Delete messages for threads with this status first
-        conn.execute(
+        tx.execute(
             "DELETE FROM thread_messages WHERE thread_id IN (SELECT id FROM threads WHERE status = ?1)",
             params![status.as_str()],
         )
         .map_err(|e| AiError::Storage(format!("Delete messages by status failed: {}", e)))?;
         // Delete the threads
-        let deleted = conn
+        let deleted = tx
             .execute(
                 "DELETE FROM threads WHERE status = ?1",
                 params![status.as_str()],
             )
             .map_err(|e| AiError::Storage(format!("Delete threads by status failed: {}", e)))?;
+
+        tx.commit()
+            .map_err(|e| AiError::Storage(format!("Commit failed: {}", e)))?;
         Ok(deleted)
     }
 
@@ -606,5 +618,199 @@ impl<T> OptionalExt<T> for Result<T, rusqlite::Error> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{setup_agent_db, ThreadBuilder, ThreadMessageBuilder};
+
+    #[test]
+    fn test_insert_and_get() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new().id("t1").title("Rust testing").build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+        let got = ThreadStorage::get(&conn, "t1").unwrap().unwrap();
+        assert_eq!(got.id, "t1");
+        assert_eq!(got.title, "Rust testing");
+        assert_eq!(got.status, ThreadStatus::Active);
+    }
+
+    #[test]
+    fn test_get_nonexistent() {
+        let conn = setup_agent_db();
+        let got = ThreadStorage::get(&conn, "nonexistent").unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn test_update() {
+        let conn = setup_agent_db();
+        let mut thread = ThreadBuilder::new().id("t1").title("Original").weight(1.0).build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+        thread.title = "Updated".to_string();
+        thread.weight = 0.5;
+        ThreadStorage::update(&conn, &thread).unwrap();
+        let got = ThreadStorage::get(&conn, "t1").unwrap().unwrap();
+        assert_eq!(got.title, "Updated");
+        assert!((got.weight - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_delete() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new().id("t1").build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+        ThreadStorage::delete(&conn, "t1").unwrap();
+        assert!(ThreadStorage::get(&conn, "t1").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_list_active_and_by_status() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("a1").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("a2").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("s1").status(ThreadStatus::Suspended).build()).unwrap();
+        assert_eq!(ThreadStorage::list_active(&conn).unwrap().len(), 2);
+        assert_eq!(ThreadStorage::list_by_status(&conn, &ThreadStatus::Suspended).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_count_and_count_by_status() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("a1").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("a2").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("s1").status(ThreadStatus::Suspended).build()).unwrap();
+        assert_eq!(ThreadStorage::count(&conn).unwrap(), 3);
+        assert_eq!(ThreadStorage::count_by_status(&conn, &ThreadStatus::Active).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_update_status() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t1").build()).unwrap();
+        ThreadStorage::update_status(&conn, "t1", ThreadStatus::Suspended).unwrap();
+        let got = ThreadStorage::get(&conn, "t1").unwrap().unwrap();
+        assert_eq!(got.status, ThreadStatus::Suspended);
+    }
+
+    #[test]
+    fn test_update_weight() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t1").weight(1.0).build()).unwrap();
+        ThreadStorage::update_weight(&conn, "t1", 0.3).unwrap();
+        let got = ThreadStorage::get(&conn, "t1").unwrap().unwrap();
+        assert!((got.weight - 0.3).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_update_embedding_blob_roundtrip() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t1").build()).unwrap();
+        let embedding = vec![1.0f32, 2.0, 3.0, -0.5];
+        ThreadStorage::update_embedding(&conn, "t1", &embedding).unwrap();
+        let got = ThreadStorage::get(&conn, "t1").unwrap().unwrap();
+        let got_emb = got.embedding.unwrap();
+        assert_eq!(got_emb.len(), 4);
+        assert!((got_emb[0] - 1.0).abs() < 0.001);
+        assert!((got_emb[3] - (-0.5)).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_search_by_title() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t1").title("Rust programming guide").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t2").title("Python basics").build()).unwrap();
+        let results = ThreadStorage::search(&conn, "rust").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "t1");
+    }
+
+    #[test]
+    fn test_search_by_topics() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t1").title("Some title").topics(vec!["database", "sqlite"]).build()).unwrap();
+        let results = ThreadStorage::search(&conn, "sqlite").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "t1");
+    }
+
+    #[test]
+    fn test_messages_crud_and_last_active_update() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new().id("t1").build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+        let original = ThreadStorage::get(&conn, "t1").unwrap().unwrap();
+        let original_count = original.activation_count;
+
+        let msg = ThreadMessageBuilder::new("t1").content("Hello world").build();
+        ThreadStorage::add_message(&conn, &msg).unwrap();
+
+        assert_eq!(ThreadStorage::message_count(&conn, "t1").unwrap(), 1);
+        let messages = ThreadStorage::get_messages(&conn, "t1").unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "Hello world");
+
+        // Verify add_message updated last_active + activation_count (pub finding)
+        let updated = ThreadStorage::get(&conn, "t1").unwrap().unwrap();
+        assert_eq!(updated.activation_count, original_count + 1);
+
+        ThreadStorage::delete_messages(&conn, "t1").unwrap();
+        assert_eq!(ThreadStorage::message_count(&conn, "t1").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_delete_batch_and_update_status_batch() {
+        let conn = setup_agent_db();
+        for i in 0..5 {
+            ThreadStorage::insert(&conn, &ThreadBuilder::new().id(&format!("t{}", i)).build()).unwrap();
+        }
+        // delete_batch
+        let deleted = ThreadStorage::delete_batch(&conn, &["t0".into(), "t1".into()]).unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(ThreadStorage::count(&conn).unwrap(), 3);
+
+        // update_status_batch
+        let updated = ThreadStorage::update_status_batch(&conn, &["t2".into(), "t3".into()], ThreadStatus::Archived).unwrap();
+        assert_eq!(updated, 2);
+        assert_eq!(ThreadStorage::count_by_status(&conn, &ThreadStatus::Archived).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_add_message_atomic() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new().id("t1").build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        let msg = ThreadMessageBuilder::new("t1").content("atomic msg").build();
+        ThreadStorage::add_message(&conn, &msg).unwrap();
+
+        // Both the message insert AND last_active update should have committed
+        assert_eq!(ThreadStorage::message_count(&conn, "t1").unwrap(), 1);
+        let updated = ThreadStorage::get(&conn, "t1").unwrap().unwrap();
+        assert_eq!(updated.activation_count, thread.activation_count + 1);
+    }
+
+    #[test]
+    fn test_delete_by_status_atomic() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("a1").status(ThreadStatus::Archived).build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("a2").status(ThreadStatus::Archived).build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("k1").build()).unwrap();
+
+        // Add messages to archived threads
+        ThreadStorage::add_message(&conn, &ThreadMessageBuilder::new("a1").content("m1").build()).unwrap();
+        ThreadStorage::add_message(&conn, &ThreadMessageBuilder::new("a2").content("m2").build()).unwrap();
+
+        let deleted = ThreadStorage::delete_by_status(&conn, &ThreadStatus::Archived).unwrap();
+        assert_eq!(deleted, 2);
+
+        // Both threads AND their messages should be gone atomically
+        assert_eq!(ThreadStorage::count(&conn).unwrap(), 1);
+        assert_eq!(ThreadStorage::message_count(&conn, "a1").unwrap(), 0);
+        assert_eq!(ThreadStorage::message_count(&conn, "a2").unwrap(), 0);
+        // Active thread untouched
+        assert!(ThreadStorage::get(&conn, "k1").unwrap().is_some());
     }
 }
