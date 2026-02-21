@@ -433,18 +433,26 @@ document.getElementById('btn-add-agent').addEventListener('click', async () => {
     document.getElementById('new-agent-name').value = '';
     document.getElementById('new-agent-team').value = '';
     document.getElementById('new-agent-supervisor-flag').checked = false;
+    document.getElementById('new-agent-custom-role').value = '';
     document.getElementById('add-agent-error').textContent = '';
-    // Populate supervisor dropdown with existing agents
+    // Populate supervisor and report_to dropdowns with existing agents
     const supSelect = document.getElementById('new-agent-supervisor');
     supSelect.innerHTML = '<option value="">— None —</option>';
+    const rtSelect = document.getElementById('new-agent-report-to');
+    rtSelect.innerHTML = '<option value="">— None —</option>';
     if (projectHash) {
         try {
             const agents = await invoke('list_agents', { projectHash });
             for (const a of agents) {
-                const opt = document.createElement('option');
-                opt.value = a.id;
-                opt.textContent = `${a.name} (${a.role})`;
-                supSelect.appendChild(opt);
+                const supOpt = document.createElement('option');
+                supOpt.value = a.id;
+                supOpt.textContent = `${a.name} (${a.role})`;
+                supSelect.appendChild(supOpt);
+
+                const rtOpt = document.createElement('option');
+                rtOpt.value = a.id;
+                rtOpt.textContent = `${a.name} (${a.role})`;
+                rtSelect.appendChild(rtOpt);
             }
         } catch (_) {}
     }
@@ -485,6 +493,8 @@ async function addAgent() {
     const teamVal = document.getElementById('new-agent-team').value.trim() || null;
     const isSup = document.getElementById('new-agent-supervisor-flag').checked;
     const threadModeVal = document.getElementById('new-agent-thread-mode').value;
+    const customRoleVal = document.getElementById('new-agent-custom-role').value.trim() || null;
+    const reportToVal = document.getElementById('new-agent-report-to').value || null;
     const errEl = document.getElementById('add-agent-error');
 
     if (!projectHash) { errEl.textContent = 'Select a project first'; return; }
@@ -501,6 +511,8 @@ async function addAgent() {
             team: teamVal,
             isSupervisor: isSup,
             threadMode: threadModeVal,
+            reportTo: reportToVal,
+            customRole: customRoleVal,
         });
         document.getElementById('modal-add-agent').classList.remove('open');
         loadAgents();
@@ -978,6 +990,13 @@ function toggleAgentEditRow(tr, agent, toggleBtn) {
         const sel = (a.id === agent.supervisor_id) ? 'selected' : '';
         supOptions += `<option value="${esc(a.id)}" ${sel}>${esc(a.name)} (${esc(a.role)})</option>`;
     }
+    // Build report_to options (exclude self)
+    let rtOptions = '<option value="">— None —</option>';
+    for (const a of agentsCache) {
+        if (a.id === agent.id) continue;
+        const sel = (a.id === agent.report_to) ? 'selected' : '';
+        rtOptions += `<option value="${esc(a.id)}" ${sel}>${esc(a.name)} (${esc(a.role)})</option>`;
+    }
 
     const isSup = agent.coordination_mode === 'coordinator';
     const roles = ['programmer', 'coordinator', 'reviewer', 'researcher', 'architect'];
@@ -1004,6 +1023,12 @@ function toggleAgentEditRow(tr, agent, toggleBtn) {
                 </label>
                 <label>Description
                     <input type="text" class="ae-description" value="${esc(agent.description || '')}">
+                </label>
+                <label>Custom Role
+                    <input type="text" class="ae-custom-role" value="${esc(agent.custom_role || '')}" placeholder="e.g. auditor/researcher">
+                </label>
+                <label>Report To
+                    <select class="ae-report-to">${rtOptions}</select>
                 </label>
                 <label>${dict['modal.agentsupervisor'] || 'Supervisor'}
                     <select class="ae-supervisor">${supOptions}</select>
@@ -1058,6 +1083,8 @@ async function saveAgentEdit(editTr, original) {
     const capsStr = editTr.querySelector('.ae-capabilities').value.trim();
     const specsStr = editTr.querySelector('.ae-specializations').value.trim();
     const threadMode = editTr.querySelector('.ae-thread-mode')?.value || null;
+    const customRole = editTr.querySelector('.ae-custom-role')?.value?.trim() ?? '';
+    const reportTo = editTr.querySelector('.ae-report-to')?.value ?? '';
 
     const capabilities = capsStr ? capsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
     const specializations = specsStr ? specsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
@@ -1075,6 +1102,8 @@ async function saveAgentEdit(editTr, original) {
             capabilities,
             specializations,
             threadMode,
+            reportTo,
+            customRole,
         });
         if (result.threads_suspended > 0) {
             alert(`Thread mode updated. ${result.threads_suspended} thread(s) suspended to enforce new quota.`);
