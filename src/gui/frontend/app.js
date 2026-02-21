@@ -1814,6 +1814,8 @@ let graphSearchMatches = null;  // F1: Set of matching node IDs, null = no activ
 let graphColorMode = 'status';  // F2/F5: 'status' | 'topic' | 'label' | 'origin' | 'decay'
 let graphFocusIndex = -1;       // F10: keyboard nav index
 let graphRAF = null;            // F0: rAF throttle handle
+let graphRawThreads = [];       // F4: raw data for client-side filtering
+let graphRawBridges = [];       // F4: raw data for client-side filtering
 
 const GRAPH_COLORS = {
     active: '#4caf50',
@@ -1852,28 +1854,38 @@ async function loadGraph() {
     if (!aid) return;
 
     try {
+        // F4: use 'all' when non-active statuses are checked
+        const needAll = document.querySelector('.graph-filter-status[value="suspended"]:checked') ||
+            document.querySelector('.graph-filter-status[value="archived"]:checked');
+        const statusFilter = needAll ? 'all' : 'active';
         const [threads, bridges] = await Promise.all([
-            invoke('get_threads', { projectHash, agentId: aid, statusFilter: 'active' }),
+            invoke('get_threads', { projectHash, agentId: aid, statusFilter }),
             invoke('get_bridges', { projectHash, agentId: aid }),
         ]);
-        buildGraph(threads, bridges);
-        forceLayout(150);
-        centerGraph();
-        drawGraph();
-        renderGraphLegend();
-        document.getElementById('graph-stats').textContent =
-            `${graphNodes.length} threads, ${graphEdges.length} bridges`;
+        graphRawThreads = threads;
+        graphRawBridges = bridges;
+        applyGraphFilters();
     } catch (e) {
         console.error('Graph load error:', e);
         document.getElementById('graph-stats').textContent = 'Error: ' + e;
     }
 }
 
+function applyGraphFilters() {
+    buildGraph(graphRawThreads, graphRawBridges);
+    forceLayout(150);
+    centerGraph();
+    drawGraph();
+    renderGraphLegend();
+    document.getElementById('graph-stats').textContent =
+        `${graphNodes.length} threads, ${graphEdges.length} bridges`;
+}
+
 function buildGraph(threads, bridges) {
-    const filter = document.getElementById('graph-filter').value;
     const idSet = new Set(threads.map(t => t.id));
 
     // Build edges from bridges (only where both endpoints exist)
+    // F8: include status and use_count from enriched backend
     graphEdges = bridges
         .filter(b => idSet.has(b.source_id) && idSet.has(b.target_id))
         .map(b => ({
@@ -1882,17 +1894,45 @@ function buildGraph(threads, bridges) {
             weight: b.weight || 0,
             relation: b.relation_type || 'RelatedTo',
             reason: b.reason || '',
+            status: (b.status || 'Active'),
+            useCount: b.use_count || 0,
         }));
 
-    // Filter nodes
-    let filtered = threads;
-    if (filter === 'bridged') {
-        const bridgedIds = new Set();
-        graphEdges.forEach(e => { bridgedIds.add(e.source); bridgedIds.add(e.target); });
-        filtered = threads.filter(t => bridgedIds.has(t.id));
-    }
+    // F4: Client-side multi-criteria filtering
+    const checkedStatuses = new Set();
+    document.querySelectorAll('.graph-filter-status:checked').forEach(cb => checkedStatuses.add(cb.value));
+    const impMin = (parseInt(document.getElementById('graph-filter-imp-min')?.value) || 0) / 100;
+    const impMax = (parseInt(document.getElementById('graph-filter-imp-max')?.value) || 100) / 100;
+    const checkedOrigins = new Set();
+    document.querySelectorAll('.graph-filter-origin:checked').forEach(cb => checkedOrigins.add(cb.value));
+    const hasOther = checkedOrigins.has('other');
+    const knownOrigins = new Set(['prompt', 'file_read', 'file_write', 'task']);
+    const minBridges = parseInt(document.getElementById('graph-filter-min-bridges')?.value) || 0;
+
+    // Pre-compute bridge counts per thread
+    const bridgeCounts = {};
+    graphEdges.forEach(e => {
+        bridgeCounts[e.source] = (bridgeCounts[e.source] || 0) + 1;
+        bridgeCounts[e.target] = (bridgeCounts[e.target] || 0) + 1;
+    });
+
+    let filtered = threads.filter(t => {
+        const st = (t.status || 'active').toLowerCase();
+        if (!checkedStatuses.has(st)) return false;
+        const imp = t.importance || 0.5;
+        if (imp < impMin || imp > impMax) return false;
+        const orig = (t.origin_type || 'prompt').toLowerCase();
+        if (checkedOrigins.size > 0) {
+            const matchesKnown = checkedOrigins.has(orig);
+            const matchesOther = hasOther && !knownOrigins.has(orig);
+            if (!matchesKnown && !matchesOther) return false;
+        }
+        if (minBridges > 0 && (bridgeCounts[t.id] || 0) < minBridges) return false;
+        return true;
+    });
 
     // Build nodes with random initial positions
+    // F3: include concepts, summary, createdAt, injectionStats
     graphNodes = filtered.map(t => ({
         id: t.id,
         title: t.title || 'Untitled',
@@ -1901,8 +1941,12 @@ function buildGraph(threads, bridges) {
         weight: t.weight || 0.5,
         topics: t.topics || [],
         labels: t.labels || [],
+        concepts: t.concepts || [],
+        summary: t.summary || '',
         origin: t.origin_type || 'prompt',
         lastActive: t.last_active || null,
+        createdAt: t.created_at || null,
+        injectionStats: t.injection_stats || null,
         x: (Math.random() - 0.5) * 600,
         y: (Math.random() - 0.5) * 400,
         vx: 0, vy: 0,
@@ -2176,15 +2220,25 @@ function drawEdgesLayer() {
         const isHighlight = graphSelectedNode &&
             (e.source === graphSelectedNode.id || e.target === graphSelectedNode.id);
 
+        // F8: Bridge status indicators — line dash pattern
+        if (e.status === 'Weak') {
+            ctx.setLineDash([4, 4]);
+        } else if (e.status === 'Invalid') {
+            ctx.setLineDash([2, 2]);
+        } else {
+            ctx.setLineDash([]);
+        }
+
         ctx.beginPath();
         ctx.moveTo(ax, ay);
         ctx.lineTo(bx, by);
         ctx.strokeStyle = isHighlight
             ? GRAPH_COLORS.edge_highlight
-            : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default);
+            : (e.status === 'Invalid' ? '#f44336' : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default));
         ctx.lineWidth = isHighlight ? 2.5 : Math.max(1, e.weight * 3);
-        ctx.globalAlpha = isHighlight ? 1 : 0.55 + e.weight * 0.4;
+        ctx.globalAlpha = isHighlight ? 1 : 0.3 + e.weight * 0.7;
         ctx.stroke();
+        ctx.setLineDash([]);
         ctx.globalAlpha = 1;
 
         if (showLabels || showWeights) {
@@ -2409,34 +2463,111 @@ if (graphCanvas) {
     }, { passive: false });
 }
 
+const ORIGIN_ICONS = { prompt: '\ud83d\udcdd', file_read: '\ud83d\udcc4', file_write: '\u270f\ufe0f', task: '\u2699\ufe0f', fetch: '\ud83c\udf10', response: '\ud83d\udcac', command: '\u2328\ufe0f', split: '\u2702\ufe0f', reactivation: '\ud83d\udd04' };
+
 function showGraphDetail(node) {
     const panel = document.getElementById('graph-detail');
     panel.style.display = 'block';
     document.getElementById('graph-detail-title').textContent = node.title;
-    document.getElementById('graph-detail-meta').innerHTML =
-        `<strong>Status:</strong> ${esc(node.status)}<br>` +
-        `<strong>Weight:</strong> ${node.weight.toFixed(2)}<br>` +
-        `<strong>Importance:</strong> ${node.importance.toFixed(2)}<br>` +
-        `<strong>Topics:</strong> ${node.topics.join(', ') || '-'}`;
 
+    let html = '';
+
+    // Status + origin
+    const originIcon = ORIGIN_ICONS[node.origin] || '\ud83d\udcdd';
+    html += `<span style="color:${GRAPH_COLORS[node.status] || '#6cf'}">\u25cf ${node.status}</span>`;
+    html += ` &nbsp; ${originIcon} ${esc(node.origin)}<br>`;
+
+    // Weight + importance
+    html += `<strong>Weight:</strong> ${node.weight.toFixed(2)} &nbsp; `;
+    html += `<strong>Importance:</strong> ${node.importance.toFixed(2)}<br>`;
+
+    // Age
+    if (node.createdAt || node.lastActive) {
+        const now = Date.now();
+        if (node.createdAt) {
+            const daysCreated = Math.floor((now - new Date(node.createdAt).getTime()) / 86400000);
+            html += `<span style="color:#888">Created ${daysCreated}d ago</span>`;
+        }
+        if (node.lastActive) {
+            const daysActive = Math.floor((now - new Date(node.lastActive).getTime()) / 86400000);
+            html += ` &nbsp; <span style="color:#888">Active ${daysActive}d ago</span>`;
+        }
+        html += '<br>';
+    }
+
+    // Labels as colored chips
+    if (node.labels.length > 0) {
+        html += '<strong>Labels:</strong> ';
+        html += node.labels.map(l =>
+            `<span style="display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;margin:1px 2px;background:${hashToHSL(l)};color:#fff">${esc(l)}</span>`
+        ).join('');
+        html += '<br>';
+    }
+
+    // Topics
+    if (node.topics.length > 0) {
+        html += `<strong>Topics:</strong> <span style="color:#8ad4ff">${esc(node.topics.join(', '))}</span><br>`;
+    }
+
+    // Concepts
+    if (node.concepts.length > 0) {
+        html += `<strong>Concepts:</strong> <span style="color:#b5e86c">${esc(node.concepts.join(', '))}</span><br>`;
+    }
+
+    // Summary
+    if (node.summary) {
+        html += `<div style="margin:4px 0;padding:4px 6px;background:rgba(255,255,255,0.05);border-radius:3px;font-style:italic;color:#ccc">${esc(node.summary)}</div>`;
+    }
+
+    // Injection stats
+    if (node.injectionStats) {
+        const is = node.injectionStats;
+        const injCount = is.injection_count || 0;
+        const usedCount = is.used_count || 0;
+        const ratio = injCount > 0 ? ((usedCount / injCount) * 100).toFixed(0) : '0';
+        html += `<strong>Injection:</strong> ${injCount} inj, ${usedCount} used (${ratio}%)<br>`;
+    }
+
+    // Bridges
     const connected = graphEdges.filter(e => e.source === node.id || e.target === node.id);
     if (connected.length > 0) {
         const nodeMap = {};
         graphNodes.forEach(n => { nodeMap[n.id] = n; });
-        document.getElementById('graph-detail-bridges').innerHTML =
-            `<strong>Bridges (${connected.length}):</strong><br>` +
-            connected.map(e => {
-                const otherId = e.source === node.id ? e.target : e.source;
-                const other = nodeMap[otherId];
-                const otherTitle = other ? other.title.substring(0, 30) : otherId.substring(0, 8);
-                return `<span style="color:${RELATION_COLORS[e.relation] || '#6cf'}">${esc(e.relation)}</span> ` +
-                    `→ ${esc(otherTitle)} (${e.weight.toFixed(2)})`;
-            }).join('<br>');
+        html += `<strong>Bridges (${connected.length}):</strong><br>`;
+        html += connected.map(e => {
+            const otherId = e.source === node.id ? e.target : e.source;
+            const other = nodeMap[otherId];
+            const otherTitle = other ? other.title.substring(0, 30) : otherId.substring(0, 8);
+            const statusTag = e.status !== 'Active' ? ` <span style="color:#888;font-size:10px">[${e.status}]</span>` : '';
+            return `<span style="color:${RELATION_COLORS[e.relation] || '#6cf'}">${esc(e.relation)}</span>${statusTag} ` +
+                `\u2192 ${esc(otherTitle)} (${e.weight.toFixed(2)})`;
+        }).join('<br>');
+        html += '<br>';
+    }
+
+    // Actions
+    html += '<div style="margin-top:8px;display:flex;gap:4px">';
+    if (node.status === 'active') {
+        html += `<button class="btn-sm" onclick="graphThreadAction('${node.id}','suspended')">Suspend</button>`;
     } else {
-        document.getElementById('graph-detail-bridges').innerHTML =
-            '<span style="color:var(--text-dim)">No bridges</span>';
+        html += `<button class="btn-sm" onclick="graphThreadAction('${node.id}','active')">Activate</button>`;
+    }
+    html += '</div>';
+
+    document.getElementById('graph-detail-content').innerHTML = html;
+}
+
+async function graphThreadAction(threadId, newStatus) {
+    try {
+        const agentId = document.getElementById('graph-agent-select')?.value;
+        if (!agentId) return;
+        await invoke('update_thread_status', { projectHash, agentId, threadId, status: newStatus });
+        loadGraph(); // Refresh after status change
+    } catch (e) {
+        console.error('Thread action failed:', e);
     }
 }
+window.graphThreadAction = graphThreadAction;
 
 document.getElementById('btn-graph-detail-close')?.addEventListener('click', () => {
     document.getElementById('graph-detail').style.display = 'none';
@@ -2446,9 +2577,50 @@ document.getElementById('btn-graph-detail-close')?.addEventListener('click', () 
 
 document.getElementById('btn-graph-refresh')?.addEventListener('click', loadGraph);
 document.getElementById('graph-agent-select')?.addEventListener('change', loadGraph);
-document.getElementById('graph-filter')?.addEventListener('change', loadGraph);
 document.getElementById('graph-show-labels')?.addEventListener('change', drawGraph);
 document.getElementById('graph-show-weights')?.addEventListener('change', drawGraph);
+
+// F4: Filter panel toggle + handlers
+document.getElementById('btn-graph-filters-toggle')?.addEventListener('click', () => {
+    const panel = document.getElementById('graph-filters');
+    if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+});
+
+// Status filter change requires reload (may need 'all' status_filter)
+document.querySelectorAll('.graph-filter-status').forEach(cb => {
+    cb.addEventListener('change', () => loadGraph());
+});
+
+// Client-side filters: re-apply without reload
+document.querySelectorAll('.graph-filter-origin').forEach(cb => {
+    cb.addEventListener('change', () => { if (graphRawThreads.length) applyGraphFilters(); });
+});
+
+['graph-filter-imp-min', 'graph-filter-imp-max'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', () => {
+        const min = (parseInt(document.getElementById('graph-filter-imp-min')?.value) || 0) / 100;
+        const max = (parseInt(document.getElementById('graph-filter-imp-max')?.value) || 100) / 100;
+        document.getElementById('graph-filter-imp-label').textContent = `${min.toFixed(2)} \u2014 ${max.toFixed(2)}`;
+        if (graphRawThreads.length) applyGraphFilters();
+    });
+});
+
+document.getElementById('graph-filter-min-bridges')?.addEventListener('change', () => {
+    if (graphRawThreads.length) applyGraphFilters();
+});
+
+document.getElementById('btn-graph-filter-reset')?.addEventListener('click', () => {
+    document.querySelectorAll('.graph-filter-status').forEach(cb => { cb.checked = cb.value === 'active'; });
+    document.querySelectorAll('.graph-filter-origin').forEach(cb => { cb.checked = true; });
+    const impMin = document.getElementById('graph-filter-imp-min');
+    const impMax = document.getElementById('graph-filter-imp-max');
+    if (impMin) impMin.value = 0;
+    if (impMax) impMax.value = 100;
+    document.getElementById('graph-filter-imp-label').textContent = '0.00 \u2014 1.00';
+    const minB = document.getElementById('graph-filter-min-bridges');
+    if (minB) minB.value = 0;
+    loadGraph();
+});
 
 // Legend — adapts to active color mode
 function renderGraphLegend() {
