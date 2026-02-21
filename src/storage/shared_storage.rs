@@ -137,26 +137,33 @@ impl SharedStorage {
             return Self::list_published(conn);
         }
 
-        let mut all = Vec::new();
+        let mut conditions = Vec::new();
+        let mut params_list: Vec<String> = Vec::new();
         for topic in topics {
-            let pattern = format!("%\"{}\"%" , topic);
-            let mut stmt = conn
-                .prepare(
-                    "SELECT * FROM shared_threads WHERE topics LIKE ?1 AND visibility = 'network'",
-                )
-                .map_err(|e| AiError::Storage(e.to_string()))?;
-            let threads: Vec<SharedThread> = stmt
-                .query_map(params![pattern], shared_from_row)
-                .map_err(|e| AiError::Storage(e.to_string()))?
-                .filter_map(|r| r.ok())
-                .collect();
-            for t in threads {
-                if !all.iter().any(|e: &SharedThread| e.shared_id == t.shared_id) {
-                    all.push(t);
-                }
-            }
+            let idx = params_list.len() + 1;
+            params_list.push(format!("%\"{}\"%", topic));
+            conditions.push(format!("LOWER(topics) LIKE ?{idx}"));
         }
-        Ok(all)
+
+        let sql = format!(
+            "SELECT * FROM shared_threads WHERE ({}) AND visibility = 'network'",
+            conditions.join(" OR ")
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_list
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        let threads: Vec<SharedThread> = stmt
+            .query_map(param_refs.as_slice(), shared_from_row)
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(threads)
     }
 
     pub fn get(conn: &Connection, shared_id: &str) -> AiResult<Option<SharedThread>> {
@@ -194,5 +201,36 @@ impl<T> OptionalExt<T> for Result<T, rusqlite::Error> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::setup_shared_db;
+    use crate::time_utils;
+
+    fn insert_shared(conn: &Connection, id: &str, topics: &str, visibility: &str) {
+        let now = time_utils::to_sqlite(&time_utils::now());
+        conn.execute(
+            "INSERT INTO shared_threads (shared_id, source_thread_id, owner_agent, title, topics, visibility, published_at, updated_at)
+             VALUES (?1, ?2, 'agent-a', 'test', ?3, ?4, ?5, ?5)",
+            params![id, format!("src-{id}"), topics, visibility, now],
+        ).unwrap();
+    }
+
+    #[test]
+    fn test_discover_batched() {
+        let conn = setup_shared_db();
+        insert_shared(&conn, "s1", "[\"rust\", \"sqlite\"]", "network");
+        insert_shared(&conn, "s2", "[\"python\"]", "network");
+        insert_shared(&conn, "s3", "[\"rust\"]", "private");
+
+        let results = SharedStorage::discover(&conn, &["rust".into(), "python".into()]).unwrap();
+        // s1 and s2 match topics + network, s3 is private so excluded
+        assert_eq!(results.len(), 2);
+        let ids: Vec<&str> = results.iter().map(|r| r.shared_id.as_str()).collect();
+        assert!(ids.contains(&"s1"));
+        assert!(ids.contains(&"s2"));
     }
 }

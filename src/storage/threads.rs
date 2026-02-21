@@ -380,46 +380,71 @@ impl ThreadStorage {
     }
 
     pub fn search_by_topics(conn: &Connection, topics: &[String]) -> AiResult<Vec<Thread>> {
-        // Use LIKE for each topic in the JSON array
-        let mut all = Vec::new();
-        for topic in topics {
-            let pattern = format!("%\"{}\"%" , topic);
-            let mut stmt = conn
-                .prepare("SELECT * FROM threads WHERE topics LIKE ?1")
-                .map_err(|e| AiError::Storage(e.to_string()))?;
-            let threads: Vec<Thread> = stmt
-                .query_map(params![pattern], thread_from_row)
-                .map_err(|e| AiError::Storage(e.to_string()))?
-                .filter_map(|r| r.ok())
-                .collect();
-            for t in threads {
-                if !all.iter().any(|existing: &Thread| existing.id == t.id) {
-                    all.push(t);
-                }
-            }
+        if topics.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(all)
+
+        let mut conditions = Vec::new();
+        let mut params_list: Vec<String> = Vec::new();
+        for topic in topics {
+            let idx = params_list.len() + 1;
+            params_list.push(format!("%\"{}\"%", topic));
+            conditions.push(format!("LOWER(topics) LIKE ?{idx}"));
+        }
+
+        let sql = format!(
+            "SELECT * FROM threads WHERE {}",
+            conditions.join(" OR ")
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_list
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        let threads: Vec<Thread> = stmt
+            .query_map(param_refs.as_slice(), thread_from_row)
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(threads)
     }
 
     pub fn search_by_labels(conn: &Connection, labels: &[String]) -> AiResult<Vec<Thread>> {
-        let mut all = Vec::new();
-        for label in labels {
-            let pattern = format!("%\"{}\"%" , label);
-            let mut stmt = conn
-                .prepare("SELECT * FROM threads WHERE labels LIKE ?1")
-                .map_err(|e| AiError::Storage(e.to_string()))?;
-            let threads: Vec<Thread> = stmt
-                .query_map(params![pattern], thread_from_row)
-                .map_err(|e| AiError::Storage(e.to_string()))?
-                .filter_map(|r| r.ok())
-                .collect();
-            for t in threads {
-                if !all.iter().any(|existing: &Thread| existing.id == t.id) {
-                    all.push(t);
-                }
-            }
+        if labels.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(all)
+
+        let mut conditions = Vec::new();
+        let mut params_list: Vec<String> = Vec::new();
+        for label in labels {
+            let idx = params_list.len() + 1;
+            params_list.push(format!("%\"{}\"%", label));
+            conditions.push(format!("LOWER(labels) LIKE ?{idx}"));
+        }
+
+        let sql = format!(
+            "SELECT * FROM threads WHERE {}",
+            conditions.join(" OR ")
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_list
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        let threads: Vec<Thread> = stmt
+            .query_map(param_refs.as_slice(), thread_from_row)
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(threads)
     }
 
     /// List all distinct labels across active threads.
@@ -544,14 +569,26 @@ impl ThreadStorage {
     // ── Batch operations ──
 
     pub fn delete_batch(conn: &Connection, ids: &[String]) -> AiResult<usize> {
-        let mut count = 0;
-        for id in ids {
-            let affected = conn
-                .execute("DELETE FROM threads WHERE id = ?1", params![id])
-                .map_err(|e| AiError::Storage(e.to_string()))?;
-            count += affected;
+        if ids.is_empty() {
+            return Ok(0);
         }
-        Ok(count)
+        if ids.len() > 500 {
+            return ids.chunks(500).try_fold(0, |acc, chunk| {
+                let chunk_vec: Vec<String> = chunk.to_vec();
+                Self::delete_batch(conn, &chunk_vec).map(|n| acc + n)
+            });
+        }
+
+        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!("DELETE FROM threads WHERE id IN ({})", placeholders.join(", "));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        let deleted = conn
+            .execute(&sql, param_refs.as_slice())
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+        Ok(deleted)
     }
 
     /// Bulk delete all threads with a given status. Also removes their messages.
@@ -578,18 +615,37 @@ impl ThreadStorage {
         ids: &[String],
         status: ThreadStatus,
     ) -> AiResult<usize> {
-        let now = time_utils::to_sqlite(&time_utils::now());
-        let mut count = 0;
-        for id in ids {
-            let affected = conn
-                .execute(
-                    "UPDATE threads SET status = ?1, last_active = ?2 WHERE id = ?3",
-                    params![status.as_str(), now, id],
-                )
-                .map_err(|e| AiError::Storage(e.to_string()))?;
-            count += affected;
+        if ids.is_empty() {
+            return Ok(0);
         }
-        Ok(count)
+        if ids.len() > 500 {
+            return ids.chunks(500).try_fold(0, |acc, chunk| {
+                let chunk_vec: Vec<String> = chunk.to_vec();
+                Self::update_status_batch(conn, &chunk_vec, status.clone()).map(|n| acc + n)
+            });
+        }
+
+        let now = time_utils::to_sqlite(&time_utils::now());
+        // status = ?1, last_active = ?2, then ids start at ?3
+        let placeholders: Vec<String> = (3..3 + ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "UPDATE threads SET status = ?1, last_active = ?2 WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+        let mut params_list: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        params_list.push(Box::new(status.as_str().to_string()));
+        params_list.push(Box::new(now));
+        for id in ids {
+            params_list.push(Box::new(id.clone()));
+        }
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_list
+            .iter()
+            .map(|b| b.as_ref())
+            .collect();
+        let updated = conn
+            .execute(&sql, param_refs.as_slice())
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+        Ok(updated)
     }
 }
 
@@ -606,5 +662,66 @@ impl<T> OptionalExt<T> for Result<T, rusqlite::Error> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{setup_agent_db, ThreadBuilder};
+
+    #[test]
+    fn test_search_by_topics_batched() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t1").topics(vec!["rust", "sqlite"]).build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t2").topics(vec!["python"]).build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t3").topics(vec!["rust", "async"]).build()).unwrap();
+
+        let results = ThreadStorage::search_by_topics(&conn, &["rust".into(), "python".into()]).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_search_by_labels_batched() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t1").labels(vec!["bug"]).build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t2").labels(vec!["feature"]).build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("t3").labels(vec!["bug", "urgent"]).build()).unwrap();
+
+        let results = ThreadStorage::search_by_labels(&conn, &["bug".into(), "feature".into()]).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_search_by_topics_empty() {
+        let conn = setup_agent_db();
+        let results = ThreadStorage::search_by_topics(&conn, &[]).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_delete_batch_single_query() {
+        let conn = setup_agent_db();
+        for i in 0..5 {
+            ThreadStorage::insert(&conn, &ThreadBuilder::new().id(&format!("t{}", i)).build()).unwrap();
+        }
+        let deleted = ThreadStorage::delete_batch(&conn, &["t0".into(), "t1".into(), "t2".into()]).unwrap();
+        assert_eq!(deleted, 3);
+        assert_eq!(ThreadStorage::count(&conn).unwrap(), 2);
+        // Remaining threads
+        assert!(ThreadStorage::get(&conn, "t3").unwrap().is_some());
+        assert!(ThreadStorage::get(&conn, "t4").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_update_status_batch_single_query() {
+        let conn = setup_agent_db();
+        for i in 0..4 {
+            ThreadStorage::insert(&conn, &ThreadBuilder::new().id(&format!("t{}", i)).build()).unwrap();
+        }
+        let updated = ThreadStorage::update_status_batch(&conn, &["t0".into(), "t1".into()], ThreadStatus::Suspended).unwrap();
+        assert_eq!(updated, 2);
+        assert_eq!(ThreadStorage::count_by_status(&conn, &ThreadStatus::Suspended).unwrap(), 2);
+        assert_eq!(ThreadStorage::count_by_status(&conn, &ThreadStatus::Active).unwrap(), 2);
     }
 }
