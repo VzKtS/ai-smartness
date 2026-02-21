@@ -13,6 +13,8 @@ pub mod windows;
 
 use ai_smartness::AiResult;
 use ai_smartness::registry::heartbeat::Heartbeat;
+use ai_smartness::registry::registry::AgentRegistry;
+use ai_smartness::storage::threads::ThreadStorage;
 use rusqlite::Connection;
 
 /// Shared context passed to every tool handler.
@@ -178,6 +180,22 @@ fn route_plain_tool(
             name
         ))),
     }
+}
+
+// ── Quota guard ──
+
+/// Returns (active_count, quota). Fallback quota = 50 if agent not found.
+pub fn check_thread_quota(ctx: &ToolContext) -> AiResult<(usize, usize)> {
+    let quota = AgentRegistry::get(ctx.registry_conn, ctx.agent_id, ctx.project_hash)
+        .ok()
+        .flatten()
+        .map(|a| a.thread_mode.quota())
+        .unwrap_or(50);
+    let active = ThreadStorage::count_by_status(
+        ctx.agent_conn,
+        &ai_smartness::thread::ThreadStatus::Active,
+    )?;
+    Ok((active, quota))
 }
 
 // ── Parameter extraction helpers ──

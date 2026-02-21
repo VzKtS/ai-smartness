@@ -57,7 +57,12 @@ pub struct BeatState {
     pub last_maintenance_beat: u64,
     #[serde(default)]
     pub last_recall_beat: u64,
+    /// Thread quota (synced from agent's ThreadMode by daemon).
+    #[serde(default = "default_quota")]
+    pub quota: usize,
 }
+
+fn default_quota() -> usize { 50 }
 
 impl Default for BeatState {
     fn default() -> Self {
@@ -81,6 +86,7 @@ impl Default for BeatState {
             last_nudge_beat: 0,
             last_maintenance_beat: 0,
             last_recall_beat: 0,
+            quota: default_quota(),
         }
     }
 }

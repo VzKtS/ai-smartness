@@ -200,7 +200,7 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     }
 
     // Layer 4: Memory retrieval (similar threads — the main layer)
-    match build_memory_context(&conn, &message) {
+    match build_memory_context(&conn, &message, &beat_state) {
         Some(ctx) => {
             let layer = format!("<system-reminder>\n{}\n</system-reminder>", ctx);
             if layer.len() < budget {
@@ -245,7 +245,7 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     }
 
     // Layer 6: HealthGuard — merge candidates, capacity alerts (imposed on agent)
-    match build_healthguard_injection(&conn, &agent_data, project_hash) {
+    match build_healthguard_injection(&conn, &agent_data, project_hash, &beat_state) {
         Some(ctx) => {
             let layer = format!("<system-reminder>\n{}\n</system-reminder>", ctx);
             if layer.len() < budget {
@@ -433,7 +433,7 @@ fn build_pins_context(conn: &Connection, agent_data_dir: &Path) -> Option<String
 }
 
 /// Layer 4: Memory retrieval — find similar threads via Engram 9-validator pipeline.
-fn build_memory_context(conn: &Connection, message: &str) -> Option<String> {
+fn build_memory_context(conn: &Connection, message: &str, beat_state: &BeatState) -> Option<String> {
     let engram = EngramRetriever::new(conn, EngramConfig::default()).ok()?;
     let threads = engram.get_relevant_context(conn, message, 5).ok()?;
     if threads.is_empty() {
@@ -441,13 +441,18 @@ fn build_memory_context(conn: &Connection, message: &str) -> Option<String> {
     }
 
     // Re-injection feedback: update last_active, reactivate, and record injection stats
+    let active_count = ThreadStorage::count(conn).unwrap_or(0);
+    let mut reactivated = 0usize;
     for thread in &threads {
         match thread.status {
             ThreadStatus::Suspended | ThreadStatus::Archived => {
-                // Reactivate: sets Active, weight=max(w, 0.3), last_active=now
-                if let Err(e) = ai_smartness::intelligence::thread_manager::ThreadManager::reactivate_thread(conn, &thread.id) {
+                // Cap reactivations: max 3 per cycle, don't exceed quota
+                if reactivated >= 3 || active_count + reactivated >= beat_state.quota {
+                    tracing::debug!(thread_id = %thread.id, "Re-injection skipped: quota or max reactivations reached");
+                } else if let Err(e) = ai_smartness::intelligence::thread_manager::ThreadManager::reactivate_thread(conn, &thread.id) {
                     tracing::warn!(thread_id = %thread.id, error = %e, "Re-injection reactivation failed");
                 } else {
+                    reactivated += 1;
                     tracing::info!(thread_id = %thread.id, status = %thread.status.as_str(), "Re-injection reactivated thread");
                 }
             }
@@ -734,14 +739,16 @@ fn build_cognitive_nudge(
         return Some(("recall".into(), msg));
     }
 
-    // 2. Capacity warning
-    if active > 40
+    // 2. Capacity warning (80% of quota)
+    let quota = beat_state.quota;
+    if quota > 0
+        && active as f64 / quota as f64 > 0.80
         && (beat_state.last_nudge_type != "capacity"
             || beat_state.last_nudge_beat + cooldown <= beat)
     {
         let msg = format!(
-            "You have {} active threads (high). Review and suspend obsolete ones with ai_thread_suspend.",
-            active
+            "You have {} active threads ({:.0}% of {} quota). Review and suspend obsolete ones with ai_thread_suspend.",
+            active, active as f64 / quota as f64 * 100.0, quota
         );
         return Some(("capacity".into(), msg));
     }
@@ -785,6 +792,7 @@ fn build_healthguard_injection(
     conn: &Connection,
     agent_data_dir: &Path,
     project_hash: &str,
+    beat_state: &BeatState,
 ) -> Option<String> {
     let _ = project_hash; // available for future per-project config
 
@@ -797,11 +805,12 @@ fn build_healthguard_injection(
 
     let hg = HealthGuard::new(guardian.healthguard.clone());
 
-    let findings = hg.analyze(conn, agent_data_dir, &guardian.gossip)?;
+    let quota_override = if beat_state.quota > 0 { Some(beat_state.quota) } else { None };
+    let findings = hg.analyze(conn, agent_data_dir, &guardian.gossip, quota_override)?;
 
     // High/Critical: always injected
     // Medium: injected every 10 beats (beat % 10 == 0)
-    let beat = BeatState::load(agent_data_dir).beat;
+    let beat = beat_state.beat;
     let (high_critical, medium, _low) =
         healthguard::HealthGuard::partition_findings_by_priority(&findings);
 

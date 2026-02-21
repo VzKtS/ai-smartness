@@ -237,6 +237,16 @@ fn worker_loop(
         ensure_quota_cached(&pool, &job.key);
         let thread_quota = pool.get_thread_quota(&job.key);
 
+        // Sync quota into BeatState so MCP tools can read it
+        {
+            let agent_data = path_utils::agent_data_dir(&job.key.project_hash, &job.key.agent_id);
+            let mut beat_state = ai_smartness::storage::beat::BeatState::load(&agent_data);
+            if beat_state.quota != thread_quota {
+                beat_state.quota = thread_quota;
+                beat_state.save(&agent_data);
+            }
+        }
+
         // Load GuardianConfig from config.json (reload per-job, ~1ms)
         let guardian = {
             let cfg_path = path_utils::data_dir().join("config.json");

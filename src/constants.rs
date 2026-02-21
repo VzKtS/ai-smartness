@@ -58,7 +58,6 @@ pub const HEALTH_REPAIR_BUDGET_MS: u64 = 50;
 // === HealthGuard defaults (user-overridable via config.json) ===
 pub const HEALTHGUARD_COOLDOWN_SECS: u64 = 1800;    // 30 min between injections
 pub const HEALTHGUARD_MAX_SUGGESTIONS: usize = 3;
-pub const WARNING_THRESHOLD: usize = 50;             // thread count warning
 
 // === Schema ===
 pub const SCHEMA_VERSION: u32 = 1;

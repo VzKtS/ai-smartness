@@ -77,7 +77,7 @@ pub struct HealthGuardConfig {
     /// Max merge candidates to inject per cycle.
     #[serde(default = "default_max_merge_candidates")]
     pub max_merge_candidates: usize,
-    /// Thread quota for capacity check. Overrides pool default (50).
+    /// Thread quota fallback for capacity check. Overridden by agent's ThreadMode quota.
     #[serde(default = "default_thread_quota")]
     pub thread_quota: usize,
     /// Custom injection prompts (editable from GUI).
@@ -146,6 +146,7 @@ impl HealthGuard {
         conn: &Connection,
         ai_path: &Path,
         gossip_config: &crate::config::GossipConfig,
+        quota_override: Option<usize>,
     ) -> Option<Vec<HealthFinding>> {
         if !self.config.enabled {
             return None;
@@ -158,7 +159,8 @@ impl HealthGuard {
         let mut findings = Vec::new();
 
         // 1. Memory capacity
-        if let Some(f) = checks::check_capacity(conn, &self.config, self.config.thread_quota) {
+        let quota = quota_override.unwrap_or(self.config.thread_quota);
+        if let Some(f) = checks::check_capacity(conn, &self.config, quota) {
             findings.push(f);
         }
 
