@@ -13,8 +13,14 @@ pub fn handle_share(
     let thread_id = required_str(params, "thread_id")?;
     let visibility = optional_str(params, "visibility").unwrap_or_else(|| "network".into());
 
-    let thread = ThreadStorage::get(ctx.agent_conn, &thread_id)?
+    let mut thread = ThreadStorage::get(ctx.agent_conn, &thread_id)?
         .ok_or_else(|| ai_smartness::AiError::ThreadNotFound(thread_id.clone()))?;
+
+    // Tag thread as shared to protect from decay/archive
+    if !thread.tags.contains(&"__shared__".to_string()) {
+        thread.tags.push("__shared__".to_string());
+        ThreadStorage::update(ctx.agent_conn, &thread)?;
+    }
 
     let shared_id = id_gen::message_id();
     let vis = match visibility.as_str() {
@@ -49,7 +55,22 @@ pub fn handle_unshare(
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
     let shared_id = required_str(params, "shared_id")?;
+
+    // Look up source thread before deleting the shared record
+    let shared = SharedStorage::get(ctx.shared_conn, &shared_id)?;
     SharedStorage::unpublish(ctx.shared_conn, &shared_id)?;
+
+    // Remove __shared__ tag if no other shared entries reference this thread
+    if let Some(shared) = shared {
+        let remaining = SharedStorage::count_by_thread_id(ctx.shared_conn, &shared.thread_id)?;
+        if remaining == 0 {
+            if let Ok(Some(mut thread)) = ThreadStorage::get(ctx.agent_conn, &shared.thread_id) {
+                thread.tags.retain(|t| t != "__shared__");
+                let _ = ThreadStorage::update(ctx.agent_conn, &thread);
+            }
+        }
+    }
+
     Ok(serde_json::json!({"unshared": shared_id}))
 }
 

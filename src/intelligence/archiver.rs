@@ -19,6 +19,10 @@ impl Archiver {
         let threshold_hours = cfg.archive_after_hours as i64;
 
         for thread in &suspended {
+            // Skip shared threads — protected from archive
+            if thread.tags.contains(&"__shared__".to_string()) {
+                continue;
+            }
             let hours_inactive = (now - thread.last_active).num_hours();
             if hours_inactive >= threshold_hours {
                 tracing::debug!(thread_id = %thread.id, hours_inactive = hours_inactive, "Archiving stale thread");

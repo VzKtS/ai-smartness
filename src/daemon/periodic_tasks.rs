@@ -154,7 +154,7 @@ pub fn run_prune_loop(
                 };
 
                 let data_dir = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
-                run_prune_cycle(&conn_guard, &guardian, &data_dir);
+                run_prune_cycle(&conn_guard, &guardian, &data_dir, &key.project_hash);
 
                 // Drop conn_guard before backup (which opens its own connection)
                 drop(conn_guard);
@@ -214,8 +214,8 @@ pub fn run_prune_loop(
     tracing::info!("Prune loop stopped");
 }
 
-/// Single prune cycle for one agent — runs all 8 tasks sequentially.
-fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir: &std::path::Path) {
+/// Single prune cycle for one agent — runs all tasks sequentially.
+fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir: &std::path::Path, project_hash: &str) {
     // 1. Gossip v2: concept-based bridge discovery (config-driven limits)
     run_task("gossip", || {
         let gossip = match Gossip::new(conn) {
@@ -342,7 +342,14 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir:
 
     // 8. Backup: moved to run_prune_loop (needs key context)
 
-    // 9. SQLite checkpoint (WAL mode)
+    // 9. Shared orphan cleanup: remove shared_threads entries whose source thread is gone
+    run_task("shared_orphan_cleanup", || {
+        if let Err(e) = cleanup_shared_orphans(conn, project_hash) {
+            tracing::warn!("Shared orphan cleanup error: {}", e);
+        }
+    });
+
+    // 10. SQLite checkpoint (WAL mode)
     run_task("wal_checkpoint", || {
         conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);").ok();
     });
@@ -353,11 +360,10 @@ fn cleanup_stale_work_contexts(conn: &Connection) -> ai_smartness::AiResult<usiz
     let active = ThreadStorage::list_active(conn)?;
     let mut cleaned = 0;
 
-    for mut thread in active {
+    for thread in &active {
         if let Some(ref wc) = thread.work_context {
             if wc.is_expired() {
-                thread.work_context = None;
-                ThreadStorage::update(conn, &thread)?;
+                ThreadStorage::clear_work_context(conn, &thread.id)?;
                 cleaned += 1;
             }
         }
@@ -371,16 +377,45 @@ fn decay_injection_scores(conn: &Connection) -> ai_smartness::AiResult<usize> {
     let active = ThreadStorage::list_active(conn)?;
     let mut decayed = 0;
 
-    for mut thread in active {
+    for thread in &active {
         if let Some(ref stats) = thread.injection_stats {
             if stats.should_decay() {
                 let penalty = stats.compute_relevance_penalty();
-                thread.relevance_score = (thread.relevance_score - penalty).max(0.1);
-                ThreadStorage::update(conn, &thread)?;
+                let new_score = (thread.relevance_score - penalty).max(0.1);
+                ThreadStorage::update_relevance_score(conn, &thread.id, new_score)?;
                 decayed += 1;
             }
         }
     }
 
     Ok(decayed)
+}
+
+/// Remove shared_threads entries whose source thread no longer exists in the agent DB.
+fn cleanup_shared_orphans(agent_conn: &Connection, project_hash: &str) -> ai_smartness::AiResult<usize> {
+    use ai_smartness::storage::database::{self, ConnectionRole};
+    use ai_smartness::storage::shared_storage::SharedStorage;
+
+    let shared_db_path = path_utils::shared_db_path(project_hash);
+    if !shared_db_path.exists() {
+        return Ok(0);
+    }
+    let shared_conn = database::open_connection(&shared_db_path, ConnectionRole::Daemon)?;
+
+    let published = SharedStorage::list_published(&shared_conn)?;
+    let mut cleaned = 0;
+
+    for shared in &published {
+        if ThreadStorage::get(agent_conn, &shared.thread_id)?.is_none() {
+            SharedStorage::unpublish(&shared_conn, &shared.shared_id)?;
+            tracing::debug!(shared_id = %shared.shared_id, thread_id = %shared.thread_id, "Unpublished orphan shared thread");
+            cleaned += 1;
+        }
+    }
+
+    if cleaned > 0 {
+        tracing::info!(cleaned, "Shared orphan cleanup complete");
+    }
+
+    Ok(cleaned)
 }

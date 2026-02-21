@@ -179,6 +179,17 @@ impl SharedStorage {
         Ok(result)
     }
 
+    /// Count shared entries for a given source thread.
+    pub fn count_by_thread_id(conn: &Connection, thread_id: &str) -> AiResult<usize> {
+        let c: usize = conn.query_row(
+            "SELECT COUNT(*) FROM shared_threads WHERE source_thread_id = ?1",
+            params![thread_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| AiError::Storage(e.to_string()))?;
+        Ok(c)
+    }
+
     pub fn update_sync(conn: &Connection, shared_id: &str, agent_id: &str) -> AiResult<()> {
         let now = time_utils::to_sqlite(&time_utils::now());
         conn.execute(

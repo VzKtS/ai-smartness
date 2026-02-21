@@ -400,6 +400,26 @@ impl ThreadStorage {
         Ok(())
     }
 
+    /// Targeted update: clear work_context only (avoids full-row rewrite).
+    pub fn clear_work_context(conn: &Connection, id: &str) -> AiResult<()> {
+        conn.execute(
+            "UPDATE threads SET work_context = NULL WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| AiError::Storage(format!("Clear work_context failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Targeted update: set relevance_score only (avoids full-row rewrite).
+    pub fn update_relevance_score(conn: &Connection, id: &str, score: f64) -> AiResult<()> {
+        conn.execute(
+            "UPDATE threads SET relevance_score = ?1 WHERE id = ?2",
+            params![score, id],
+        )
+        .map_err(|e| AiError::Storage(format!("Update relevance_score failed: {}", e)))?;
+        Ok(())
+    }
+
     pub fn search_by_topics(conn: &Connection, topics: &[String]) -> AiResult<Vec<Thread>> {
         if topics.is_empty() {
             return Ok(Vec::new());

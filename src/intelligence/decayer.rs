@@ -25,6 +25,11 @@ impl Decayer {
         // 1. Decay thread weights
         let active = ThreadStorage::list_active(conn)?;
         for thread in &active {
+            // Skip shared threads — protected from decay
+            if thread.tags.contains(&"__shared__".to_string()) {
+                continue;
+            }
+
             let age_days = (now - thread.last_active).num_hours() as f64 / 24.0;
             if age_days <= 0.0 {
                 continue;
@@ -32,8 +37,14 @@ impl Decayer {
 
             let base_half_life = effective_half_life(thread.importance, cfg);
             // Orphan acceleration: threads not re-injected decay faster.
-            // Every orphan_halving_hours without contact halves the effective half-life.
-            let orphan_hours = age_days * 24.0;
+            // Use last_injected_at (if available) instead of last_active for orphan time,
+            // since last_active updates on any interaction but injection is what matters.
+            let orphan_ref = thread.injection_stats.as_ref()
+                .and_then(|s| s.last_injected_at.as_ref())
+                .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            let orphan_since = orphan_ref.unwrap_or(thread.last_active);
+            let orphan_hours = (now - orphan_since).num_hours() as f64;
             let orphan_factor = 0.5f64
                 .powf(orphan_hours / cfg.orphan_halving_hours)
                 .max(cfg.orphan_min_half_life_factor);
