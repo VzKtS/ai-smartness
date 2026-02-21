@@ -30,6 +30,9 @@ pub fn handle_agent_list(
                 "is_alive": alive,
                 "team": a.team,
                 "coordination_mode": a.coordination_mode.as_str(),
+                "report_to": a.report_to,
+                "custom_role": a.custom_role,
+                "workspace_path": a.workspace_path,
             })
         })
         .collect();
@@ -89,6 +92,9 @@ pub fn handle_agent_status(
             "team": agent.team,
             "description": agent.description,
             "current_activity": agent.current_activity,
+            "report_to": agent.report_to,
+            "custom_role": agent.custom_role,
+            "workspace_path": agent.workspace_path,
         },
         "is_alive": alive,
         "subordinates": subordinates.iter().map(|a| serde_json::json!({"id": a.id, "name": a.name})).collect::<Vec<_>>(),
@@ -132,6 +138,9 @@ pub fn handle_agent_configure(
         specializations: None,
         capabilities: None,
         thread_mode: optional_str(params, "thread_mode"),
+        report_to: optional_str(params, "report_to"),
+        custom_role: optional_str(params, "custom_role"),
+        workspace_path: optional_str(params, "workspace_path"),
     };
 
     AgentRegistry::update(ctx.registry_conn, &agent_id, &project_hash, &update)?;

@@ -404,5 +404,15 @@ pub fn migrate_registry_db(conn: &Connection) -> AiResult<()> {
         set_schema_version(conn, 3)?;
     }
 
+    // V4: add report_to, custom_role, workspace_path columns to agents
+    if version < 4 {
+        conn.execute_batch(
+            "ALTER TABLE agents ADD COLUMN report_to TEXT DEFAULT '';
+             ALTER TABLE agents ADD COLUMN custom_role TEXT DEFAULT '';
+             ALTER TABLE agents ADD COLUMN workspace_path TEXT DEFAULT '';"
+        ).map_err(|e| AiError::Storage(format!("Registry DB V4 migration failed: {}", e)))?;
+        set_schema_version(conn, 4)?;
+    }
+
     Ok(())
 }

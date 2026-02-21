@@ -46,6 +46,18 @@ pub(crate) fn agent_from_row(row: &Row) -> rusqlite::Result<Agent> {
             .ok()
             .flatten()
             .unwrap_or_default(),
+        report_to: row.get::<_, Option<String>>("report_to")
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+        custom_role: row.get::<_, Option<String>>("custom_role")
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+        workspace_path: row.get::<_, Option<String>>("workspace_path")
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
     })
 }
 
@@ -61,8 +73,9 @@ impl AgentRegistry {
             "INSERT OR REPLACE INTO agents (
                 id, project_hash, name, description, role, capabilities,
                 status, last_seen, registered_at,
-                supervisor_id, coordination_mode, team, specializations, thread_mode
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                supervisor_id, coordination_mode, team, specializations, thread_mode,
+                report_to, custom_role, workspace_path
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 agent.id,
                 agent.project_hash,
@@ -78,6 +91,9 @@ impl AgentRegistry {
                 agent.team,
                 serde_json::to_string(&agent.specializations).unwrap_or_else(|_| "[]".into()),
                 agent.thread_mode.as_str(),
+                agent.report_to,
+                agent.custom_role,
+                agent.workspace_path,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Register agent failed: {}", e)))?;
@@ -455,6 +471,18 @@ impl AgentRegistry {
             values.push(Box::new(mode.clone()));
             sets.push(format!("thread_mode = ?{}", values.len()));
         }
+        if let Some(ref report_to) = updates.report_to {
+            values.push(Box::new(report_to.clone()));
+            sets.push(format!("report_to = ?{}", values.len()));
+        }
+        if let Some(ref custom_role) = updates.custom_role {
+            values.push(Box::new(custom_role.clone()));
+            sets.push(format!("custom_role = ?{}", values.len()));
+        }
+        if let Some(ref wp) = updates.workspace_path {
+            values.push(Box::new(wp.clone()));
+            sets.push(format!("workspace_path = ?{}", values.len()));
+        }
 
         if sets.is_empty() {
             return Ok(());
@@ -483,6 +511,41 @@ impl AgentRegistry {
         conn.execute(&sql, params_ref.as_slice())
             .map_err(|e| AiError::Storage(format!("Update agent failed: {}", e)))?;
 
+        Ok(())
+    }
+
+    /// Update topology fields (report_to, custom_role) for an agent.
+    pub fn update_topology(
+        conn: &Connection,
+        agent_id: &str,
+        project_hash: &str,
+        report_to: Option<String>,
+        custom_role: Option<String>,
+    ) -> AiResult<()> {
+        let updates = AgentUpdate {
+            name: None,
+            role: None,
+            description: None,
+            supervisor_id: None,
+            coordination_mode: None,
+            team: None,
+            specializations: None,
+            capabilities: None,
+            thread_mode: None,
+            report_to,
+            custom_role,
+            workspace_path: None,
+        };
+        Self::update(conn, agent_id, project_hash, &updates)
+    }
+
+    /// Set the workspace_path for an agent (worktree isolation).
+    pub fn update_workspace(conn: &Connection, agent_id: &str, project_hash: &str, workspace_path: &str) -> AiResult<()> {
+        conn.execute(
+            "UPDATE agents SET workspace_path = ?1 WHERE id = ?2 AND project_hash = ?3",
+            params![workspace_path, agent_id, project_hash],
+        )
+        .map_err(|e| AiError::Storage(format!("Update workspace_path failed: {}", e)))?;
         Ok(())
     }
 
@@ -681,6 +744,9 @@ pub struct AgentUpdate {
     pub specializations: Option<Vec<String>>,
     pub capabilities: Option<Vec<String>>,
     pub thread_mode: Option<String>,
+    pub report_to: Option<String>,
+    pub custom_role: Option<String>,
+    pub workspace_path: Option<String>,
 }
 
 /// Hierarchy tree node.

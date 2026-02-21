@@ -903,6 +903,9 @@ pub fn add_agent(
             specializations: None,
             capabilities: None,
             thread_mode: thread_mode.clone(),
+            report_to: None,
+            custom_role: None,
+            workspace_path: None,
         };
         AgentRegistry::update(&reg_conn, &agent_id, &project_hash, &update)
             .map_err(|e| e.to_string())?;
@@ -953,6 +956,9 @@ pub fn add_agent(
             .and_then(|s| s.parse().ok())
             .unwrap_or(ai_smartness::agent::ThreadMode::Normal),
         current_activity: String::new(),
+        report_to: String::new(),
+        custom_role: String::new(),
+        workspace_path: String::new(),
     };
 
     AgentRegistry::register(&reg_conn, &agent)
@@ -1046,6 +1052,9 @@ pub fn update_agent(
         specializations,
         capabilities,
         thread_mode: thread_mode.clone(),
+        report_to: None,
+        custom_role: None,
+        workspace_path: None,
     };
 
     AgentRegistry::update(&reg_conn, &agent_id, &project_hash, &update)

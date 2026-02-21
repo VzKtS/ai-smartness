@@ -53,6 +53,9 @@ pub fn add(
             specializations: None,
             capabilities: None,
             thread_mode: None,
+            report_to: None,
+            custom_role: None,
+            workspace_path: None,
         };
         AgentRegistry::update(&reg_conn, id, &hash, &update)
             .context("Failed to update renamed agent")?;
@@ -95,6 +98,9 @@ pub fn add(
         specializations: vec![],
         thread_mode: ai_smartness::agent::ThreadMode::Normal,
         current_activity: String::new(),
+        report_to: String::new(),
+        custom_role: String::new(),
+        workspace_path: String::new(),
     };
 
     AgentRegistry::register(&reg_conn, &agent)

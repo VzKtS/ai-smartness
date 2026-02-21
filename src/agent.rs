@@ -169,6 +169,13 @@ pub struct Agent {
 
     // --- Activity tracking ---
     pub current_activity: String,
+
+    // --- Topology ---
+    pub report_to: String,
+    pub custom_role: String,
+
+    // --- Workspace isolation ---
+    pub workspace_path: String,
 }
 
 // ── Role Templates ──
