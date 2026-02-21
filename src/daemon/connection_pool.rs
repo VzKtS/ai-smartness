@@ -169,6 +169,12 @@ impl ConnectionPool {
         }
     }
 
+    /// Force-refresh the thread quota from the registry (used by prune cycle).
+    /// Unlike the lazy `set_thread_quota`, this always writes regardless of initialization state.
+    pub fn refresh_quota(&self, key: &AgentKey, quota: usize) {
+        self.set_thread_quota(key, quota);
+    }
+
     /// Check if the thread quota has been loaded from the registry for this agent.
     pub fn is_quota_initialized(&self, key: &AgentKey) -> bool {
         self.pool.lock()

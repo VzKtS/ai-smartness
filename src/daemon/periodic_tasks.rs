@@ -15,9 +15,11 @@ use ai_smartness::intelligence::archiver::Archiver;
 use ai_smartness::intelligence::decayer::Decayer;
 use ai_smartness::intelligence::gossip::Gossip;
 use ai_smartness::intelligence::merge_evaluator::MergeEvaluator;
+use ai_smartness::registry::registry::AgentRegistry;
 use ai_smartness::storage::backup::{BackupConfig, BackupManager};
 use ai_smartness::storage::beat::BeatState;
 use ai_smartness::storage::cognitive_inbox::CognitiveInbox;
+use ai_smartness::storage::database::{self, ConnectionRole};
 use ai_smartness::storage::path_utils;
 use ai_smartness::storage::threads::ThreadStorage;
 use rusqlite::Connection;
@@ -89,6 +91,29 @@ pub fn run_prune_loop(
                         beat = beat.beat,
                         "Beat incremented"
                     );
+                });
+
+                // 0b. Quota sync from registry → BeatState + pool cache
+                run_task("quota_sync", || {
+                    let reg_path = path_utils::registry_db_path();
+                    if let Ok(reg_conn) = database::open_connection(&reg_path, ConnectionRole::Daemon) {
+                        if let Ok(Some(agent)) = AgentRegistry::get(&reg_conn, &key.agent_id, &key.project_hash) {
+                            let quota = agent.thread_mode.quota();
+                            let data_dir = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
+                            let mut beat = BeatState::load(&data_dir);
+                            if beat.quota != quota {
+                                tracing::info!(
+                                    agent = %key.agent_id,
+                                    old_quota = beat.quota,
+                                    new_quota = quota,
+                                    "Quota sync: registry → beat.json"
+                                );
+                                beat.quota = quota;
+                                beat.save(&data_dir);
+                            }
+                            pool.refresh_quota(key, quota);
+                        }
+                    }
                 });
 
                 // Get connection for this agent
