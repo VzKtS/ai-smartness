@@ -2,6 +2,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum AiError {
+    /// Business-logic storage errors (not found, invalid state, etc.)
     #[error("Storage error: {0}")]
     Storage(String),
 
@@ -37,6 +38,14 @@ pub enum AiError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Raw database errors from rusqlite
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+
+    /// Date parse errors from chrono
+    #[error("Date parse error: {0}")]
+    DateParse(#[from] chrono::ParseError),
 }
 
 pub type AiResult<T> = Result<T, AiError>;
