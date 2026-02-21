@@ -153,7 +153,8 @@ pub fn run_prune_loop(
                         .unwrap_or_default()
                 };
 
-                run_prune_cycle(&conn_guard, &guardian);
+                let data_dir = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
+                run_prune_cycle(&conn_guard, &guardian, &data_dir);
 
                 // Drop conn_guard before backup (which opens its own connection)
                 drop(conn_guard);
@@ -214,7 +215,7 @@ pub fn run_prune_loop(
 }
 
 /// Single prune cycle for one agent — runs all 8 tasks sequentially.
-fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig) {
+fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir: &std::path::Path) {
     // 1. Gossip v2: concept-based bridge discovery (config-driven limits)
     run_task("gossip", || {
         let gossip = match Gossip::new(conn) {
@@ -314,9 +315,34 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig) {
         }
     });
 
-    // 7. Backup: moved to run_prune_loop (needs key context)
+    // 7. Concept backfill — populate empty concepts from topics (1x per day, ~288 beats)
+    {
+        let beat_state = BeatState::load(agent_data_dir);
+        if beat_state.beat % 288 == 0 {
+            run_task("concept_backfill", || {
+                let threads = ThreadStorage::list_active(conn).unwrap_or_default();
+                let mut count = 0usize;
+                for thread in threads.iter()
+                    .filter(|t| t.concepts.is_empty())
+                    .take(10)
+                {
+                    if !thread.topics.is_empty() {
+                        let concepts_json = serde_json::to_string(&thread.topics)
+                            .unwrap_or_default();
+                        ThreadStorage::update_concepts(conn, &thread.id, &concepts_json).ok();
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    tracing::info!(count, "Concept backfill: populated {} threads", count);
+                }
+            });
+        }
+    }
 
-    // 8. SQLite checkpoint (WAL mode)
+    // 8. Backup: moved to run_prune_loop (needs key context)
+
+    // 9. SQLite checkpoint (WAL mode)
     run_task("wal_checkpoint", || {
         conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);").ok();
     });

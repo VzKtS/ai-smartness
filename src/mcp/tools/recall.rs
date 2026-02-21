@@ -1,7 +1,9 @@
 use ai_smartness::AiResult;
 use ai_smartness::config::EngramConfig;
 use ai_smartness::intelligence::engram_retriever::EngramRetriever;
+use ai_smartness::storage::beat::BeatState;
 use ai_smartness::storage::bridges::BridgeStorage;
+use ai_smartness::storage::path_utils;
 
 use super::{optional_str, required_str, ToolContext};
 
@@ -52,6 +54,12 @@ pub fn handle_recall(
             })
         })
         .collect();
+
+    // Update last_recall_beat in beat state
+    let agent_data = path_utils::agent_data_dir(ctx.project_hash, ctx.agent_id);
+    let mut beat_state = BeatState::load(&agent_data);
+    beat_state.last_recall_beat = beat_state.beat;
+    beat_state.save(&agent_data);
 
     Ok(serde_json::json!({
         "threads": threads_json,

@@ -54,12 +54,52 @@ pub fn generate_synthesis(project_hash: &str, agent_id: &str) -> Option<String> 
         })
         .collect();
 
+    // Key insights: threads with high importance
+    let mut key_insights: Vec<String> = threads.iter()
+        .filter(|t| t.importance >= 0.7)
+        .take(5)
+        .map(|t| {
+            let summary_preview = t.summary.as_deref()
+                .unwrap_or("")
+                .chars().take(100).collect::<String>();
+            format!("[importance={:.1}] {}: {}", t.importance, t.title, summary_preview)
+        })
+        .collect();
+
+    // Include active pins as insights
+    let agent_data = path_utils::agent_data_dir(project_hash, agent_id);
+    let pins_path = agent_data.join("pins.json");
+    if let Ok(pins_content) = std::fs::read_to_string(&pins_path) {
+        if let Ok(pins) = serde_json::from_str::<serde_json::Value>(&pins_content) {
+            if let Some(pin_array) = pins.get("pins").and_then(|p| p.as_array()) {
+                for pin in pin_array.iter().take(3) {
+                    if let Some(content) = pin.get("content").and_then(|c| c.as_str()) {
+                        let preview: String = content.chars().take(100).collect();
+                        key_insights.push(format!("[pin] {}", preview));
+                    }
+                }
+            }
+        }
+    }
+
+    // Open questions: threads tagged __focus__ (active investigation topics)
+    let open_questions: Vec<String> = threads.iter()
+        .filter(|t| t.tags.iter().any(|tag| tag.contains("__focus__")))
+        .take(5)
+        .map(|t| {
+            let summary_preview = t.summary.as_deref()
+                .unwrap_or("(no summary)")
+                .chars().take(100).collect::<String>();
+            format!("{}: {}", t.title, summary_preview)
+        })
+        .collect();
+
     let synthesis = SynthesisReport {
         timestamp: chrono::Utc::now().to_rfc3339(),
         agent_id: agent_id.to_string(),
         active_work,
-        key_insights: Vec::new(),
-        open_questions: Vec::new(),
+        key_insights,
+        open_questions,
     };
 
     // Save to synthesis dir
@@ -96,6 +136,20 @@ fn format_for_injection(synthesis: &SynthesisReport) -> String {
                 out.push_str(&format!(": {}", &s[..s.len().min(100)]));
             }
             out.push('\n');
+        }
+    }
+
+    if !synthesis.key_insights.is_empty() {
+        out.push_str("\nKey insights:\n");
+        for insight in &synthesis.key_insights {
+            out.push_str(&format!("- {}\n", insight));
+        }
+    }
+
+    if !synthesis.open_questions.is_empty() {
+        out.push_str("\nOpen investigations:\n");
+        for q in &synthesis.open_questions {
+            out.push_str(&format!("- {}\n", q));
         }
     }
 
