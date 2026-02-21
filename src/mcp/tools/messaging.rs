@@ -162,9 +162,13 @@ pub fn handle_msg_ack(
     let thread_id = optional_str(params, "thread_id");
     let msg_ref = optional_str(params, "msg_ref");
 
-    let ack_id = thread_id
-        .or(msg_ref)
-        .ok_or_else(|| ai_smartness::AiError::InvalidInput("Need thread_id or msg_ref".into()))?;
+    let ack_id = match thread_id.or(msg_ref) {
+        Some(id) => id,
+        None => {
+            CognitiveInbox::ack_latest(ctx.agent_conn, ctx.agent_id)?
+                .ok_or_else(|| ai_smartness::AiError::InvalidInput("No unacked messages found".into()))?
+        }
+    };
 
     CognitiveInbox::ack(ctx.agent_conn, &ack_id)?;
     Ok(serde_json::json!({"acked": ack_id}))
