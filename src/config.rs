@@ -1504,13 +1504,228 @@ impl GuardianConfig {
             }
         }
 
+        gc.validate();
         gc
     }
+
+    /// Validate and clamp all config values to sensible ranges.
+    /// Logs warnings for any out-of-range values.
+    pub fn validate(&mut self) {
+        self.validate_thresholds();
+        self.validate_decay();
+        self.validate_gossip();
+        self.validate_engram();
+        self.validate_thread_matching();
+        self.validate_embeddings();
+    }
+
+    fn validate_thresholds(&mut self) {
+        clamp_01(&mut self.decay.thread_suspend_threshold, "decay.thread_suspend_threshold");
+        clamp_01(&mut self.decay.bridge_death_threshold, "decay.bridge_death_threshold");
+        clamp_01(&mut self.decay.thread_use_boost, "decay.thread_use_boost");
+        clamp_01(&mut self.decay.bridge_use_boost, "decay.bridge_use_boost");
+        clamp_01(&mut self.decay.orphan_min_half_life_factor, "decay.orphan_min_half_life_factor");
+    }
+
+    fn validate_decay(&mut self) {
+        // Positive strict
+        if self.decay.thread_min_half_life <= 0.0 {
+            tracing::warn!(field = "decay.thread_min_half_life", "Must be > 0, resetting to default");
+            self.decay.thread_min_half_life = 0.75;
+        }
+        if self.decay.thread_max_half_life <= 0.0 {
+            tracing::warn!(field = "decay.thread_max_half_life", "Must be > 0, resetting to default");
+            self.decay.thread_max_half_life = 7.0;
+        }
+        if self.decay.bridge_half_life <= 0.0 {
+            tracing::warn!(field = "decay.bridge_half_life", "Must be > 0, resetting to default");
+            self.decay.bridge_half_life = 2.0;
+        }
+        if self.decay.archive_after_hours <= 0.0 {
+            tracing::warn!(field = "decay.archive_after_hours", "Must be > 0, resetting to default");
+            self.decay.archive_after_hours = 72.0;
+        }
+        if self.decay.orphan_halving_hours <= 0.0 {
+            tracing::warn!(field = "decay.orphan_halving_hours", "Must be > 0, resetting to default");
+            self.decay.orphan_halving_hours = 6.0;
+        }
+        // Ordering: min < max
+        if self.decay.thread_min_half_life >= self.decay.thread_max_half_life {
+            tracing::warn!(
+                min = self.decay.thread_min_half_life,
+                max = self.decay.thread_max_half_life,
+                "decay.thread_min_half_life >= thread_max_half_life — swapping"
+            );
+            std::mem::swap(&mut self.decay.thread_min_half_life, &mut self.decay.thread_max_half_life);
+        }
+    }
+
+    fn validate_gossip(&mut self) {
+        clamp_01(&mut self.gossip.concept_min_bridge_weight, "gossip.concept_min_bridge_weight");
+        clamp_01(&mut self.gossip.merge_evaluation_threshold, "gossip.merge_evaluation_threshold");
+        clamp_01(&mut self.gossip.merge_auto_threshold, "gossip.merge_auto_threshold");
+        clamp_01(&mut self.gossip.propagation_decay_factor, "gossip.propagation_decay_factor");
+        clamp_01(&mut self.gossip.propagation_min_weight, "gossip.propagation_min_weight");
+
+        // Positive strict
+        if self.gossip.min_bridges_per_thread == 0 {
+            tracing::warn!(field = "gossip.min_bridges_per_thread", "Must be > 0, resetting to default");
+            self.gossip.min_bridges_per_thread = 3;
+        }
+
+        // target_bridge_ratio clamp
+        if self.gossip.target_bridge_ratio < 0.5 || self.gossip.target_bridge_ratio > 20.0 {
+            tracing::warn!(
+                value = self.gossip.target_bridge_ratio,
+                "gossip.target_bridge_ratio out of [0.5, 20.0] — clamping"
+            );
+            self.gossip.target_bridge_ratio = self.gossip.target_bridge_ratio.clamp(0.5, 20.0);
+        }
+
+        // Ordering: min_bridges < max_bridges
+        if self.gossip.min_bridges_per_thread >= self.gossip.max_bridges_per_thread {
+            tracing::warn!(
+                min = self.gossip.min_bridges_per_thread,
+                max = self.gossip.max_bridges_per_thread,
+                "gossip.min_bridges >= max_bridges — swapping"
+            );
+            std::mem::swap(&mut self.gossip.min_bridges_per_thread, &mut self.gossip.max_bridges_per_thread);
+        }
+
+        // Ordering: merge_evaluation < merge_auto
+        if self.gossip.merge_evaluation_threshold >= self.gossip.merge_auto_threshold {
+            tracing::warn!(
+                eval = self.gossip.merge_evaluation_threshold,
+                auto = self.gossip.merge_auto_threshold,
+                "gossip.merge_evaluation >= merge_auto — swapping"
+            );
+            std::mem::swap(&mut self.gossip.merge_evaluation_threshold, &mut self.gossip.merge_auto_threshold);
+        }
+    }
+
+    fn validate_engram(&mut self) {
+        // Votes in [1..9]
+        self.engram.strong_inject_min_votes = self.engram.strong_inject_min_votes.clamp(1, 9);
+        self.engram.weak_inject_min_votes = self.engram.weak_inject_min_votes.clamp(1, 9);
+
+        // weak < strong
+        if self.engram.weak_inject_min_votes >= self.engram.strong_inject_min_votes {
+            tracing::warn!(
+                weak = self.engram.weak_inject_min_votes,
+                strong = self.engram.strong_inject_min_votes,
+                "engram.weak_inject >= strong_inject — swapping"
+            );
+            std::mem::swap(&mut self.engram.weak_inject_min_votes, &mut self.engram.strong_inject_min_votes);
+        }
+    }
+
+    fn validate_thread_matching(&mut self) {
+        clamp_01(&mut self.thread_matching.continue_threshold, "thread_matching.continue_threshold");
+        clamp_01(&mut self.thread_matching.reactivate_threshold, "thread_matching.reactivate_threshold");
+        clamp_01(&mut self.thread_matching.capacity_suspend_threshold, "thread_matching.capacity_suspend_threshold");
+
+        // Ordering: continue < reactivate < capacity_suspend
+        if self.thread_matching.continue_threshold >= self.thread_matching.reactivate_threshold {
+            tracing::warn!(
+                cont = self.thread_matching.continue_threshold,
+                react = self.thread_matching.reactivate_threshold,
+                "thread_matching.continue >= reactivate — swapping"
+            );
+            std::mem::swap(
+                &mut self.thread_matching.continue_threshold,
+                &mut self.thread_matching.reactivate_threshold,
+            );
+        }
+        if self.thread_matching.reactivate_threshold >= self.thread_matching.capacity_suspend_threshold {
+            tracing::warn!(
+                react = self.thread_matching.reactivate_threshold,
+                cap = self.thread_matching.capacity_suspend_threshold,
+                "thread_matching.reactivate >= capacity_suspend — swapping"
+            );
+            std::mem::swap(
+                &mut self.thread_matching.reactivate_threshold,
+                &mut self.thread_matching.capacity_suspend_threshold,
+            );
+        }
+    }
+
+    fn validate_embeddings(&mut self) {
+        validate_embedding(&mut self.thread_matching.embedding, "thread_matching");
+        validate_embedding(&mut self.gossip.embedding, "gossip");
+        validate_embedding(&mut self.recall.embedding, "recall");
+        validate_embedding(&mut self.engram.embedding, "engram");
+    }
+}
+
+fn clamp_01(val: &mut f64, name: &str) {
+    if *val < 0.0 || *val > 1.0 {
+        tracing::warn!(field = name, value = *val, "Config out of range [0,1] — clamping");
+        *val = val.clamp(0.0, 1.0);
+    }
+}
+
+fn validate_embedding(cfg: &mut EmbeddingSystemConfig, context: &str) {
+    clamp_01(&mut cfg.onnx_threshold, &format!("{}.onnx_threshold", context));
+    clamp_01(&mut cfg.tfidf_threshold, &format!("{}.tfidf_threshold", context));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_valid_config() {
+        let mut gc = GuardianConfig::default();
+        gc.validate();
+        // Defaults should pass validation unchanged
+        assert_eq!(gc.decay.thread_suspend_threshold, 0.1);
+        assert_eq!(gc.decay.thread_min_half_life, 0.75);
+        assert_eq!(gc.decay.thread_max_half_life, 7.0);
+        assert_eq!(gc.engram.strong_inject_min_votes, 5);
+        assert_eq!(gc.engram.weak_inject_min_votes, 3);
+        assert_eq!(gc.thread_matching.continue_threshold, 0.25);
+    }
+
+    #[test]
+    fn test_validate_threshold_out_of_range() {
+        let mut gc = GuardianConfig::default();
+        gc.decay.thread_suspend_threshold = 1.5;
+        gc.decay.bridge_death_threshold = -0.3;
+        gc.gossip.concept_min_bridge_weight = 2.0;
+        gc.validate();
+        assert_eq!(gc.decay.thread_suspend_threshold, 1.0);
+        assert_eq!(gc.decay.bridge_death_threshold, 0.0);
+        assert_eq!(gc.gossip.concept_min_bridge_weight, 1.0);
+    }
+
+    #[test]
+    fn test_validate_min_greater_than_max() {
+        let mut gc = GuardianConfig::default();
+        // Invert min/max half-life
+        gc.decay.thread_min_half_life = 10.0;
+        gc.decay.thread_max_half_life = 0.5;
+        // Invert continue/reactivate
+        gc.thread_matching.continue_threshold = 0.80;
+        gc.thread_matching.reactivate_threshold = 0.20;
+        gc.validate();
+        // Should be swapped
+        assert!(gc.decay.thread_min_half_life < gc.decay.thread_max_half_life);
+        assert!(gc.thread_matching.continue_threshold < gc.thread_matching.reactivate_threshold);
+    }
+
+    #[test]
+    fn test_validate_engram_votes() {
+        let mut gc = GuardianConfig::default();
+        // Invert weak/strong
+        gc.engram.weak_inject_min_votes = 7;
+        gc.engram.strong_inject_min_votes = 2;
+        gc.validate();
+        assert!(gc.engram.weak_inject_min_votes < gc.engram.strong_inject_min_votes);
+        // Out of range
+        gc.engram.strong_inject_min_votes = 20;
+        gc.validate();
+        assert!(gc.engram.strong_inject_min_votes <= 9);
+    }
 
     #[test]
     fn test_guardian_config_default_values() {
