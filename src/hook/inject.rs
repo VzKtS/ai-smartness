@@ -148,6 +148,23 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
         None => tracing::debug!("Layer 1.5: no session context"),
     }
 
+    // Layer 1.7: Cognitive nudge (conditional maintenance reminder)
+    if let Some((nudge_type, nudge_msg)) = build_cognitive_nudge(&conn, &beat_state) {
+        let truncated = if nudge_msg.len() > 300 { &nudge_msg[..300] } else { &nudge_msg };
+        let layer = format!("<system-reminder>\nCognitive maintenance: {}\n</system-reminder>", truncated);
+        if layer.len() < budget {
+            budget -= layer.len();
+            injections.push(layer);
+            beat_state.last_nudge_type = nudge_type.clone();
+            beat_state.last_nudge_beat = beat_state.beat;
+            if nudge_type == "maintenance" {
+                beat_state.last_maintenance_beat = beat_state.beat;
+            }
+            beat_state.save(&agent_data);
+            tracing::info!(nudge_type = %nudge_type, "Layer 1.7: Cognitive nudge injected");
+        }
+    }
+
     // Layer 2: Cognitive inbox
     // Only consume (mark read) on wake prompts — peek on normal prompts
     // so the message stays pending for the actual wake delivery.
@@ -577,7 +594,39 @@ Inter-Agent Communication:
   - ai_inbox_read: Check your cognitive inbox for pending messages
 
 Your memory persists between sessions. The system automatically captures your work \
-and organizes it into threads. Use ai_search or ai_recall to find past work context.";
+and organizes it into threads. Use ai_search or ai_recall to find past work context.
+
+## Cognitive Autonomy Rules
+
+You are responsible for maintaining your own memory. This is not optional.
+
+### Thread Management
+- When you encounter an important decision, pattern, or insight: call ai_thread_create
+- When you notice threads with overlapping content: call ai_merge
+- When a thread is no longer relevant: call ai_thread_suspend
+
+### Context Enrichment
+- At the START of complex tasks: call ai_recall with relevant keywords
+- After completing a task: rate thread importance with ai_rate_importance
+- Periodically: call ai_suggestions to check for maintenance tasks
+
+### Labeling & Organization
+- Always label threads you create (ai_label)
+- Add concepts to threads missing them (ai_concepts)
+- Use ai_focus when working on a specific topic for extended periods
+
+### Communication
+- When you discover something relevant for another agent: use ai_msg_focus
+- When you finish a task delegated by another: reply via msg_reply
+- Schedule follow-ups with beat_wake when needed
+
+### When to create threads manually
+The capture pipeline handles most content automatically, but you should manually \
+create threads (ai_thread_create) when:
+- A user makes an architectural decision
+- You discover a bug pattern or anti-pattern
+- A conversation produces insights not captured by tool outputs
+- You receive requirements or constraints that should persist";
 
     // Mark onboarding as done
     std::fs::write(&sentinel, chrono::Utc::now().to_rfc3339()).ok();
@@ -652,6 +701,80 @@ fn build_session_context(session: &SessionState, beat: &BeatState) -> Option<Str
     Some(ctx)
 }
 
+/// Layer 1.7: Cognitive nudge — conditional maintenance reminder.
+/// Returns (nudge_type, formatted_message) so the caller can update beat_state.
+/// Design: max 1 nudge per prompt, cooldown 10 beats per type, 300 chars max.
+fn build_cognitive_nudge(
+    conn: &Connection,
+    beat_state: &BeatState,
+) -> Option<(String, String)> {
+    let beat = beat_state.beat;
+    let cooldown = 10u64;
+
+    // Priority-ordered conditions — first match wins
+    // 1. Recall staleness
+    if beat_state.last_recall_beat + 10 < beat {
+        let active = ThreadStorage::count(conn).unwrap_or(0);
+        if active > 10
+            && (beat_state.last_nudge_type != "recall"
+                || beat_state.last_nudge_beat + cooldown <= beat)
+        {
+            let msg = format!(
+                "You haven't used ai_recall in {} prompts and have {} active threads. Search memory for relevant context.",
+                beat - beat_state.last_recall_beat, active
+            );
+            return Some(("recall".into(), msg));
+        }
+    }
+
+    // 2. Capacity warning
+    {
+        let active = ThreadStorage::count(conn).unwrap_or(0);
+        if active > 40
+            && (beat_state.last_nudge_type != "capacity"
+                || beat_state.last_nudge_beat + cooldown <= beat)
+        {
+            let msg = format!(
+                "You have {} active threads (high). Review and suspend obsolete ones with ai_thread_suspend.",
+                active
+            );
+            return Some(("capacity".into(), msg));
+        }
+    }
+
+    // 3. Unlabeled ratio
+    {
+        let active = ThreadStorage::count(conn).unwrap_or(0);
+        if active > 5 {
+            let unlabeled = ThreadStorage::count_unlabeled(conn).unwrap_or(0);
+            let ratio = unlabeled as f64 / active as f64;
+            if ratio > 0.4
+                && (beat_state.last_nudge_type != "unlabeled"
+                    || beat_state.last_nudge_beat + cooldown <= beat)
+            {
+                let msg = format!(
+                    "You have {} unlabeled threads ({:.0}%). Consider running ai_label on important ones.",
+                    unlabeled, ratio * 100.0
+                );
+                return Some(("unlabeled".into(), msg));
+            }
+        }
+    }
+
+    // 4. General maintenance
+    if beat > beat_state.last_maintenance_beat + 50
+        && (beat_state.last_nudge_type != "maintenance"
+            || beat_state.last_nudge_beat + cooldown <= beat)
+    {
+        return Some((
+            "maintenance".into(),
+            "Run ai_suggestions and address any findings. Check threads missing labels or concepts.".into(),
+        ));
+    }
+
+    None
+}
+
 /// Layer 6: HealthGuard — proactive memory maintenance injection.
 ///
 /// Runs health analysis (capacity, fragmentation, merge candidates, etc.).
@@ -675,8 +798,16 @@ fn build_healthguard_injection(
 
     let findings = hg.analyze(conn, agent_data_dir, &guardian.gossip)?;
 
-    // Partition: High/Critical → inject, Low/Medium → skip (ai_suggestions handles those)
-    let (injectable, _suggestible) = healthguard::HealthGuard::partition_findings(&findings);
+    // High/Critical: always injected
+    // Medium: injected every 10 beats (beat % 10 == 0)
+    let beat = BeatState::load(agent_data_dir).beat;
+    let (high_critical, medium, _low) =
+        healthguard::HealthGuard::partition_findings_by_priority(&findings);
+
+    let mut injectable: Vec<&healthguard::HealthFinding> = high_critical;
+    if beat % 10 == 0 {
+        injectable.extend(medium);
+    }
 
     if injectable.is_empty() {
         return None;

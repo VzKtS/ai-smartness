@@ -254,6 +254,25 @@ impl HealthGuard {
         (inject, suggest)
     }
 
+    /// Partition findings into (high_critical, medium, low).
+    pub fn partition_findings_by_priority(
+        findings: &[HealthFinding],
+    ) -> (Vec<&HealthFinding>, Vec<&HealthFinding>, Vec<&HealthFinding>) {
+        let mut high_critical = Vec::new();
+        let mut medium = Vec::new();
+        let mut low = Vec::new();
+
+        for f in findings {
+            match f.priority {
+                HealthPriority::High | HealthPriority::Critical => high_critical.push(f),
+                HealthPriority::Medium => medium.push(f),
+                HealthPriority::Low => low.push(f),
+            }
+        }
+
+        (high_critical, medium, low)
+    }
+
     /// Check if we're in cooldown period.
     fn in_cooldown(&self, ai_path: &Path) -> bool {
         let ts_file = ai_path.join("healthguard_last.txt");

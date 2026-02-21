@@ -321,6 +321,18 @@ impl ThreadStorage {
         Ok(c)
     }
 
+    /// Count active threads with empty or missing labels.
+    pub fn count_unlabeled(conn: &Connection) -> AiResult<usize> {
+        let c: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE status = 'active' AND (labels IS NULL OR labels = '[]' OR labels = '')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+        Ok(c)
+    }
+
     pub fn count_by_status(conn: &Connection, status: &ThreadStatus) -> AiResult<usize> {
         let c: usize = conn
             .query_row(
@@ -330,6 +342,15 @@ impl ThreadStorage {
             )
             .map_err(|e| AiError::Storage(e.to_string()))?;
         Ok(c)
+    }
+
+    pub fn update_concepts(conn: &Connection, id: &str, concepts_json: &str) -> AiResult<()> {
+        conn.execute(
+            "UPDATE threads SET concepts = ?1 WHERE id = ?2",
+            params![concepts_json, id],
+        )
+        .map_err(|e| AiError::Storage(format!("Update concepts failed: {}", e)))?;
+        Ok(())
     }
 
     pub fn update_status(conn: &Connection, id: &str, status: ThreadStatus) -> AiResult<()> {

@@ -48,6 +48,15 @@ pub struct BeatState {
     /// Current tool/activity the agent is performing.
     #[serde(default)]
     pub current_activity: String,
+    /// Cognitive nudge tracking
+    #[serde(default)]
+    pub last_nudge_type: String,
+    #[serde(default)]
+    pub last_nudge_beat: u64,
+    #[serde(default)]
+    pub last_maintenance_beat: u64,
+    #[serde(default)]
+    pub last_recall_beat: u64,
 }
 
 impl Default for BeatState {
@@ -68,6 +77,10 @@ impl Default for BeatState {
             context_percent: None,
             context_updated_at: None,
             current_activity: String::new(),
+            last_nudge_type: String::new(),
+            last_nudge_beat: 0,
+            last_maintenance_beat: 0,
+            last_recall_beat: 0,
         }
     }
 }
