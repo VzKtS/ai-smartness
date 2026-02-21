@@ -260,24 +260,26 @@ export function tryInjectSync(
     const payload = buildPayload(text);
 
     // Strategy 1: PID-targeted (if projHash available)
+    let pidTargeted = false;
     if (projHash) {
         const targetPid = readAgentPid(projHash, agentId);
         if (targetPid) {
+            pidTargeted = true;
             const proc = findProcessByPid(targetPid);
             if (proc?.stdin?.writable && (skip || isIdle(targetPid))) {
                 try {
                     proc.stdin.write(payload);
                     lastInjectionTime.set(agentId, Date.now());
                     return true;
-                } catch { /* fall through to strategy 2 */ }
+                } catch { return false; }
             }
         }
     }
 
-    // Strategy 2: Fallback — only if there's exactly ONE monitored Claude process
+    // Strategy 2: Fallback — only if PID targeting was unavailable and exactly ONE monitored process
     // (single-agent compat). With multiple processes, PID targeting is required
     // to avoid injecting into the wrong panel.
-    if (monitoredProcesses.size <= 1) {
+    if (!pidTargeted && monitoredProcesses.size <= 1) {
         const proc = skip ? findClaudeProcess() : findIdleClaudeProcess();
         if (proc?.stdin?.writable) {
             try {

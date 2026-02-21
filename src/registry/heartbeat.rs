@@ -35,13 +35,19 @@ impl Heartbeat {
     pub fn update(conn: &Connection, agent_id: &str, project_hash: &str, activity: Option<&str>) -> AiResult<()> {
         let now = time_utils::to_sqlite(&time_utils::now());
         tracing::info!(agent = agent_id, project = project_hash, "Heartbeat update");
-        let affected = conn
-            .execute(
+        let affected = match activity {
+            Some(act) => conn.execute(
                 "UPDATE agents SET last_seen = ?1, status = 'active', current_activity = ?4 \
                  WHERE id = ?2 AND project_hash = ?3",
-                params![now, agent_id, project_hash, activity.unwrap_or("")],
-            )
-            .map_err(|e| AiError::Storage(format!("Heartbeat update failed: {}", e)))?;
+                params![now, agent_id, project_hash, act],
+            ),
+            None => conn.execute(
+                "UPDATE agents SET last_seen = ?1, status = 'active' \
+                 WHERE id = ?2 AND project_hash = ?3",
+                params![now, agent_id, project_hash],
+            ),
+        }
+        .map_err(|e| AiError::Storage(format!("Heartbeat update failed: {}", e)))?;
 
         if affected == 0 {
             tracing::warn!(agent = agent_id, "Heartbeat update: agent not found");

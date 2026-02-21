@@ -710,54 +710,47 @@ fn build_cognitive_nudge(
 ) -> Option<(String, String)> {
     let beat = beat_state.beat;
     let cooldown = 10u64;
+    let active = ThreadStorage::count(conn).unwrap_or(0);
 
     // Priority-ordered conditions — first match wins
     // 1. Recall staleness
-    if beat_state.last_recall_beat + 10 < beat {
-        let active = ThreadStorage::count(conn).unwrap_or(0);
-        if active > 10
-            && (beat_state.last_nudge_type != "recall"
-                || beat_state.last_nudge_beat + cooldown <= beat)
-        {
-            let msg = format!(
-                "You haven't used ai_recall in {} prompts and have {} active threads. Search memory for relevant context.",
-                beat - beat_state.last_recall_beat, active
-            );
-            return Some(("recall".into(), msg));
-        }
+    if beat_state.last_recall_beat + 10 < beat
+        && active > 10
+        && (beat_state.last_nudge_type != "recall"
+            || beat_state.last_nudge_beat + cooldown <= beat)
+    {
+        let msg = format!(
+            "You haven't used ai_recall in {} prompts and have {} active threads. Search memory for relevant context.",
+            beat - beat_state.last_recall_beat, active
+        );
+        return Some(("recall".into(), msg));
     }
 
     // 2. Capacity warning
+    if active > 40
+        && (beat_state.last_nudge_type != "capacity"
+            || beat_state.last_nudge_beat + cooldown <= beat)
     {
-        let active = ThreadStorage::count(conn).unwrap_or(0);
-        if active > 40
-            && (beat_state.last_nudge_type != "capacity"
-                || beat_state.last_nudge_beat + cooldown <= beat)
-        {
-            let msg = format!(
-                "You have {} active threads (high). Review and suspend obsolete ones with ai_thread_suspend.",
-                active
-            );
-            return Some(("capacity".into(), msg));
-        }
+        let msg = format!(
+            "You have {} active threads (high). Review and suspend obsolete ones with ai_thread_suspend.",
+            active
+        );
+        return Some(("capacity".into(), msg));
     }
 
     // 3. Unlabeled ratio
-    {
-        let active = ThreadStorage::count(conn).unwrap_or(0);
-        if active > 5 {
-            let unlabeled = ThreadStorage::count_unlabeled(conn).unwrap_or(0);
-            let ratio = unlabeled as f64 / active as f64;
-            if ratio > 0.4
-                && (beat_state.last_nudge_type != "unlabeled"
-                    || beat_state.last_nudge_beat + cooldown <= beat)
-            {
-                let msg = format!(
-                    "You have {} unlabeled threads ({:.0}%). Consider running ai_label on important ones.",
-                    unlabeled, ratio * 100.0
-                );
-                return Some(("unlabeled".into(), msg));
-            }
+    if active > 5 {
+        let unlabeled = ThreadStorage::count_unlabeled(conn).unwrap_or(0);
+        let ratio = unlabeled as f64 / active as f64;
+        if ratio > 0.4
+            && (beat_state.last_nudge_type != "unlabeled"
+                || beat_state.last_nudge_beat + cooldown <= beat)
+        {
+            let msg = format!(
+                "You have {} unlabeled threads ({:.0}%). Consider running ai_label on important ones.",
+                unlabeled, ratio * 100.0
+            );
+            return Some(("unlabeled".into(), msg));
         }
     }
 
