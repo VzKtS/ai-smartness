@@ -51,9 +51,6 @@ pub struct BeatState {
     /// True when a context compaction is suspected (tokens dropped >40%).
     #[serde(default)]
     pub compaction_suspected: bool,
-    /// Current tool/activity the agent is performing.
-    #[serde(default)]
-    pub current_activity: String,
     /// Cognitive nudge tracking
     #[serde(default)]
     pub last_nudge_type: String,
@@ -66,6 +63,24 @@ pub struct BeatState {
     /// Thread quota (synced from agent's ThreadMode by daemon).
     #[serde(default = "default_quota")]
     pub quota: usize,
+    // ── E3: Response latency tracking ──
+    #[serde(default)]
+    pub last_prompt_at: Option<String>,
+    #[serde(default)]
+    pub response_latency_ms: Option<u64>,
+    // ── E4: Uptime — PID that owns started_at ──
+    #[serde(default)]
+    pub started_pid: Option<u32>,
+    // ── E5: Error tracking ──
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_error_at: Option<String>,
+    // ── E6: Interaction counters ──
+    #[serde(default)]
+    pub tool_call_count: u64,
+    #[serde(default)]
+    pub prompt_count: u64,
 }
 
 fn default_quota() -> usize { 50 }
@@ -89,12 +104,18 @@ impl Default for BeatState {
             context_updated_at: None,
             context_source: None,
             compaction_suspected: false,
-            current_activity: String::new(),
             last_nudge_type: String::new(),
             last_nudge_beat: 0,
             last_maintenance_beat: 0,
             last_recall_beat: 0,
             quota: default_quota(),
+            last_prompt_at: None,
+            response_latency_ms: None,
+            started_pid: None,
+            last_error: None,
+            last_error_at: None,
+            tool_call_count: 0,
+            prompt_count: 0,
         }
     }
 }
@@ -137,19 +158,67 @@ impl BeatState {
         self.last_beat_at = Utc::now().to_rfc3339();
     }
 
-    /// Record that an agent interaction occurred at current beat.
+    /// Record that an agent interaction (prompt) occurred at current beat.
     pub fn record_interaction(
         &mut self,
         session_id: Option<&str>,
         thread_id: Option<&str>,
     ) {
-        self.last_interaction_at = Utc::now().to_rfc3339();
+        let now = Utc::now();
+        self.last_interaction_at = now.to_rfc3339();
         self.last_interaction_beat = self.beat;
         if let Some(sid) = session_id {
             self.last_session_id = Some(sid.to_string());
         }
         if let Some(tid) = thread_id {
             self.last_thread_id = Some(tid.to_string());
+        }
+        // B1: Auto-initialize last_recall_beat on first interaction with existing beats.
+        // Prevents parasitic "recall" nudge at beat 11 for new agents.
+        if self.last_recall_beat == 0 && self.beat > 0 {
+            self.last_recall_beat = self.beat;
+        }
+        // E3: Record prompt timestamp for latency measurement
+        self.last_prompt_at = Some(now.to_rfc3339());
+        // E6: Increment prompt counter
+        self.prompt_count += 1;
+    }
+
+    /// E6: Record a tool call.
+    pub fn record_tool_call(&mut self) {
+        self.tool_call_count += 1;
+    }
+
+    /// E5: Record an error from MCP tool execution.
+    pub fn record_error(&mut self, error: &str) {
+        self.last_error = Some(if error.len() > 200 {
+            error[..200].to_string()
+        } else {
+            error.to_string()
+        });
+        self.last_error_at = Some(Utc::now().to_rfc3339());
+    }
+
+    /// E3: Record response latency (call after tool response).
+    pub fn record_response(&mut self) {
+        if let Some(ref prompt_at) = self.last_prompt_at {
+            if let Ok(t) = prompt_at.parse::<DateTime<Utc>>() {
+                let ms = (Utc::now() - t).num_milliseconds();
+                if ms >= 0 {
+                    self.response_latency_ms = Some(ms as u64);
+                }
+            }
+        }
+    }
+
+    /// E4: Reset started_at when PID changes (new session).
+    pub fn reset_uptime_if_pid_changed(&mut self, current_pid: u32) {
+        if self.started_pid != Some(current_pid) {
+            self.started_at = Utc::now().to_rfc3339();
+            self.started_pid = Some(current_pid);
+            // Reset session counters
+            self.tool_call_count = 0;
+            self.prompt_count = 0;
         }
     }
 

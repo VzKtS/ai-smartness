@@ -18,11 +18,29 @@ pub fn handle_status(
     let archived = ThreadStorage::count_by_status(ctx.agent_conn, &ThreadStatus::Archived)?;
     let bridges = BridgeStorage::count(ctx.agent_conn)?;
 
+    // E7: Expose beat.json data in ai_status response
+    let data_dir = path_utils::agent_data_dir(ctx.project_hash, ctx.agent_id);
+    let beat = BeatState::load(&data_dir);
+
     Ok(serde_json::json!({
         "threads": {"active": active, "suspended": suspended, "archived": archived},
         "bridges": bridges,
         "agent_id": ctx.agent_id,
         "project_hash": ctx.project_hash,
+        "beat": beat.beat,
+        "started_at": beat.started_at,
+        "last_beat_at": beat.last_beat_at,
+        "last_interaction_at": beat.last_interaction_at,
+        "since_last_interaction": beat.since_last(),
+        "session_id": beat.last_session_id,
+        "context_tokens": beat.context_tokens,
+        "context_percent": beat.context_percent,
+        "quota": beat.quota,
+        "prompt_count": beat.prompt_count,
+        "tool_call_count": beat.tool_call_count,
+        "response_latency_ms": beat.response_latency_ms,
+        "last_error": beat.last_error,
+        "last_error_at": beat.last_error_at,
     }))
 }
 

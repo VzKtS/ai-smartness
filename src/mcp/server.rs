@@ -299,17 +299,15 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
 
         let data_dir = path_utils::agent_data_dir(project_hash, &agent_id);
 
-        // 1. Update beat.json with PID and timestamp (only save on PID change)
+        // 1. Update beat.json with PID, timestamp, and uptime
         let mut beat = BeatState::load(&data_dir);
-        let prev_pid = beat.pid;
-        let prev_cli_pid = beat.cli_pid;
-        let new_cli_pid = get_cli_pid();
+        // E4: Reset started_at when PID changes (new MCP server session)
+        beat.reset_uptime_if_pid_changed(pid);
         beat.pid = Some(pid);
-        beat.cli_pid = new_cli_pid;
+        beat.cli_pid = get_cli_pid();
+        // B5: Always save last_beat_at (was lost when PID unchanged)
         beat.last_beat_at = chrono::Utc::now().to_rfc3339();
-        if prev_pid != Some(pid) || prev_cli_pid != new_cli_pid {
-            beat.save(&data_dir);
-        }
+        beat.save(&data_dir);
 
         // 1a. Update registry DB last_seen + status=active (prevents mark_stale)
         if let Some(ref conn) = registry_conn {

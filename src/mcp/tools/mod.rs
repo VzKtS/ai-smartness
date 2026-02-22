@@ -14,6 +14,8 @@ pub mod windows;
 use ai_smartness::AiResult;
 use ai_smartness::registry::heartbeat::Heartbeat;
 use ai_smartness::registry::registry::AgentRegistry;
+use ai_smartness::storage::beat::BeatState;
+use ai_smartness::storage::path_utils;
 use ai_smartness::storage::threads::ThreadStorage;
 use rusqlite::Connection;
 
@@ -56,6 +58,17 @@ pub fn route_tool(
         "ai_agent_select" => agents::handle_agent_select(params, ctx),
         _ => route_plain_tool(name, params, ctx).map(ToolOutput::Plain),
     };
+
+    // E5/E6: Update beat.json with tool call count and error tracking
+    {
+        let data_dir = path_utils::agent_data_dir(ctx.project_hash, ctx.agent_id);
+        let mut beat = BeatState::load(&data_dir);
+        beat.record_tool_call();
+        if let Err(ref e) = result {
+            beat.record_error(&e.to_string());
+        }
+        beat.save(&data_dir);
+    }
 
     match &result {
         Ok(_) => tracing::debug!(tool = %name, "MCP tool success"),
