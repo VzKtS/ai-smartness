@@ -223,7 +223,7 @@ document.querySelectorAll('.tab:not(.tab-debug)').forEach(tab => {
         if (tab.dataset.tab === 'threads') loadThreadAgentTabs();
         if (tab.dataset.tab === 'settings') loadSettings();
         if (tab.dataset.tab === 'agents') loadAgents();
-        if (tab.dataset.tab === 'graph') requestAnimationFrame(() => loadGraph());
+        if (tab.dataset.tab === 'graph') loadGraph();
     });
 });
 
@@ -282,7 +282,7 @@ document.getElementById('project-select').addEventListener('change', (e) => {
         if (tab === 'threads') { loadThreads(); loadLabelOptions(); loadTopicOptions(); }
         if (tab === 'agents') loadAgents();
         if (tab === 'settings') loadSettings();
-        if (tab === 'graph') { document.getElementById('graph-agent-select').innerHTML = ''; requestAnimationFrame(() => loadGraph()); }
+        if (tab === 'graph') { document.getElementById('graph-agent-select').innerHTML = ''; loadGraph(); }
     }
 });
 
@@ -1812,12 +1812,6 @@ let graphDrag = null;
 let graphHoveredNode = null;
 let graphSelectedNode = null;
 let graphAnimFrame = null;
-let graphSearchMatches = null;  // F1: Set of matching node IDs, null = no active search
-let graphColorMode = 'status';  // F2/F5: 'status' | 'topic' | 'label' | 'origin' | 'decay'
-let graphFocusIndex = -1;       // F10: keyboard nav index
-let graphRAF = null;            // F0: rAF throttle handle
-let graphRawThreads = [];       // F4: raw data for client-side filtering
-let graphRawBridges = [];       // F4: raw data for client-side filtering
 
 const GRAPH_COLORS = {
     active: '#4caf50',
@@ -1856,38 +1850,28 @@ async function loadGraph() {
     if (!aid) return;
 
     try {
-        // F4: use 'all' when non-active statuses are checked
-        const needAll = document.querySelector('.graph-filter-status[value="suspended"]:checked') ||
-            document.querySelector('.graph-filter-status[value="archived"]:checked');
-        const statusFilter = needAll ? 'all' : 'active';
         const [threads, bridges] = await Promise.all([
-            invoke('get_threads', { projectHash, agentId: aid, statusFilter }),
+            invoke('get_threads', { projectHash, agentId: aid, statusFilter: 'active' }),
             invoke('get_bridges', { projectHash, agentId: aid }),
         ]);
-        graphRawThreads = threads;
-        graphRawBridges = bridges;
-        applyGraphFilters();
+        buildGraph(threads, bridges);
+        forceLayout(150);
+        centerGraph();
+        drawGraph();
+        renderGraphLegend();
+        document.getElementById('graph-stats').textContent =
+            `${graphNodes.length} threads, ${graphEdges.length} bridges`;
     } catch (e) {
         console.error('Graph load error:', e);
         document.getElementById('graph-stats').textContent = 'Error: ' + e;
     }
 }
 
-function applyGraphFilters() {
-    buildGraph(graphRawThreads, graphRawBridges);
-    forceLayout(150);
-    centerGraph();
-    drawGraph();
-    renderGraphLegend();
-    document.getElementById('graph-stats').textContent =
-        `${graphNodes.length} threads, ${graphEdges.length} bridges`;
-}
-
 function buildGraph(threads, bridges) {
+    const filter = document.getElementById('graph-filter').value;
     const idSet = new Set(threads.map(t => t.id));
 
     // Build edges from bridges (only where both endpoints exist)
-    // F8: include status and use_count from enriched backend
     graphEdges = bridges
         .filter(b => idSet.has(b.source_id) && idSet.has(b.target_id))
         .map(b => ({
@@ -1896,45 +1880,17 @@ function buildGraph(threads, bridges) {
             weight: b.weight || 0,
             relation: b.relation_type || 'RelatedTo',
             reason: b.reason || '',
-            status: (b.status || 'Active'),
-            useCount: b.use_count || 0,
         }));
 
-    // F4: Client-side multi-criteria filtering
-    const checkedStatuses = new Set();
-    document.querySelectorAll('.graph-filter-status:checked').forEach(cb => checkedStatuses.add(cb.value));
-    const impMin = (parseInt(document.getElementById('graph-filter-imp-min')?.value) || 0) / 100;
-    const impMax = (parseInt(document.getElementById('graph-filter-imp-max')?.value) || 100) / 100;
-    const checkedOrigins = new Set();
-    document.querySelectorAll('.graph-filter-origin:checked').forEach(cb => checkedOrigins.add(cb.value));
-    const hasOther = checkedOrigins.has('other');
-    const knownOrigins = new Set(['prompt', 'file_read', 'file_write', 'task']);
-    const minBridges = parseInt(document.getElementById('graph-filter-min-bridges')?.value) || 0;
-
-    // Pre-compute bridge counts per thread
-    const bridgeCounts = {};
-    graphEdges.forEach(e => {
-        bridgeCounts[e.source] = (bridgeCounts[e.source] || 0) + 1;
-        bridgeCounts[e.target] = (bridgeCounts[e.target] || 0) + 1;
-    });
-
-    let filtered = threads.filter(t => {
-        const st = (t.status || 'active').toLowerCase();
-        if (!checkedStatuses.has(st)) return false;
-        const imp = t.importance || 0.5;
-        if (imp < impMin || imp > impMax) return false;
-        const orig = (t.origin_type || 'prompt').toLowerCase();
-        if (checkedOrigins.size > 0) {
-            const matchesKnown = checkedOrigins.has(orig);
-            const matchesOther = hasOther && !knownOrigins.has(orig);
-            if (!matchesKnown && !matchesOther) return false;
-        }
-        if (minBridges > 0 && (bridgeCounts[t.id] || 0) < minBridges) return false;
-        return true;
-    });
+    // Filter nodes
+    let filtered = threads;
+    if (filter === 'bridged') {
+        const bridgedIds = new Set();
+        graphEdges.forEach(e => { bridgedIds.add(e.source); bridgedIds.add(e.target); });
+        filtered = threads.filter(t => bridgedIds.has(t.id));
+    }
 
     // Build nodes with random initial positions
-    // F3: include concepts, summary, createdAt, injectionStats
     graphNodes = filtered.map(t => ({
         id: t.id,
         title: t.title || 'Untitled',
@@ -1942,13 +1898,6 @@ function buildGraph(threads, bridges) {
         importance: t.importance || 0.5,
         weight: t.weight || 0.5,
         topics: t.topics || [],
-        labels: t.labels || [],
-        concepts: t.concepts || [],
-        summary: t.summary || '',
-        origin: t.origin_type || 'prompt',
-        lastActive: t.last_active || null,
-        createdAt: t.created_at || null,
-        injectionStats: t.injection_stats || null,
         x: (Math.random() - 0.5) * 600,
         y: (Math.random() - 0.5) * 400,
         vx: 0, vy: 0,
@@ -2127,8 +2076,8 @@ function forceLayout(iterations) {
 
 function centerGraph() {
     if (graphNodes.length === 0) return;
-    const container = document.getElementById('graph-container');
-    const rect = container.getBoundingClientRect();
+    const canvas = document.getElementById('graph-canvas');
+    const rect = canvas.getBoundingClientRect();
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const n of graphNodes) {
         if (n.x < minX) minX = n.x;
@@ -2148,135 +2097,65 @@ function centerGraph() {
     };
 }
 
-// ─── Canvas layer helpers (F0) ──────────────────────────────
-
-function prepCanvas(canvasId) {
-    const canvas = document.getElementById(canvasId);
-    if (!canvas) return null;
-    const container = document.getElementById('graph-container');
-    const rect = container.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return null; // Tab not visible
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+function drawGraph() {
+    const canvas = document.getElementById('graph-canvas');
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * (window.devicePixelRatio || 1);
+    canvas.height = rect.height * (window.devicePixelRatio || 1);
     const ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return { ctx, w: rect.width, h: rect.height };
-}
+    ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
 
-function isOnScreen(sx, sy, margin, w, h) {
-    return sx > -margin && sx < w + margin && sy > -margin && sy < h + margin;
-}
-
-// ─── Color helpers (F2/F5) ──────────────────────────────────
-
-function hashToHSL(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
-    return `hsl(${Math.abs(hash) % 360}, 70%, 55%)`;
-}
-
-function getNodeColor(node) {
-    switch (graphColorMode) {
-        case 'topic':
-            return node.topics.length > 0 ? hashToHSL(node.topics[0]) : '#666';
-        case 'label':
-            return node.labels.length > 0 ? hashToHSL(node.labels[0]) : '#666';
-        case 'origin':
-            return hashToHSL(node.origin || 'prompt');
-        case 'decay': {
-            const days = node.lastActive
-                ? (Date.now() - new Date(node.lastActive).getTime()) / 86400000
-                : 30;
-            const sat = Math.max(0.2, 1 - days / 30);
-            return `hsl(120, ${Math.round(sat * 100)}%, 50%)`;
-        }
-        default: // 'status'
-            return GRAPH_COLORS[node.status] || GRAPH_COLORS.active;
-    }
-}
-
-// ─── Layer 0: Edges ─────────────────────────────────────────
-
-function drawEdgesLayer(layer) {
-    layer = layer || prepCanvas('graph-canvas-edges');
-    if (!layer) return;
-    const { ctx, w, h } = layer;
     const { x: tx, y: ty, scale } = graphTransform;
     const showLabels = document.getElementById('graph-show-labels')?.checked;
     const showWeights = document.getElementById('graph-show-weights')?.checked;
 
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
     const nodeMap = {};
     graphNodes.forEach(n => { nodeMap[n.id] = n; });
 
-    ctx.clearRect(0, 0, w, h);
-
+    // Draw edges
     for (const e of graphEdges) {
         const a = nodeMap[e.source], b = nodeMap[e.target];
         if (!a || !b) continue;
         const ax = a.x * scale + tx, ay = a.y * scale + ty;
         const bx = b.x * scale + tx, by = b.y * scale + ty;
 
-        // Off-screen culling: skip if both endpoints outside viewport
-        if (!isOnScreen(ax, ay, 50, w, h) && !isOnScreen(bx, by, 50, w, h)) continue;
-
         const isHighlight = graphSelectedNode &&
             (e.source === graphSelectedNode.id || e.target === graphSelectedNode.id);
-
-        // F8: Bridge status indicators — line dash pattern
-        if (e.status === 'Weak') {
-            ctx.setLineDash([4, 4]);
-        } else if (e.status === 'Invalid') {
-            ctx.setLineDash([2, 2]);
-        } else {
-            ctx.setLineDash([]);
-        }
 
         ctx.beginPath();
         ctx.moveTo(ax, ay);
         ctx.lineTo(bx, by);
         ctx.strokeStyle = isHighlight
             ? GRAPH_COLORS.edge_highlight
-            : (e.status === 'Invalid' ? '#f44336' : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default));
+            : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default);
         ctx.lineWidth = isHighlight ? 2.5 : Math.max(1, e.weight * 3);
-        ctx.globalAlpha = isHighlight ? 1 : 0.3 + e.weight * 0.7;
+        ctx.globalAlpha = isHighlight ? 1 : 0.55 + e.weight * 0.4;
         ctx.stroke();
-        ctx.setLineDash([]);
         ctx.globalAlpha = 1;
 
+        // F1: Edge labels (relation_type + weight)
         if (showLabels || showWeights) {
             const mx = (ax + bx) / 2, my = (ay + by) / 2;
-            if (isOnScreen(mx, my, 20, w, h)) {
-                ctx.font = '9px monospace';
-                ctx.fillStyle = '#aaa';
-                let edgeLabel = '';
-                if (showLabels) edgeLabel += e.relation;
-                if (showLabels && showWeights) edgeLabel += ' ';
-                if (showWeights) edgeLabel += e.weight.toFixed(2);
-                ctx.fillText(edgeLabel, mx + 2, my - 2);
-            }
+            ctx.font = '9px monospace';
+            ctx.fillStyle = '#aaa';
+            let edgeLabel = '';
+            if (showLabels) edgeLabel += e.relation;
+            if (showLabels && showWeights) edgeLabel += ' ';
+            if (showWeights) edgeLabel += e.weight.toFixed(2);
+            ctx.fillText(edgeLabel, mx + 2, my - 2);
         }
     }
-}
 
-// ─── Layer 1: Nodes ─────────────────────────────────────────
-
-function drawNodesLayer(layer) {
-    layer = layer || prepCanvas('graph-canvas-nodes');
-    if (!layer) return;
-    const { ctx, w, h } = layer;
-    const { x: tx, y: ty, scale } = graphTransform;
-    const isDimming = graphSearchMatches !== null;
-
-    ctx.clearRect(0, 0, w, h);
-
+    // Draw nodes as labeled rectangles
     for (const n of graphNodes) {
         const nx = n.x * scale + tx, ny = n.y * scale + ty;
-
-        // Off-screen culling
-        if (!isOnScreen(nx, ny, 120, w, h)) continue;
+        const isHovered = graphHoveredNode === n;
+        const isSelected = graphSelectedNode === n;
 
         const label = n.title.length > 22 ? n.title.substring(0, 20) + '..' : n.title;
+        // F3: Scale font & padding with importance (range 0.8x to 1.3x)
         const impScale = 0.8 + (n.importance || 0.5) * 0.5;
         const fontSize = Math.max(9, 11 * Math.sqrt(scale) * impScale);
         ctx.font = `${fontSize}px sans-serif`;
@@ -2290,76 +2169,29 @@ function drawNodesLayer(layer) {
         n._rh = rh / scale;
 
         const rx = nx - rw / 2, ry = ny - rh / 2;
-        const dimmed = isDimming && !graphSearchMatches.has(n.id);
+        const cr = 4;
 
         ctx.beginPath();
-        ctx.roundRect(rx, ry, rw, rh, 4);
-        ctx.fillStyle = getNodeColor(n);
-        ctx.globalAlpha = dimmed ? 0.15 : (0.3 + n.weight * 0.7);
+        ctx.roundRect(rx, ry, rw, rh, cr);
+        ctx.fillStyle = GRAPH_COLORS[n.status] || GRAPH_COLORS.active;
+        ctx.globalAlpha = 0.3 + n.weight * 0.7;
         ctx.fill();
         ctx.globalAlpha = 1;
 
-        ctx.fillStyle = dimmed ? 'rgba(255,255,255,0.2)' : '#fff';
+        if (isHovered || isSelected) {
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        // Draw label inside rectangle
+        ctx.fillStyle = '#fff';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, nx, ny);
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
     }
-}
-
-// ─── Layer 2: Overlay (hover/selection highlights) ──────────
-
-function drawOverlayLayer(layer) {
-    layer = layer || prepCanvas('graph-canvas-overlay');
-    if (!layer) return;
-    const { ctx, w, h } = layer;
-    const { x: tx, y: ty, scale } = graphTransform;
-
-    ctx.clearRect(0, 0, w, h);
-
-    const highlights = [];
-    if (graphFocusIndex >= 0 && graphFocusIndex < graphNodes.length) {
-        const fn = graphNodes[graphFocusIndex];
-        if (fn !== graphSelectedNode && fn !== graphHoveredNode) {
-            highlights.push({ node: fn, color: '#ffd740', width: 2 });
-        }
-    }
-    if (graphHoveredNode) highlights.push({ node: graphHoveredNode, color: '#fff', width: 2 });
-    if (graphSelectedNode) highlights.push({ node: graphSelectedNode, color: '#4fc3f7', width: 2.5 });
-
-    for (const { node, color, width } of highlights) {
-        const nx = node.x * scale + tx, ny = node.y * scale + ty;
-        const rw = (node._rw || node.radius * 2) * scale;
-        const rh = (node._rh || node.radius * 2) * scale;
-        const rx = nx - rw / 2 - 2, ry = ny - rh / 2 - 2;
-
-        ctx.beginPath();
-        ctx.roundRect(rx, ry, rw + 4, rh + 4, 5);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = width;
-        ctx.stroke();
-    }
-}
-
-// ─── Unified draw ───────────────────────────────────────────
-
-function drawGraph() {
-    const edgesLayer = prepCanvas('graph-canvas-edges');
-    const nodesLayer = prepCanvas('graph-canvas-nodes');
-    const overlayLayer = prepCanvas('graph-canvas-overlay');
-    if (!edgesLayer || !nodesLayer || !overlayLayer) return;
-    drawEdgesLayer(edgesLayer);
-    drawNodesLayer(nodesLayer);
-    drawOverlayLayer(overlayLayer);
-}
-
-function drawOverlayOnly() {
-    if (graphRAF) return;
-    graphRAF = requestAnimationFrame(() => {
-        graphRAF = null;
-        drawOverlayLayer();
-    });
 }
 
 // ─── Graph interaction ──────────────────────────────────────
@@ -2379,7 +2211,7 @@ function graphNodeAt(wx, wy) {
     return null;
 }
 
-const graphCanvas = document.getElementById('graph-canvas-overlay');
+const graphCanvas = document.getElementById('graph-canvas');
 if (graphCanvas) {
     graphCanvas.addEventListener('mousedown', (e) => {
         const rect = graphCanvas.getBoundingClientRect();
@@ -2415,10 +2247,10 @@ if (graphCanvas) {
         if (node !== graphHoveredNode) {
             graphHoveredNode = node;
             graphCanvas.style.cursor = node ? 'pointer' : 'grab';
-            drawOverlayOnly(); // F0: only redraw overlay layer on hover
+            drawGraph();
         }
 
-        // Tooltip on hover
+        // F0: Tooltip on hover
         const tooltip = document.getElementById('graph-tooltip');
         if (node) {
             const bridgeCount = graphEdges.filter(e => e.source === node.id || e.target === node.id).length;
@@ -2429,8 +2261,10 @@ if (graphCanvas) {
                 `Weight: ${node.weight.toFixed(2)} &nbsp; Bridges: ${bridgeCount}` +
                 (node.topics.length > 0 ? `<br><span style="color:#8ad4ff">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '');
             const containerRect = graphCanvas.parentElement.getBoundingClientRect();
+            const canvasRect = graphCanvas.getBoundingClientRect();
             let tipX = e.clientX - containerRect.left + 14;
             let tipY = e.clientY - containerRect.top + 14;
+            // Keep tooltip within container bounds
             tooltip.style.display = 'block';
             if (tipX + 280 > containerRect.width) tipX = tipX - 300;
             if (tipY + 120 > containerRect.height) tipY = tipY - 130;
@@ -2454,7 +2288,7 @@ if (graphCanvas) {
         graphDrag = null;
         graphHoveredNode = null;
         document.getElementById('graph-tooltip').style.display = 'none';
-        drawOverlayOnly();
+        drawGraph();
     });
 
     graphCanvas.addEventListener('wheel', (e) => {
@@ -2463,6 +2297,7 @@ if (graphCanvas) {
         const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
         const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
         const newScale = Math.max(0.1, Math.min(5, graphTransform.scale * factor));
+        // Zoom toward cursor
         graphTransform.x = sx - (sx - graphTransform.x) * (newScale / graphTransform.scale);
         graphTransform.y = sy - (sy - graphTransform.y) * (newScale / graphTransform.scale);
         graphTransform.scale = newScale;
@@ -2470,111 +2305,34 @@ if (graphCanvas) {
     }, { passive: false });
 }
 
-const ORIGIN_ICONS = { prompt: '\ud83d\udcdd', file_read: '\ud83d\udcc4', file_write: '\u270f\ufe0f', task: '\u2699\ufe0f', fetch: '\ud83c\udf10', response: '\ud83d\udcac', command: '\u2328\ufe0f', split: '\u2702\ufe0f', reactivation: '\ud83d\udd04' };
-
 function showGraphDetail(node) {
     const panel = document.getElementById('graph-detail');
     panel.style.display = 'block';
     document.getElementById('graph-detail-title').textContent = node.title;
+    document.getElementById('graph-detail-meta').innerHTML =
+        `<strong>Status:</strong> ${esc(node.status)}<br>` +
+        `<strong>Weight:</strong> ${node.weight.toFixed(2)}<br>` +
+        `<strong>Importance:</strong> ${node.importance.toFixed(2)}<br>` +
+        `<strong>Topics:</strong> ${node.topics.join(', ') || '-'}`;
 
-    let html = '';
-
-    // Status + origin
-    const originIcon = ORIGIN_ICONS[node.origin] || '\ud83d\udcdd';
-    html += `<span style="color:${GRAPH_COLORS[node.status] || '#6cf'}">\u25cf ${node.status}</span>`;
-    html += ` &nbsp; ${originIcon} ${esc(node.origin)}<br>`;
-
-    // Weight + importance
-    html += `<strong>Weight:</strong> ${node.weight.toFixed(2)} &nbsp; `;
-    html += `<strong>Importance:</strong> ${node.importance.toFixed(2)}<br>`;
-
-    // Age
-    if (node.createdAt || node.lastActive) {
-        const now = Date.now();
-        if (node.createdAt) {
-            const daysCreated = Math.floor((now - new Date(node.createdAt).getTime()) / 86400000);
-            html += `<span style="color:#888">Created ${daysCreated}d ago</span>`;
-        }
-        if (node.lastActive) {
-            const daysActive = Math.floor((now - new Date(node.lastActive).getTime()) / 86400000);
-            html += ` &nbsp; <span style="color:#888">Active ${daysActive}d ago</span>`;
-        }
-        html += '<br>';
-    }
-
-    // Labels as colored chips
-    if (node.labels.length > 0) {
-        html += '<strong>Labels:</strong> ';
-        html += node.labels.map(l =>
-            `<span style="display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;margin:1px 2px;background:${hashToHSL(l)};color:#fff">${esc(l)}</span>`
-        ).join('');
-        html += '<br>';
-    }
-
-    // Topics
-    if (node.topics.length > 0) {
-        html += `<strong>Topics:</strong> <span style="color:#8ad4ff">${esc(node.topics.join(', '))}</span><br>`;
-    }
-
-    // Concepts
-    if (node.concepts.length > 0) {
-        html += `<strong>Concepts:</strong> <span style="color:#b5e86c">${esc(node.concepts.join(', '))}</span><br>`;
-    }
-
-    // Summary
-    if (node.summary) {
-        html += `<div style="margin:4px 0;padding:4px 6px;background:rgba(255,255,255,0.05);border-radius:3px;font-style:italic;color:#ccc">${esc(node.summary)}</div>`;
-    }
-
-    // Injection stats
-    if (node.injectionStats) {
-        const is = node.injectionStats;
-        const injCount = is.injection_count || 0;
-        const usedCount = is.used_count || 0;
-        const ratio = injCount > 0 ? ((usedCount / injCount) * 100).toFixed(0) : '0';
-        html += `<strong>Injection:</strong> ${injCount} inj, ${usedCount} used (${ratio}%)<br>`;
-    }
-
-    // Bridges
     const connected = graphEdges.filter(e => e.source === node.id || e.target === node.id);
     if (connected.length > 0) {
         const nodeMap = {};
         graphNodes.forEach(n => { nodeMap[n.id] = n; });
-        html += `<strong>Bridges (${connected.length}):</strong><br>`;
-        html += connected.map(e => {
-            const otherId = e.source === node.id ? e.target : e.source;
-            const other = nodeMap[otherId];
-            const otherTitle = other ? other.title.substring(0, 30) : otherId.substring(0, 8);
-            const statusTag = e.status !== 'Active' ? ` <span style="color:#888;font-size:10px">[${e.status}]</span>` : '';
-            return `<span style="color:${RELATION_COLORS[e.relation] || '#6cf'}">${esc(e.relation)}</span>${statusTag} ` +
-                `\u2192 ${esc(otherTitle)} (${e.weight.toFixed(2)})`;
-        }).join('<br>');
-        html += '<br>';
-    }
-
-    // Actions
-    html += '<div style="margin-top:8px;display:flex;gap:4px">';
-    if (node.status === 'active') {
-        html += `<button class="btn-sm" onclick="graphThreadAction('${node.id}','suspended')">Suspend</button>`;
+        document.getElementById('graph-detail-bridges').innerHTML =
+            `<strong>Bridges (${connected.length}):</strong><br>` +
+            connected.map(e => {
+                const otherId = e.source === node.id ? e.target : e.source;
+                const other = nodeMap[otherId];
+                const otherTitle = other ? other.title.substring(0, 30) : otherId.substring(0, 8);
+                return `<span style="color:${RELATION_COLORS[e.relation] || '#6cf'}">${esc(e.relation)}</span> ` +
+                    `→ ${esc(otherTitle)} (${e.weight.toFixed(2)})`;
+            }).join('<br>');
     } else {
-        html += `<button class="btn-sm" onclick="graphThreadAction('${node.id}','active')">Activate</button>`;
-    }
-    html += '</div>';
-
-    document.getElementById('graph-detail-content').innerHTML = html;
-}
-
-async function graphThreadAction(threadId, newStatus) {
-    try {
-        const agentId = document.getElementById('graph-agent-select')?.value;
-        if (!agentId) return;
-        await invoke('update_thread_status', { projectHash, agentId, threadId, status: newStatus });
-        loadGraph(); // Refresh after status change
-    } catch (e) {
-        console.error('Thread action failed:', e);
+        document.getElementById('graph-detail-bridges').innerHTML =
+            '<span style="color:var(--text-dim)">No bridges</span>';
     }
 }
-window.graphThreadAction = graphThreadAction;
 
 document.getElementById('btn-graph-detail-close')?.addEventListener('click', () => {
     document.getElementById('graph-detail').style.display = 'none';
@@ -2584,52 +2342,11 @@ document.getElementById('btn-graph-detail-close')?.addEventListener('click', () 
 
 document.getElementById('btn-graph-refresh')?.addEventListener('click', loadGraph);
 document.getElementById('graph-agent-select')?.addEventListener('change', loadGraph);
+document.getElementById('graph-filter')?.addEventListener('change', loadGraph);
 document.getElementById('graph-show-labels')?.addEventListener('change', drawGraph);
 document.getElementById('graph-show-weights')?.addEventListener('change', drawGraph);
 
-// F4: Filter panel toggle + handlers
-document.getElementById('btn-graph-filters-toggle')?.addEventListener('click', () => {
-    const panel = document.getElementById('graph-filters');
-    if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-});
-
-// Status filter change requires reload (may need 'all' status_filter)
-document.querySelectorAll('.graph-filter-status').forEach(cb => {
-    cb.addEventListener('change', () => loadGraph());
-});
-
-// Client-side filters: re-apply without reload
-document.querySelectorAll('.graph-filter-origin').forEach(cb => {
-    cb.addEventListener('change', () => { if (graphRawThreads.length) applyGraphFilters(); });
-});
-
-['graph-filter-imp-min', 'graph-filter-imp-max'].forEach(id => {
-    document.getElementById(id)?.addEventListener('input', () => {
-        const min = (parseInt(document.getElementById('graph-filter-imp-min')?.value) || 0) / 100;
-        const max = (parseInt(document.getElementById('graph-filter-imp-max')?.value) || 100) / 100;
-        document.getElementById('graph-filter-imp-label').textContent = `${min.toFixed(2)} \u2014 ${max.toFixed(2)}`;
-        if (graphRawThreads.length) applyGraphFilters();
-    });
-});
-
-document.getElementById('graph-filter-min-bridges')?.addEventListener('change', () => {
-    if (graphRawThreads.length) applyGraphFilters();
-});
-
-document.getElementById('btn-graph-filter-reset')?.addEventListener('click', () => {
-    document.querySelectorAll('.graph-filter-status').forEach(cb => { cb.checked = cb.value === 'active'; });
-    document.querySelectorAll('.graph-filter-origin').forEach(cb => { cb.checked = true; });
-    const impMin = document.getElementById('graph-filter-imp-min');
-    const impMax = document.getElementById('graph-filter-imp-max');
-    if (impMin) impMin.value = 0;
-    if (impMax) impMax.value = 100;
-    document.getElementById('graph-filter-imp-label').textContent = '0.00 \u2014 1.00';
-    const minB = document.getElementById('graph-filter-min-bridges');
-    if (minB) minB.value = 0;
-    loadGraph();
-});
-
-// Legend — adapts to active color mode
+// F2: Legend — render relation colors + status colors
 function renderGraphLegend() {
     const legend = document.getElementById('graph-legend');
     if (!legend) return;
@@ -2637,33 +2354,10 @@ function renderGraphLegend() {
     if (!showLegend) { legend.style.display = 'none'; return; }
     legend.style.display = 'block';
     let html = '<strong style="color:#fff;font-size:12px">Legend</strong><br>';
-
-    // Node coloring legend depends on active mode
     html += '<span style="color:#888">— Nodes —</span><br>';
-    if (graphColorMode === 'status') {
-        html += `<span style="color:${GRAPH_COLORS.active}">●</span> Active &nbsp; `;
-        html += `<span style="color:${GRAPH_COLORS.suspended}">●</span> Suspended &nbsp; `;
-        html += `<span style="color:${GRAPH_COLORS.archived}">●</span> Archived<br>`;
-    } else if (graphColorMode === 'decay') {
-        html += '<span style="color:hsl(120,100%,50%)">●</span> Recent &nbsp; ';
-        html += '<span style="color:hsl(120,50%,50%)">●</span> Aging &nbsp; ';
-        html += '<span style="color:hsl(120,20%,50%)">●</span> Stale<br>';
-    } else {
-        // Topic/Label/Origin: show unique values from current graph
-        const vals = new Set();
-        for (const n of graphNodes) {
-            if (graphColorMode === 'topic' && n.topics.length > 0) vals.add(n.topics[0]);
-            else if (graphColorMode === 'label' && n.labels.length > 0) vals.add(n.labels[0]);
-            else if (graphColorMode === 'origin') vals.add(n.origin || 'prompt');
-        }
-        let count = 0;
-        for (const v of vals) {
-            if (count++ >= 8) { html += '...'; break; }
-            html += `<span style="color:${hashToHSL(v)}">●</span> ${esc(v)} &nbsp; `;
-        }
-        html += '<br>';
-    }
-
+    html += `<span style="color:${GRAPH_COLORS.active}">●</span> Active &nbsp; `;
+    html += `<span style="color:${GRAPH_COLORS.suspended}">●</span> Suspended &nbsp; `;
+    html += `<span style="color:${GRAPH_COLORS.archived}">●</span> Archived<br>`;
     html += '<span style="color:#888">— Edges —</span><br>';
     for (const [rel, color] of Object.entries(RELATION_COLORS)) {
         html += `<span style="color:${color}">━</span> ${rel} &nbsp; `;
@@ -2675,9 +2369,9 @@ document.getElementById('graph-show-legend')?.addEventListener('change', renderG
 
 // F4: Zoom controls (+, -, fit)
 function graphZoom(factor) {
-    const container = document.getElementById('graph-container');
-    if (!container) return;
-    const rect = container.getBoundingClientRect();
+    const canvas = document.getElementById('graph-canvas');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
     const cx = rect.width / 2, cy = rect.height / 2;
     const newScale = Math.max(0.1, Math.min(5, graphTransform.scale * factor));
     graphTransform.x = cx - (cx - graphTransform.x) * (newScale / graphTransform.scale);
@@ -2690,1143 +2384,4 @@ document.getElementById('btn-graph-zoom-out')?.addEventListener('click', () => g
 document.getElementById('btn-graph-zoom-fit')?.addEventListener('click', () => {
     centerGraph();
     drawGraph();
-});
-
-// ─── F1: Search with contextual focus ───────────────────────
-
-function graphSearchUpdate(query) {
-    graphSearchQuery = query.trim().toLowerCase();
-    if (!graphSearchQuery) {
-        graphSearchMatches = null;
-    } else {
-        graphSearchMatches = new Set();
-        for (const n of graphNodes) {
-            const hay = (n.title + ' ' + n.topics.join(' ') + ' ' + n.labels.join(' ')).toLowerCase();
-            if (hay.includes(graphSearchQuery)) graphSearchMatches.add(n.id);
-        }
-    }
-    drawGraph();
-}
-
-function graphSearchFocusFirst() {
-    if (!graphSearchMatches || graphSearchMatches.size === 0) return;
-    const firstId = graphSearchMatches.values().next().value;
-    const node = graphNodes.find(n => n.id === firstId);
-    if (!node) return;
-    // Center on the matched node
-    const container = document.getElementById('graph-container');
-    const rect = container.getBoundingClientRect();
-    graphTransform.x = rect.width / 2 - node.x * graphTransform.scale;
-    graphTransform.y = rect.height / 2 - node.y * graphTransform.scale;
-    graphSelectedNode = node;
-    showGraphDetail(node);
-    drawGraph();
-}
-
-const graphSearchInput = document.getElementById('graph-search');
-if (graphSearchInput) {
-    graphSearchInput.addEventListener('input', (e) => graphSearchUpdate(e.target.value));
-    graphSearchInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); graphSearchFocusFirst(); }
-        if (e.key === 'Escape') {
-            e.preventDefault();
-            graphSearchInput.value = '';
-            graphSearchUpdate('');
-            graphSearchInput.blur();
-        }
-        e.stopPropagation(); // prevent keyboard nav while typing in search
-    });
-}
-
-// ─── F2/F5: Color mode (radio buttons) ─────────────────────
-
-document.querySelectorAll('input[name="graph-color-mode"]').forEach(radio => {
-    radio.addEventListener('change', (e) => {
-        graphColorMode = e.target.value;
-        drawGraph();
-        renderGraphLegend();
-    });
-});
-
-// ─── F10: Keyboard navigation ───────────────────────────────
-
-document.addEventListener('keydown', (e) => {
-    // Only handle when graph panel is visible
-    const graphPanel = document.getElementById('graph');
-    if (!graphPanel || !graphPanel.classList.contains('active')) return;
-    // Don't capture when typing in inputs (except Escape)
-    const tag = document.activeElement?.tagName;
-    if ((tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') && e.key !== 'Escape') return;
-
-    switch (e.key) {
-        case 'Tab': {
-            e.preventDefault();
-            if (graphNodes.length === 0) return;
-            graphFocusIndex = e.shiftKey
-                ? (graphFocusIndex <= 0 ? graphNodes.length - 1 : graphFocusIndex - 1)
-                : (graphFocusIndex + 1) % graphNodes.length;
-            const focusNode = graphNodes[graphFocusIndex];
-            graphSelectedNode = focusNode;
-            showGraphDetail(focusNode);
-            // Center on focused node
-            const container = document.getElementById('graph-container');
-            const rect = container.getBoundingClientRect();
-            const sx = focusNode.x * graphTransform.scale + graphTransform.x;
-            const sy = focusNode.y * graphTransform.scale + graphTransform.y;
-            if (sx < 50 || sx > rect.width - 50 || sy < 50 || sy > rect.height - 50) {
-                graphTransform.x = rect.width / 2 - focusNode.x * graphTransform.scale;
-                graphTransform.y = rect.height / 2 - focusNode.y * graphTransform.scale;
-            }
-            drawGraph();
-            break;
-        }
-        case 'Escape':
-            graphSelectedNode = null;
-            graphFocusIndex = -1;
-            document.getElementById('graph-detail').style.display = 'none';
-            if (graphSearchInput && graphSearchInput.value) {
-                graphSearchInput.value = '';
-                graphSearchUpdate('');
-            }
-            drawGraph();
-            break;
-        case '+':
-        case '=':
-            graphZoom(1.3);
-            break;
-        case '-':
-            graphZoom(1 / 1.3);
-            break;
-        case 'ArrowUp':
-            e.preventDefault();
-            graphTransform.y += 40;
-            drawGraph();
-            break;
-        case 'ArrowDown':
-            e.preventDefault();
-            graphTransform.y -= 40;
-            drawGraph();
-            break;
-        case 'ArrowLeft':
-            graphTransform.x += 40;
-            drawGraph();
-            break;
-        case 'ArrowRight':
-            graphTransform.x -= 40;
-            drawGraph();
-            break;
-        case 'Enter':
-            if (graphSelectedNode) showGraphDetail(graphSelectedNode);
-            break;
-        case 'f':
-        case 'F':
-            if (graphSearchInput) {
-                e.preventDefault();
-                graphSearchInput.focus();
-            }
-            break;
-    }
-});
-
-// ─── ResizeObserver: redraw on container resize ─────────────
-if (typeof ResizeObserver !== 'undefined') {
-    const _graphContainer = document.getElementById('graph-container');
-    if (_graphContainer) {
-        let _graphResizeTimer;
-        new ResizeObserver(() => {
-            clearTimeout(_graphResizeTimer);
-            _graphResizeTimer = setTimeout(() => {
-                if (document.getElementById('graph').classList.contains('active') && graphNodes.length > 0) {
-                    drawGraph();
-                }
-            }, 150);
-        }).observe(_graphContainer);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// F7: Minimap — small overview canvas with viewport rectangle
-// ═══════════════════════════════════════════════════════════════
-
-let minimapEnabled = true;
-
-function renderMinimap() {
-    const mmCanvas = document.getElementById('graph-minimap');
-    if (!mmCanvas) return;
-    if (!minimapEnabled || graphNodes.length === 0) {
-        mmCanvas.style.display = 'none';
-        return;
-    }
-    mmCanvas.style.display = 'block';
-    const ctx = mmCanvas.getContext('2d');
-    const W = mmCanvas.width, H = mmCanvas.height;
-    ctx.clearRect(0, 0, W, H);
-
-    // Compute bounding box of all nodes
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const n of graphNodes) {
-        if (n.x < minX) minX = n.x;
-        if (n.x > maxX) maxX = n.x;
-        if (n.y < minY) minY = n.y;
-        if (n.y > maxY) maxY = n.y;
-    }
-    const pad = 40;
-    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
-    const worldW = maxX - minX || 1;
-    const worldH = maxY - minY || 1;
-    const scaleX = W / worldW;
-    const scaleY = H / worldH;
-    const mmScale = Math.min(scaleX, scaleY);
-    const offX = (W - worldW * mmScale) / 2;
-    const offY = (H - worldH * mmScale) / 2;
-
-    // Draw edges as thin lines
-    ctx.globalAlpha = 0.2;
-    ctx.strokeStyle = '#4af';
-    ctx.lineWidth = 0.5;
-    for (const e of graphEdges) {
-        const src = graphNodes.find(n => n.id === e.source);
-        const tgt = graphNodes.find(n => n.id === e.target);
-        if (!src || !tgt) continue;
-        ctx.beginPath();
-        ctx.moveTo(offX + (src.x - minX) * mmScale, offY + (src.y - minY) * mmScale);
-        ctx.lineTo(offX + (tgt.x - minX) * mmScale, offY + (tgt.y - minY) * mmScale);
-        ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-
-    // Draw nodes as colored dots
-    for (const n of graphNodes) {
-        const mx = offX + (n.x - minX) * mmScale;
-        const my = offY + (n.y - minY) * mmScale;
-        ctx.fillStyle = getNodeColor(n);
-        ctx.beginPath();
-        ctx.arc(mx, my, Math.max(1.5, n.radius * mmScale * 0.3), 0, Math.PI * 2);
-        ctx.fill();
-    }
-
-    // Draw viewport rectangle
-    const container = document.getElementById('graph-container');
-    if (container) {
-        const rect = container.getBoundingClientRect();
-        // Visible world bounds
-        const vx0 = (0 - graphTransform.x) / graphTransform.scale;
-        const vy0 = (0 - graphTransform.y) / graphTransform.scale;
-        const vx1 = (rect.width - graphTransform.x) / graphTransform.scale;
-        const vy1 = (rect.height - graphTransform.y) / graphTransform.scale;
-
-        const rx = offX + (vx0 - minX) * mmScale;
-        const ry = offY + (vy0 - minY) * mmScale;
-        const rw = (vx1 - vx0) * mmScale;
-        const rh = (vy1 - vy0) * mmScale;
-
-        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(
-            Math.max(0, Math.min(rx, W)),
-            Math.max(0, Math.min(ry, H)),
-            Math.min(rw, W - Math.max(0, rx)),
-            Math.min(rh, H - Math.max(0, ry))
-        );
-    }
-
-    // Store transform for click-to-navigate
-    mmCanvas._mmTransform = { minX, minY, mmScale, offX, offY };
-}
-
-// Minimap click/drag to navigate main view
-(function setupMinimapInteraction() {
-    const mmCanvas = document.getElementById('graph-minimap');
-    if (!mmCanvas) return;
-    let dragging = false;
-
-    function navigateToMinimap(e) {
-        const t = mmCanvas._mmTransform;
-        if (!t) return;
-        const rect = mmCanvas.getBoundingClientRect();
-        const mx = e.clientX - rect.left;
-        const my = e.clientY - rect.top;
-        // Convert minimap coords to world coords
-        const wx = (mx - t.offX) / t.mmScale + t.minX;
-        const wy = (my - t.offY) / t.mmScale + t.minY;
-        // Center the main view on this world point
-        const container = document.getElementById('graph-container');
-        if (!container) return;
-        const cr = container.getBoundingClientRect();
-        graphTransform.x = cr.width / 2 - wx * graphTransform.scale;
-        graphTransform.y = cr.height / 2 - wy * graphTransform.scale;
-        drawGraph();
-    }
-
-    mmCanvas.addEventListener('mousedown', (e) => {
-        e.stopPropagation();
-        dragging = true;
-        navigateToMinimap(e);
-    });
-    mmCanvas.addEventListener('mousemove', (e) => {
-        if (dragging) { e.stopPropagation(); navigateToMinimap(e); }
-    });
-    window.addEventListener('mouseup', () => { dragging = false; });
-})();
-
-// Toggle minimap
-document.getElementById('graph-show-minimap')?.addEventListener('change', (e) => {
-    minimapEnabled = e.target.checked;
-    renderMinimap();
-});
-
-// Hook minimap into drawGraph via override (non-invasive)
-{
-    const _origDrawGraph = drawGraph;
-    drawGraph = function() {
-        _origDrawGraph();
-        renderMinimap();
-    };
-}
-
-// ═══════════════════════════════════════════════════════════════
-// F9: Time slider — dual-range date filter on last_active
-// ═══════════════════════════════════════════════════════════════
-
-let graphTimeFilterActive = false;
-let graphTimeDates = [];  // sorted epoch ms array from graphNodes
-
-function initTimeSlider() {
-    if (graphNodes.length === 0) {
-        document.getElementById('graph-time-slider').style.display = 'none';
-        return;
-    }
-    // Collect all dates (lastActive or createdAt)
-    graphTimeDates = graphNodes
-        .map(n => n.lastActive || n.createdAt)
-        .filter(Boolean)
-        .map(d => new Date(d).getTime())
-        .filter(d => !isNaN(d))
-        .sort((a, b) => a - b);
-
-    if (graphTimeDates.length < 2) {
-        document.getElementById('graph-time-slider').style.display = 'none';
-        return;
-    }
-    document.getElementById('graph-time-slider').style.display = 'flex';
-
-    const minSlider = document.getElementById('graph-time-min');
-    const maxSlider = document.getElementById('graph-time-max');
-    minSlider.value = 0;
-    maxSlider.value = 1000;
-    graphTimeFilterActive = false;
-    updateTimeLabels();
-    updateTimeRangeBar();
-}
-
-function getTimeRange() {
-    if (graphTimeDates.length < 2) return { min: 0, max: Date.now() };
-    const first = graphTimeDates[0];
-    const last = graphTimeDates[graphTimeDates.length - 1];
-    const minVal = parseInt(document.getElementById('graph-time-min')?.value || '0');
-    const maxVal = parseInt(document.getElementById('graph-time-max')?.value || '1000');
-    return {
-        min: first + (last - first) * (minVal / 1000),
-        max: first + (last - first) * (maxVal / 1000),
-    };
-}
-
-function formatShortDate(epoch) {
-    const d = new Date(epoch);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
-}
-
-function updateTimeLabels() {
-    const range = getTimeRange();
-    const minLabel = document.getElementById('graph-time-min-label');
-    const maxLabel = document.getElementById('graph-time-max-label');
-    if (minLabel) minLabel.textContent = formatShortDate(range.min);
-    if (maxLabel) maxLabel.textContent = formatShortDate(range.max);
-}
-
-function updateTimeRangeBar() {
-    const bar = document.getElementById('graph-time-range');
-    if (!bar) return;
-    const minVal = parseInt(document.getElementById('graph-time-min')?.value || '0');
-    const maxVal = parseInt(document.getElementById('graph-time-max')?.value || '1000');
-    bar.style.left = (minVal / 10) + '%';
-    bar.style.width = ((maxVal - minVal) / 10) + '%';
-}
-
-function applyTimeFilter() {
-    const range = getTimeRange();
-    const minVal = parseInt(document.getElementById('graph-time-min')?.value || '0');
-    const maxVal = parseInt(document.getElementById('graph-time-max')?.value || '1000');
-    graphTimeFilterActive = (minVal > 0 || maxVal < 1000);
-
-    if (!graphTimeFilterActive) {
-        for (const n of graphNodes) n._timeHidden = false;
-    } else {
-        for (const n of graphNodes) {
-            const epoch = new Date(n.lastActive || n.createdAt || 0).getTime();
-            n._timeHidden = isNaN(epoch) || epoch < range.min || epoch > range.max;
-        }
-    }
-    drawGraph();
-}
-
-// Hook time filter into draw layers via override (non-invasive)
-{
-    const _origDrawEdgesLayer = drawEdgesLayer;
-    const _origDrawNodesLayer = drawNodesLayer;
-
-    drawEdgesLayer = function(layer) {
-        if (!graphTimeFilterActive) return _origDrawEdgesLayer(layer);
-        // Temporarily swap graphNodes/graphEdges with filtered versions
-        const hiddenIds = new Set(graphNodes.filter(n => n._timeHidden).map(n => n.id));
-        const savedNodes = graphNodes;
-        const savedEdges = graphEdges;
-        graphNodes = savedNodes.filter(n => !n._timeHidden);
-        graphEdges = savedEdges.filter(e => !hiddenIds.has(e.source) && !hiddenIds.has(e.target));
-        _origDrawEdgesLayer(layer);
-        graphNodes = savedNodes;
-        graphEdges = savedEdges;
-    };
-
-    drawNodesLayer = function(layer) {
-        if (!graphTimeFilterActive) return _origDrawNodesLayer(layer);
-        const savedNodes = graphNodes;
-        graphNodes = savedNodes.filter(n => !n._timeHidden);
-        _origDrawNodesLayer(layer);
-        graphNodes = savedNodes;
-    };
-}
-
-// Slider event listeners
-['graph-time-min', 'graph-time-max'].forEach(id => {
-    document.getElementById(id)?.addEventListener('input', () => {
-        const minSlider = document.getElementById('graph-time-min');
-        const maxSlider = document.getElementById('graph-time-max');
-        if (parseInt(minSlider.value) > parseInt(maxSlider.value)) {
-            if (id === 'graph-time-min') minSlider.value = maxSlider.value;
-            else maxSlider.value = minSlider.value;
-        }
-        updateTimeLabels();
-        updateTimeRangeBar();
-        applyTimeFilter();
-    });
-});
-
-document.getElementById('btn-graph-time-reset')?.addEventListener('click', () => {
-    document.getElementById('graph-time-min').value = 0;
-    document.getElementById('graph-time-max').value = 1000;
-    updateTimeLabels();
-    updateTimeRangeBar();
-    applyTimeFilter();
-});
-
-// Initialize time slider when graph is loaded
-{
-    const _origBuildGraph = buildGraph;
-    buildGraph = function(threads, bridges) {
-        _origBuildGraph(threads, bridges);
-        initTimeSlider();
-    };
-}
-
-// ═══════════════════════════════════════════════════════════════
-// F11: Export — PNG, JSON, SVG
-// ═══════════════════════════════════════════════════════════════
-
-function exportGraphPNG() {
-    const container = document.getElementById('graph-container');
-    if (!container || graphNodes.length === 0) return;
-    const edgesC = document.getElementById('graph-canvas-edges');
-    const nodesC = document.getElementById('graph-canvas-nodes');
-    const overlayC = document.getElementById('graph-canvas-overlay');
-    if (!edgesC || !nodesC || !overlayC) return;
-
-    // Merge 3 layers onto a temp canvas
-    const w = edgesC.width, h = edgesC.height;
-    const merged = document.createElement('canvas');
-    merged.width = w;
-    merged.height = h;
-    const ctx = merged.getContext('2d');
-    ctx.fillStyle = '#0f0f23';
-    ctx.fillRect(0, 0, w, h);
-    ctx.drawImage(edgesC, 0, 0);
-    ctx.drawImage(nodesC, 0, 0);
-    ctx.drawImage(overlayC, 0, 0);
-
-    // Download
-    const link = document.createElement('a');
-    link.download = 'memory-graph.png';
-    link.href = merged.toDataURL('image/png');
-    link.click();
-}
-
-function exportGraphJSON() {
-    if (graphNodes.length === 0) return;
-    const data = {
-        nodes: graphNodes.map(n => ({
-            id: n.id, title: n.title, status: n.status,
-            importance: n.importance, weight: n.weight,
-            topics: n.topics, labels: n.labels, concepts: n.concepts,
-            origin: n.origin, lastActive: n.lastActive,
-            x: Math.round(n.x), y: Math.round(n.y),
-        })),
-        edges: graphEdges.map(e => ({
-            source: e.source, target: e.target,
-            relation: e.relation, weight: e.weight,
-            status: e.status,
-        })),
-        meta: {
-            exported: new Date().toISOString(),
-            nodeCount: graphNodes.length,
-            edgeCount: graphEdges.length,
-        }
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const link = document.createElement('a');
-    link.download = 'memory-graph.json';
-    link.href = URL.createObjectURL(blob);
-    link.click();
-    URL.revokeObjectURL(link.href);
-}
-
-function exportGraphSVG() {
-    if (graphNodes.length === 0) return;
-    const container = document.getElementById('graph-container');
-    if (!container) return;
-    const rect = container.getBoundingClientRect();
-    const w = Math.round(rect.width), h = Math.round(rect.height);
-    const { x: tx, y: ty, scale } = graphTransform;
-
-    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">\n`;
-    svg += `<rect width="${w}" height="${h}" fill="#0f0f23"/>\n`;
-
-    // Edges
-    svg += '<g class="edges">\n';
-    for (const e of graphEdges) {
-        const src = graphNodes.find(n => n.id === e.source);
-        const tgt = graphNodes.find(n => n.id === e.target);
-        if (!src || !tgt) continue;
-        const x1 = tx + src.x * scale, y1 = ty + src.y * scale;
-        const x2 = tx + tgt.x * scale, y2 = ty + tgt.y * scale;
-        const color = typeof RELATION_COLORS !== 'undefined' && RELATION_COLORS[e.relation]
-            ? RELATION_COLORS[e.relation]
-            : 'rgba(160,220,255,0.5)';
-        svg += `  <line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-width="1" opacity="0.6"/>\n`;
-    }
-    svg += '</g>\n';
-
-    // Nodes
-    svg += '<g class="nodes">\n';
-    for (const n of graphNodes) {
-        const cx = tx + n.x * scale, cy = ty + n.y * scale;
-        const color = getNodeColor(n);
-        const r = n.radius * scale;
-        svg += `  <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${Math.max(2, r).toFixed(1)}" fill="${color}" opacity="0.85"/>\n`;
-        if (scale > 0.5) {
-            const escaped = (n.title || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            svg += `  <text x="${(cx + r + 4).toFixed(1)}" y="${(cy + 3).toFixed(1)}" fill="#ddd" font-size="${Math.max(8, 11 * scale).toFixed(0)}" font-family="sans-serif">${escaped}</text>\n`;
-        }
-    }
-    svg += '</g>\n';
-    svg += '</svg>';
-
-    const blob = new Blob([svg], { type: 'image/svg+xml' });
-    const link = document.createElement('a');
-    link.download = 'memory-graph.svg';
-    link.href = URL.createObjectURL(blob);
-    link.click();
-    URL.revokeObjectURL(link.href);
-}
-
-// Export button event listeners
-document.getElementById('btn-graph-export-png')?.addEventListener('click', exportGraphPNG);
-document.getElementById('btn-graph-export-json')?.addEventListener('click', exportGraphJSON);
-document.getElementById('btn-graph-export-svg')?.addEventListener('click', exportGraphSVG);
-
-// ═══════════════════════════════════════════════════════════════
-// F13: Combo nodes — group by label when threshold exceeded
-// ═══════════════════════════════════════════════════════════════
-
-const COMBO_THRESHOLD = 5;  // min threads per label to form a combo
-let graphComboEnabled = false;
-let graphComboGroups = new Map();  // label → { nodes: [], expanded: bool, x, y, id }
-let graphComboActive = false;     // true when combos are currently applied
-
-function computeComboGroups() {
-    graphComboGroups.clear();
-    if (!graphComboEnabled || graphNodes.length === 0) return;
-
-    // Count threads per label
-    const labelMap = new Map();
-    for (const n of graphNodes) {
-        for (const lab of (n.labels || [])) {
-            if (!labelMap.has(lab)) labelMap.set(lab, []);
-            labelMap.get(lab).push(n);
-        }
-    }
-
-    // Only create combos for labels exceeding threshold
-    for (const [label, nodes] of labelMap) {
-        if (nodes.length >= COMBO_THRESHOLD) {
-            // Average position of member nodes
-            let cx = 0, cy = 0;
-            for (const n of nodes) { cx += n.x; cy += n.y; }
-            cx /= nodes.length; cy /= nodes.length;
-            graphComboGroups.set(label, {
-                id: '__combo__' + label,
-                label,
-                nodes,
-                nodeIds: new Set(nodes.map(n => n.id)),
-                expanded: false,
-                x: cx, y: cy,
-                _rw: 0, _rh: 0,
-            });
-        }
-    }
-}
-
-function applyComboGrouping() {
-    if (!graphComboEnabled || graphComboGroups.size === 0) {
-        graphComboActive = false;
-        return;
-    }
-    graphComboActive = true;
-
-    // Collect all node IDs that belong to a collapsed combo
-    const collapsedIds = new Set();
-    for (const [, combo] of graphComboGroups) {
-        if (!combo.expanded) {
-            for (const id of combo.nodeIds) collapsedIds.add(id);
-        }
-    }
-
-    // Replace collapsed nodes with combo nodes in graphNodes
-    const keptNodes = graphNodes.filter(n => !collapsedIds.has(n.id));
-
-    for (const [, combo] of graphComboGroups) {
-        if (!combo.expanded) {
-            keptNodes.push({
-                id: combo.id,
-                title: `${combo.label} (${combo.nodes.length})`,
-                status: 'active',
-                importance: 0.8,
-                weight: 0.9,
-                topics: [],
-                labels: [combo.label],
-                concepts: [],
-                summary: '',
-                origin: 'combo',
-                lastActive: null,
-                createdAt: null,
-                injectionStats: null,
-                x: combo.x, y: combo.y,
-                vx: 0, vy: 0,
-                radius: 12 + combo.nodes.length * 2,
-                _isCombo: true,
-                _comboLabel: combo.label,
-                _comboCount: combo.nodes.length,
-            });
-        }
-    }
-
-    graphNodes = keptNodes;
-
-    // Reroute edges: edges to/from collapsed nodes → point to combo node
-    graphEdges = graphEdges.map(e => {
-        let src = e.source, tgt = e.target;
-        for (const [, combo] of graphComboGroups) {
-            if (!combo.expanded) {
-                if (combo.nodeIds.has(src)) src = combo.id;
-                if (combo.nodeIds.has(tgt)) tgt = combo.id;
-            }
-        }
-        // Skip internal edges (both endpoints in same combo)
-        if (src === tgt) return null;
-        return { ...e, source: src, target: tgt };
-    }).filter(Boolean);
-
-    // Deduplicate edges between same pair
-    const edgeKey = e => e.source < e.target ? `${e.source}|${e.target}` : `${e.target}|${e.source}`;
-    const seen = new Map();
-    for (const e of graphEdges) {
-        const k = edgeKey(e);
-        if (!seen.has(k) || e.weight > seen.get(k).weight) seen.set(k, e);
-    }
-    graphEdges = [...seen.values()];
-}
-
-function toggleComboExpand(label) {
-    const combo = graphComboGroups.get(label);
-    if (!combo) return;
-    combo.expanded = !combo.expanded;
-
-    if (combo.expanded) {
-        // Restore individual nodes with offset from combo position
-        const angle = (2 * Math.PI) / combo.nodes.length;
-        const radius = 30 + combo.nodes.length * 5;
-        combo.nodes.forEach((n, i) => {
-            n.x = combo.x + Math.cos(angle * i) * radius;
-            n.y = combo.y + Math.sin(angle * i) * radius;
-        });
-    } else {
-        // Recalculate combo position from average of members
-        let cx = 0, cy = 0;
-        for (const n of combo.nodes) { cx += n.x; cy += n.y; }
-        combo.x = cx / combo.nodes.length;
-        combo.y = cy / combo.nodes.length;
-    }
-
-    // Re-apply grouping from raw data
-    if (graphRawThreads.length) applyGraphFilters();
-}
-
-// Hook combo into buildGraph via override (non-invasive)
-{
-    const _origBuildGraph = buildGraph;
-    buildGraph = function(threads, bridges) {
-        _origBuildGraph(threads, bridges);
-        computeComboGroups();
-        applyComboGrouping();
-    };
-}
-
-// Hook combo node click into mouseup
-{
-    const _origGraphCanvas = document.getElementById('graph-canvas-overlay');
-    if (_origGraphCanvas) {
-        _origGraphCanvas.addEventListener('dblclick', (e) => {
-            if (!graphComboActive) return;
-            const rect = _origGraphCanvas.getBoundingClientRect();
-            const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
-            const { x: wx, y: wy } = graphScreenToWorld(sx, sy);
-            const node = graphNodeAt(wx, wy);
-            if (node && node._isCombo) {
-                e.stopPropagation();
-                toggleComboExpand(node._comboLabel);
-            }
-        });
-    }
-}
-
-// Checkbox toggle
-document.getElementById('graph-combo-labels')?.addEventListener('change', (e) => {
-    graphComboEnabled = e.target.checked;
-    if (graphRawThreads.length) applyGraphFilters();
-});
-
-// ═══════════════════════════════════════════════════════════════
-// F14: Semantic zoom — LOD-based node rendering
-// ═══════════════════════════════════════════════════════════════
-
-// Override drawNodesLayer with LOD-aware version (non-invasive)
-{
-    const _origDrawNodesLayer = drawNodesLayer;
-
-    drawNodesLayer = function(layer) {
-        const scale = graphTransform.scale;
-
-        // LOD 2 (0.8-1.5): existing behavior — no override needed
-        if (scale >= 0.8 && scale <= 1.5) {
-            return _origDrawNodesLayer(layer);
-        }
-
-        layer = layer || prepCanvas('graph-canvas-nodes');
-        if (!layer) return;
-        const { ctx, w, h } = layer;
-        const { x: tx, y: ty } = graphTransform;
-        const isDimming = graphSearchMatches !== null;
-
-        ctx.clearRect(0, 0, w, h);
-
-        for (const n of graphNodes) {
-            const nx = n.x * scale + tx, ny = n.y * scale + ty;
-            if (!isOnScreen(nx, ny, 120, w, h)) continue;
-
-            const dimmed = isDimming && !graphSearchMatches.has(n.id);
-
-            if (scale < 0.4) {
-                // LOD 0: Simple colored circles, no text
-                const r = Math.max(3, (n._isCombo ? 8 : 4) * Math.sqrt(scale));
-                ctx.beginPath();
-                ctx.arc(nx, ny, r, 0, Math.PI * 2);
-                ctx.fillStyle = getNodeColor(n);
-                ctx.globalAlpha = dimmed ? 0.15 : (0.4 + n.weight * 0.6);
-                ctx.fill();
-                ctx.globalAlpha = 1;
-                // Store hit dimensions
-                n._rw = r * 2 / scale;
-                n._rh = r * 2 / scale;
-
-            } else if (scale < 0.8) {
-                // LOD 1: Rectangles with short title (8 chars)
-                const label = n._isCombo
-                    ? n.title
-                    : (n.title.length > 8 ? n.title.substring(0, 7) + '\u2026' : n.title);
-                const impScale = 0.8 + (n.importance || 0.5) * 0.5;
-                const fontSize = Math.max(8, 9 * Math.sqrt(scale) * impScale);
-                ctx.font = `${fontSize}px sans-serif`;
-                const tw = ctx.measureText(label).width;
-                const padX = 4 * impScale, padY = 3 * impScale;
-                const rw = tw + padX * 2, rh = fontSize + padY * 2;
-                n._rw = rw / scale;
-                n._rh = rh / scale;
-                const rx = nx - rw / 2, ry = ny - rh / 2;
-
-                ctx.beginPath();
-                ctx.roundRect(rx, ry, rw, rh, 3);
-                ctx.fillStyle = getNodeColor(n);
-                ctx.globalAlpha = dimmed ? 0.15 : (0.3 + n.weight * 0.7);
-                ctx.fill();
-                ctx.globalAlpha = 1;
-
-                ctx.fillStyle = dimmed ? 'rgba(255,255,255,0.2)' : '#fff';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(label, nx, ny);
-                ctx.textAlign = 'left';
-                ctx.textBaseline = 'alphabetic';
-
-            } else {
-                // LOD 3 (scale > 1.5): Extended — full title + labels/topics subline
-                const fullTitle = n._isCombo ? n.title : n.title;
-                const impScale = 0.8 + (n.importance || 0.5) * 0.5;
-                const fontSize = Math.max(10, 12 * Math.sqrt(scale) * impScale);
-                const subFontSize = Math.max(8, fontSize * 0.7);
-                ctx.font = `${fontSize}px sans-serif`;
-                const tw = ctx.measureText(fullTitle).width;
-
-                // Build subtitle from labels + topics
-                const subs = [];
-                if (n.labels && n.labels.length > 0) subs.push(n.labels.slice(0, 3).join(', '));
-                if (n.topics && n.topics.length > 0) subs.push(n.topics.slice(0, 3).join(', '));
-                const subtitle = subs.join(' | ');
-                ctx.font = `${subFontSize}px sans-serif`;
-                const stw = subtitle ? ctx.measureText(subtitle).width : 0;
-
-                const padX = 10 * impScale, padY = 6 * impScale;
-                const rw = Math.max(tw, stw) + padX * 2;
-                const rh = fontSize + (subtitle ? subFontSize + 4 : 0) + padY * 2;
-                n._rw = rw / scale;
-                n._rh = rh / scale;
-                const rx = nx - rw / 2, ry = ny - rh / 2;
-
-                ctx.beginPath();
-                ctx.roundRect(rx, ry, rw, rh, 5);
-                ctx.fillStyle = getNodeColor(n);
-                ctx.globalAlpha = dimmed ? 0.15 : (0.3 + n.weight * 0.7);
-                ctx.fill();
-                ctx.globalAlpha = 1;
-
-                // Combo nodes: thicker border
-                if (n._isCombo) {
-                    ctx.strokeStyle = hashToHSL(n._comboLabel);
-                    ctx.lineWidth = 2;
-                    ctx.stroke();
-                }
-
-                // Title
-                const textY = subtitle ? ny - subFontSize / 2 : ny;
-                ctx.font = `${fontSize}px sans-serif`;
-                ctx.fillStyle = dimmed ? 'rgba(255,255,255,0.2)' : '#fff';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(fullTitle, nx, textY);
-
-                // Subtitle
-                if (subtitle) {
-                    ctx.font = `${subFontSize}px sans-serif`;
-                    ctx.fillStyle = dimmed ? 'rgba(255,255,255,0.1)' : 'rgba(200,200,200,0.7)';
-                    ctx.fillText(subtitle, nx, textY + fontSize * 0.7 + 2);
-                }
-
-                ctx.textAlign = 'left';
-                ctx.textBaseline = 'alphabetic';
-            }
-        }
-    };
-}
-
-// ═══════════════════════════════════════════════════════════════
-// F15: Node glyphs — small icon badges on nodes
-// ═══════════════════════════════════════════════════════════════
-
-let glyphsEnabled = true;
-
-function drawGlyphs() {
-    if (!glyphsEnabled || graphNodes.length === 0) return;
-    const canvas = document.getElementById('graph-canvas-overlay');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const { x: tx, y: ty, scale } = graphTransform;
-    const now = Date.now();
-
-    for (const n of graphNodes) {
-        if (n._timeHidden) continue;
-        const sx = tx + n.x * scale;
-        const sy = ty + n.y * scale;
-        const r = n.radius * scale;
-        if (r < 3) continue; // too small for glyphs
-        const gs = Math.max(5, Math.min(8, r * 0.5)); // glyph size
-
-        // Star (top-right): importance >= 0.8
-        if (n.importance >= 0.8) {
-            drawStarGlyph(ctx, sx + r - gs * 0.2, sy - r + gs * 0.2, gs);
-        }
-        // Clock (top-left): active in last 2 hours
-        if (n.lastActive) {
-            const age = now - new Date(n.lastActive).getTime();
-            if (age < 7200000) { // 2 hours
-                drawClockGlyph(ctx, sx - r + gs * 0.2, sy - r + gs * 0.2, gs);
-            }
-        }
-        // Arrow in (bottom-left): injection_count > 5
-        if (n.injectionStats && n.injectionStats.injection_count > 5) {
-            drawArrowInGlyph(ctx, sx - r + gs * 0.2, sy + r - gs * 0.2, gs);
-        }
-        // Exclamation (bottom-right): no labels AND no concepts
-        if ((!n.labels || n.labels.length === 0) && (!n.concepts || n.concepts.length === 0)) {
-            drawExclamGlyph(ctx, sx + r - gs * 0.2, sy + r - gs * 0.2, gs);
-        }
-    }
-}
-
-function drawStarGlyph(ctx, cx, cy, s) {
-    ctx.fillStyle = '#ffd700';
-    ctx.beginPath();
-    for (let i = 0; i < 5; i++) {
-        const a = (i * 72 - 90) * Math.PI / 180;
-        const ai = ((i * 72) + 36 - 90) * Math.PI / 180;
-        const ox = cx + Math.cos(a) * s * 0.5;
-        const oy = cy + Math.sin(a) * s * 0.5;
-        const ix = cx + Math.cos(ai) * s * 0.2;
-        const iy = cy + Math.sin(ai) * s * 0.2;
-        if (i === 0) ctx.moveTo(ox, oy);
-        else ctx.lineTo(ox, oy);
-        ctx.lineTo(ix, iy);
-    }
-    ctx.closePath();
-    ctx.fill();
-}
-
-function drawClockGlyph(ctx, cx, cy, s) {
-    const r = s * 0.4;
-    ctx.strokeStyle = '#4af';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(cx, cy - r * 0.7);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(cx + r * 0.5, cy);
-    ctx.stroke();
-}
-
-function drawArrowInGlyph(ctx, cx, cy, s) {
-    ctx.fillStyle = '#8f8';
-    ctx.beginPath();
-    const h = s * 0.5;
-    ctx.moveTo(cx - h, cy - h);
-    ctx.lineTo(cx + h * 0.3, cy + h * 0.3);
-    ctx.lineTo(cx + h * 0.3, cy - h * 0.2);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(cx + h * 0.3, cy + h * 0.3);
-    ctx.lineTo(cx - h * 0.1, cy + h * 0.3);
-    ctx.lineTo(cx + h * 0.3, cy - h * 0.1);
-    ctx.closePath();
-    ctx.fill();
-}
-
-function drawExclamGlyph(ctx, cx, cy, s) {
-    ctx.fillStyle = '#f66';
-    const w = s * 0.15;
-    ctx.fillRect(cx - w, cy - s * 0.4, w * 2, s * 0.5);
-    ctx.beginPath();
-    ctx.arc(cx, cy + s * 0.3, w * 1.2, 0, Math.PI * 2);
-    ctx.fill();
-}
-
-// Hook glyphs into overlay layer via override (non-invasive)
-{
-    const _origDrawOverlayLayer = drawOverlayLayer;
-    drawOverlayLayer = function(layer) {
-        _origDrawOverlayLayer(layer);
-        drawGlyphs();
-    };
-}
-
-document.getElementById('graph-show-glyphs')?.addEventListener('change', (e) => {
-    glyphsEnabled = e.target.checked;
-    drawGraph();
-});
-
-// ═══════════════════════════════════════════════════════════════
-// F16: Multi-agent view — all agents in one graph
-// ═══════════════════════════════════════════════════════════════
-
-let graphMultiAgentMode = false;
-let graphAgentColors = {};    // agent_id -> color
-let graphMultiAgentData = []; // raw multi-agent response
-
-const AGENT_COLOR_PALETTE = [
-    '#4af', '#f4a', '#4fa', '#fa4', '#a4f', '#af4', '#f44', '#44f',
-    '#4ff', '#ff4', '#f4f', '#aaf', '#faa', '#afa', '#aff', '#ffa',
-];
-
-function assignAgentColors(agentIds) {
-    graphAgentColors = {};
-    agentIds.forEach((id, i) => {
-        graphAgentColors[id] = AGENT_COLOR_PALETTE[i % AGENT_COLOR_PALETTE.length];
-    });
-}
-
-// Override loadGraph to handle multi-agent mode
-{
-    const _origLoadGraph = loadGraph;
-    loadGraph = async function() {
-        if (!graphMultiAgentMode) return _origLoadGraph();
-        if (!projectHash) {
-            document.getElementById('graph-stats').textContent = 'Select a project to view the memory graph.';
-            return;
-        }
-        try {
-            const needAll = document.querySelector('.graph-filter-status[value="suspended"]:checked') ||
-                document.querySelector('.graph-filter-status[value="archived"]:checked');
-            const statusFilter = needAll ? 'all' : 'active';
-            const agentsData = await invoke('get_all_agents_threads', { projectHash, statusFilter });
-            graphMultiAgentData = agentsData;
-
-            // Flatten threads with owner_agent tag
-            const allThreads = [];
-            const agentIds = [];
-            for (const entry of agentsData) {
-                agentIds.push(entry.agent_id);
-                for (const t of entry.threads) {
-                    t.owner_agent = entry.agent_id;
-                    allThreads.push(t);
-                }
-            }
-            assignAgentColors(agentIds);
-
-            // Load bridges for each agent
-            let allBridges = [];
-            for (const entry of agentsData) {
-                try {
-                    const bridges = await invoke('get_bridges', { projectHash, agentId: entry.agent_id });
-                    allBridges = allBridges.concat(bridges);
-                } catch (_) { /* agent may not have bridges */ }
-            }
-
-            graphRawThreads = allThreads;
-            graphRawBridges = allBridges;
-            applyGraphFilters();
-
-            const agentCount = agentsData.length;
-            document.getElementById('graph-stats').textContent =
-                `${graphNodes.length} threads, ${graphEdges.length} bridges (${agentCount} agents)`;
-        } catch (e) {
-            console.error('Multi-agent graph load:', e);
-            document.getElementById('graph-stats').textContent = 'Error: ' + e;
-        }
-    };
-}
-
-// Override drawNodesLayer to add agent-colored outlines
-{
-    const _origDrawNodesLayerF16 = drawNodesLayer;
-    drawNodesLayer = function(layer) {
-        _origDrawNodesLayerF16(layer);
-        if (!graphMultiAgentMode || Object.keys(graphAgentColors).length === 0) return;
-        const canvas = document.getElementById('graph-canvas-nodes');
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        const { x: tx, y: ty, scale } = graphTransform;
-        for (const n of graphNodes) {
-            if (n._timeHidden) continue;
-            const agentColor = graphAgentColors[n.ownerAgent];
-            if (!agentColor) continue;
-            const sx = tx + n.x * scale;
-            const sy = ty + n.y * scale;
-            const r = n.radius * scale + 3;
-            ctx.strokeStyle = agentColor;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(sx, sy, r, 0, Math.PI * 2);
-            ctx.stroke();
-        }
-    };
-}
-
-// Override drawEdgesLayer to style cross-agent bridges as dashed
-{
-    const _origDrawEdgesLayerF16 = drawEdgesLayer;
-    drawEdgesLayer = function(layer) {
-        _origDrawEdgesLayerF16(layer);
-        if (!graphMultiAgentMode) return;
-        const canvas = document.getElementById('graph-canvas-edges');
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        const { x: tx, y: ty, scale } = graphTransform;
-        for (const e of graphEdges) {
-            const src = graphNodes.find(n => n.id === e.source);
-            const tgt = graphNodes.find(n => n.id === e.target);
-            if (!src || !tgt) continue;
-            if (src.ownerAgent === tgt.ownerAgent) continue;
-            const x1 = tx + src.x * scale, y1 = ty + src.y * scale;
-            const x2 = tx + tgt.x * scale, y2 = ty + tgt.y * scale;
-            ctx.strokeStyle = 'rgba(255,200,100,0.6)';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([6, 4]);
-            ctx.beginPath();
-            ctx.moveTo(x1, y1);
-            ctx.lineTo(x2, y2);
-            ctx.stroke();
-            ctx.setLineDash([]);
-        }
-    };
-}
-
-// Override buildGraph to pass owner_agent through to nodes
-{
-    const _origBuildGraphF16 = buildGraph;
-    buildGraph = function(threads, bridges) {
-        _origBuildGraphF16(threads, bridges);
-        if (graphMultiAgentMode) {
-            for (const n of graphNodes) {
-                const t = threads.find(th => th.id === n.id);
-                if (t && t.owner_agent) n.ownerAgent = t.owner_agent;
-            }
-        }
-    };
-}
-
-// Override renderGraphLegend to show agent colors
-{
-    const _origRenderGraphLegend = renderGraphLegend;
-    renderGraphLegend = function() {
-        _origRenderGraphLegend();
-        if (!graphMultiAgentMode || Object.keys(graphAgentColors).length === 0) return;
-        const legend = document.getElementById('graph-legend');
-        if (!legend || legend.style.display === 'none') return;
-        let html = legend.innerHTML;
-        html += '<br><span style="color:#888">— Agents —</span><br>';
-        for (const [agentId, color] of Object.entries(graphAgentColors)) {
-            const label = graphMultiAgentData.find(d => d.agent_id === agentId);
-            const name = label ? (label.agent_name || agentId) : agentId;
-            html += `<span style="color:${color}">&#9673;</span> ${esc(name)} &nbsp; `;
-        }
-        html += '<br><span style="color:rgba(255,200,100,0.6)">&#9477;&#9477;</span> Cross-agent bridge';
-        legend.innerHTML = html;
-    };
-}
-
-// Toggle multi-agent mode
-document.getElementById('graph-all-agents')?.addEventListener('change', (e) => {
-    graphMultiAgentMode = e.target.checked;
-    loadGraph();
 });

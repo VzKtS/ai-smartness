@@ -5,28 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Smartness</title>
     <link rel="stylesheet" href="style.css">
-    <style>
-        /* F9: Dual-range slider thumb styling */
-        #graph-time-min::-webkit-slider-thumb,
-        #graph-time-max::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            pointer-events: all;
-            width: 14px; height: 14px;
-            border-radius: 50%;
-            background: rgba(100,200,255,0.9);
-            border: 1px solid rgba(100,200,255,0.5);
-            cursor: pointer;
-        }
-        #graph-time-min::-moz-range-thumb,
-        #graph-time-max::-moz-range-thumb {
-            pointer-events: all;
-            width: 12px; height: 12px;
-            border-radius: 50%;
-            background: rgba(100,200,255,0.9);
-            border: 1px solid rgba(100,200,255,0.5);
-            cursor: pointer;
-        }
-    </style>
 </head>
 <body>
     <header>
@@ -212,66 +190,21 @@
         <section id="graph" class="panel">
             <div class="graph-toolbar">
                 <h2>Memory Graph</h2>
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <div style="display:flex;gap:8px;align-items:center">
                     <select id="graph-agent-select" title="Select agent"></select>
-                    <label style="font-size:12px" title="Show threads from all agents in the project"><input type="checkbox" id="graph-all-agents"> All agents</label>
-                    <button id="btn-graph-filters-toggle" class="btn-sm" title="Toggle filters">Filters ▾</button>
+                    <select id="graph-filter" title="Filter">
+                        <option value="all">All threads</option>
+                        <option value="active">Active only</option>
+                        <option value="bridged">Bridged only</option>
+                    </select>
                     <button id="btn-graph-refresh" class="btn-sm">Refresh</button>
-                    <input id="graph-search" type="text" placeholder="Search nodes... (F)" style="width:150px;padding:2px 6px;font-size:12px;background:var(--bg-alt,#1a1a2e);color:var(--text,#ccc);border:1px solid var(--border,#333);border-radius:3px" title="Search by title/topics/labels. Enter=focus, Escape=clear">
                     <label style="font-size:12px"><input type="checkbox" id="graph-show-labels" checked> Edge Labels</label>
                     <label style="font-size:12px"><input type="checkbox" id="graph-show-weights"> Weights</label>
                     <label style="font-size:12px"><input type="checkbox" id="graph-show-legend" checked> Legend</label>
-                    <label style="font-size:12px"><input type="checkbox" id="graph-show-minimap" checked> Minimap</label>
-                    <label style="font-size:12px"><input type="checkbox" id="graph-show-glyphs" checked> Glyphs</label>
-                    <label style="font-size:12px"><input type="checkbox" id="graph-combo-labels"> Group labels</label>
-                    <span style="border-left:1px solid var(--border,#333);height:16px;margin:0 2px"></span>
-                    <button id="btn-graph-export-png" class="btn-sm" title="Export as PNG">PNG</button>
-                    <button id="btn-graph-export-json" class="btn-sm" title="Export as JSON">JSON</button>
-                    <button id="btn-graph-export-svg" class="btn-sm" title="Export as SVG">SVG</button>
-                </div>
-                <div style="display:flex;gap:6px;align-items:center;font-size:11px;margin-top:4px;color:var(--text-dim,#888)">
-                    <span>Color by:</span>
-                    <label><input type="radio" name="graph-color-mode" value="status" checked> Status</label>
-                    <label><input type="radio" name="graph-color-mode" value="topic"> Topic</label>
-                    <label><input type="radio" name="graph-color-mode" value="label"> Label</label>
-                    <label><input type="radio" name="graph-color-mode" value="origin"> Origin</label>
-                    <label><input type="radio" name="graph-color-mode" value="decay"> Decay</label>
                 </div>
             </div>
-            <!-- F4: Collapsible filter panel -->
-            <div id="graph-filters" style="display:none;padding:8px 12px;background:rgba(15,15,30,0.8);border:1px solid var(--border,#333);border-radius:4px;margin-bottom:4px;font-size:12px;color:var(--text-dim,#aaa)">
-                <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
-                    <div>
-                        <span style="color:#888">Status:</span>
-                        <label><input type="checkbox" class="graph-filter-status" value="active" checked> Active</label>
-                        <label><input type="checkbox" class="graph-filter-status" value="suspended"> Suspended</label>
-                        <label><input type="checkbox" class="graph-filter-status" value="archived"> Archived</label>
-                    </div>
-                    <div>
-                        <span style="color:#888">Importance:</span>
-                        <input type="range" id="graph-filter-imp-min" min="0" max="100" value="0" style="width:60px;vertical-align:middle" title="Min importance">
-                        <span id="graph-filter-imp-label">0.00 — 1.00</span>
-                        <input type="range" id="graph-filter-imp-max" min="0" max="100" value="100" style="width:60px;vertical-align:middle" title="Max importance">
-                    </div>
-                    <div>
-                        <span style="color:#888">Origin:</span>
-                        <label><input type="checkbox" class="graph-filter-origin" value="prompt" checked> Prompt</label>
-                        <label><input type="checkbox" class="graph-filter-origin" value="file_read" checked> FileRead</label>
-                        <label><input type="checkbox" class="graph-filter-origin" value="file_write" checked> FileWrite</label>
-                        <label><input type="checkbox" class="graph-filter-origin" value="task" checked> Task</label>
-                        <label><input type="checkbox" class="graph-filter-origin" value="other" checked> Other</label>
-                    </div>
-                    <div>
-                        <span style="color:#888">Min bridges:</span>
-                        <input type="number" id="graph-filter-min-bridges" min="0" max="50" value="0" style="width:48px;padding:1px 4px;background:var(--bg-alt,#1a1a2e);color:var(--text,#ccc);border:1px solid var(--border,#333);border-radius:3px">
-                    </div>
-                    <button id="btn-graph-filter-reset" class="btn-sm">Reset</button>
-                </div>
-            </div>
-            <div id="graph-container" style="width:100%;flex:1;min-height:0;border:1px solid var(--border,#333);border-radius:4px;background:var(--bg-alt,#1a1a2e);position:relative;overflow:hidden">
-                <canvas id="graph-canvas-edges" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
-                <canvas id="graph-canvas-nodes" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
-                <canvas id="graph-canvas-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:5"></canvas>
+            <div id="graph-container" style="width:100%;height:calc(100vh - 180px);border:1px solid var(--border,#333);border-radius:4px;background:var(--bg-alt,#1a1a2e);position:relative;overflow:hidden">
+                <canvas id="graph-canvas" style="width:100%;height:100%"></canvas>
                 <!-- F0: Tooltip -->
                 <div id="graph-tooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(15,15,30,0.95);border:1px solid rgba(100,200,255,0.3);border-radius:6px;padding:8px 12px;font-size:12px;color:#ddd;max-width:280px;z-index:20;line-height:1.5;box-shadow:0 4px 12px rgba(0,0,0,0.5)"></div>
                 <!-- F4: Zoom controls -->
@@ -282,31 +215,15 @@
                 </div>
                 <!-- F2: Legend -->
                 <div id="graph-legend" style="position:absolute;bottom:12px;right:12px;background:rgba(15,15,30,0.9);border:1px solid var(--border,#333);border-radius:6px;padding:8px 12px;font-size:11px;color:#bbb;z-index:15;line-height:1.8"></div>
-                <!-- F7: Minimap -->
-                <canvas id="graph-minimap" width="180" height="120" style="position:absolute;bottom:12px;left:56px;width:180px;height:120px;border:1px solid rgba(100,200,255,0.3);border-radius:4px;background:rgba(15,15,30,0.85);z-index:15;cursor:pointer"></canvas>
-            </div>
-            <!-- F9: Time slider -->
-            <div id="graph-time-slider" style="display:flex;align-items:center;gap:8px;padding:4px 8px;font-size:11px;color:var(--text-dim,#888)">
-                <span>Time:</span>
-                <span id="graph-time-min-label" style="min-width:60px">-</span>
-                <div style="position:relative;flex:1;height:20px">
-                    <input type="range" id="graph-time-min" min="0" max="1000" value="0" style="position:absolute;top:0;left:0;width:100%;height:20px;pointer-events:none;-webkit-appearance:none;appearance:none;background:transparent;z-index:2" title="Start date">
-                    <input type="range" id="graph-time-max" min="0" max="1000" value="1000" style="position:absolute;top:0;left:0;width:100%;height:20px;pointer-events:none;-webkit-appearance:none;appearance:none;background:transparent;z-index:3" title="End date">
-                    <div id="graph-time-track" style="position:absolute;top:8px;left:0;right:0;height:4px;background:var(--border,#333);border-radius:2px;z-index:1"></div>
-                    <div id="graph-time-range" style="position:absolute;top:8px;height:4px;background:rgba(100,200,255,0.5);border-radius:2px;z-index:1"></div>
-                </div>
-                <span id="graph-time-max-label" style="min-width:60px;text-align:right">-</span>
-                <button id="btn-graph-time-reset" class="btn-sm" style="font-size:10px;padding:1px 6px" title="Reset time filter">Reset</button>
             </div>
             <div id="graph-info" style="font-size:12px;color:var(--text-dim,#888);margin-top:4px">
                 <span id="graph-stats">Select a project and agent to view the memory graph.</span>
             </div>
-            <div id="graph-detail" style="display:none;position:fixed;right:32px;top:140px;width:310px;max-height:calc(100vh - 240px);overflow-y:auto;background:var(--bg,#0f0f23);border:1px solid var(--border,#333);border-radius:6px;padding:12px;z-index:30;font-size:12px;line-height:1.6">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                    <h4 id="graph-detail-title" style="margin:0;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></h4>
-                    <button id="btn-graph-detail-close" class="btn-sm" style="padding:2px 6px;font-size:14px" title="Close">&times;</button>
-                </div>
-                <div id="graph-detail-content" style="color:var(--text-dim,#aaa)"></div>
+            <div id="graph-detail" class="graph-detail-panel" style="display:none;position:absolute;right:16px;top:120px;width:300px;max-height:400px;overflow-y:auto;background:var(--bg,#0f0f23);border:1px solid var(--border,#333);border-radius:6px;padding:12px;z-index:10">
+                <h4 id="graph-detail-title" style="margin:0 0 8px"></h4>
+                <div id="graph-detail-meta" style="font-size:12px;color:var(--text-dim)"></div>
+                <div id="graph-detail-bridges" style="font-size:12px;margin-top:8px"></div>
+                <button id="btn-graph-detail-close" class="btn-sm" style="margin-top:8px">Close</button>
             </div>
         </section>
 

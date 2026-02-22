@@ -11,6 +11,7 @@ use crate::constants::*;
 use crate::thread::{Thread, ThreadMessage, ThreadStatus, OriginType, WorkContext};
 use crate::AiResult;
 use crate::intelligence::gossip::Gossip;
+use crate::intelligence::merge_metadata::{self, MAX_TOPICS, MAX_LABELS};
 use crate::processing::embeddings::EmbeddingManager;
 use crate::processing::extractor::Extraction;
 use crate::storage::bridges::BridgeStorage;
@@ -240,9 +241,17 @@ impl ThreadManager {
             parent_id: parent_id.map(|s| s.to_string()),
             child_ids: vec![],
             summary: Some(extraction.summary.clone()),
-            topics: extraction.subjects.clone(),
+            topics: {
+                let mut t = extraction.subjects.clone();
+                t.truncate(MAX_TOPICS);
+                t
+            },
             tags: vec![],
-            labels: filter_blocked_labels(&extraction.labels),
+            labels: {
+                let mut l = filter_blocked_labels(&extraction.labels);
+                l.truncate(MAX_LABELS);
+                l
+            },
             concepts: extraction.concepts.clone(),
             embedding,
             relevance_score,
@@ -338,19 +347,19 @@ impl ThreadManager {
         // Boost weight
         thread.weight = (thread.weight + THREAD_USE_BOOST).min(1.0);
 
-        // Merge topics (dedup)
+        // Merge topics (case-insensitive dedup + cap)
         for topic in &extraction.subjects {
-            if !thread.topics.iter().any(|t| t == topic) {
-                thread.topics.push(topic.clone());
-            }
+            thread.topics.push(topic.clone());
         }
+        thread.topics = merge_metadata::dedup_case_insensitive(thread.topics.clone());
+        thread.topics.truncate(MAX_TOPICS);
 
-        // Merge labels (preserve existing, filter blocked)
+        // Merge labels (case-insensitive dedup + cap, filter blocked)
         for label in &filter_blocked_labels(&extraction.labels) {
-            if !thread.labels.iter().any(|l| l == label) {
-                thread.labels.push(label.clone());
-            }
+            thread.labels.push(label.clone());
         }
+        thread.labels = merge_metadata::dedup_case_insensitive(thread.labels.clone());
+        thread.labels.truncate(MAX_LABELS);
 
         // Update work context
         if let Some(fp) = file_path {
