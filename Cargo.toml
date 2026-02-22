@@ -50,6 +50,9 @@ libc = "0.2"
 # Hashing
 sha2 = "0.10"
 
+# HTTP (lightweight, blocking — for quota probe)
+ureq = "3"
+
 # ONNX Runtime (semantic embeddings)
 ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "load-dynamic", "ndarray", "copy-dylibs"] }
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }

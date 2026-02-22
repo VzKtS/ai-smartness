@@ -41,6 +41,13 @@ pub fn handle_status(
         "response_latency_ms": beat.response_latency_ms,
         "last_error": beat.last_error,
         "last_error_at": beat.last_error_at,
+        "plan_type": beat.plan_type,
+        "plan_tier": beat.plan_tier,
+        "quota_5h": beat.quota_5h,
+        "quota_7d": beat.quota_7d,
+        "quota_constraint": beat.quota_constraint,
+        "quota_alert": beat.quota_alert,
+        "quota_updated_at": beat.quota_updated_at,
     }))
 }
 

@@ -2,9 +2,11 @@ use ai_smartness::AiResult;
 use ai_smartness::registry::heartbeat::Heartbeat;
 use ai_smartness::storage::beat::BeatState;
 use ai_smartness::storage::cognitive_inbox::CognitiveInbox;
+use ai_smartness::storage::credentials;
 use ai_smartness::storage::database::{self, ConnectionRole};
 use ai_smartness::storage::migrations;
 use ai_smartness::storage::path_utils;
+use ai_smartness::storage::quota_probe;
 use rusqlite::Connection;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -327,6 +329,9 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
         // 3. Check cognitive inbox for proactive wake
         check_cognitive_proactive(project_hash, &agent_id);
 
+        // 4. Quota probe (MAX plan — separate thread, 15 min interval)
+        check_quota_probe(project_hash, &agent_id);
+
         // Sleep in 1s increments for clean shutdown
         for _ in 0..HEARTBEAT_TICK_SECS {
             if !running.load(Ordering::Relaxed) { break; }
@@ -396,6 +401,32 @@ fn check_cognitive_proactive(project_hash: &str, agent_id: &str) {
         "Cognitive proactive: emitting wake signal"
     );
     super::tools::messaging::emit_wake_signal(agent_id, "cognitive-inbox", "Pending cognitive messages", "cognitive", false);
+}
+
+fn check_quota_probe(project_hash: &str, agent_id: &str) {
+    // Only probe if user is on a MAX plan
+    let plan = match credentials::detect_plan() {
+        Some(p) if p.is_max => p,
+        _ => return,
+    };
+
+    let data_dir = path_utils::agent_data_dir(project_hash, agent_id);
+    let mut beat = BeatState::load(&data_dir);
+
+    // Seed plan_type/plan_tier on every tick (cheap, no network)
+    if beat.plan_type.is_none() || beat.plan_tier.is_none() {
+        beat.plan_type = Some(plan.subscription_type.clone());
+        beat.plan_tier = Some(plan.rate_limit_tier.clone());
+        beat.save(&data_dir);
+    }
+
+    // Check if enough time has passed since last probe
+    if !quota_probe::should_probe(&beat) {
+        return;
+    }
+
+    // Spawn probe in background thread (non-blocking)
+    quota_probe::spawn_probe(project_hash.to_string(), agent_id.to_string());
 }
 
 fn tool_definitions() -> Vec<serde_json::Value> {
