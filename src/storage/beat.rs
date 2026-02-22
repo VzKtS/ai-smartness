@@ -45,6 +45,12 @@ pub struct BeatState {
     /// When context tracking was last updated.
     #[serde(default)]
     pub context_updated_at: Option<String>,
+    /// Source of context data: "transcript" (99%) or "tool_io" (30-50% fallback).
+    #[serde(default)]
+    pub context_source: Option<String>,
+    /// True when a context compaction is suspected (tokens dropped >40%).
+    #[serde(default)]
+    pub compaction_suspected: bool,
     /// Current tool/activity the agent is performing.
     #[serde(default)]
     pub current_activity: String,
@@ -81,6 +87,8 @@ impl Default for BeatState {
             context_tokens: None,
             context_percent: None,
             context_updated_at: None,
+            context_source: None,
+            compaction_suspected: false,
             current_activity: String::new(),
             last_nudge_type: String::new(),
             last_nudge_beat: 0,
@@ -171,6 +179,49 @@ impl BeatState {
             reason,
             created_at: Utc::now().to_rfc3339(),
         });
+    }
+
+    /// Adaptive throttle: should we update context tokens this prompt?
+    /// Below 70%: time-based (30s). At/above 70%: delta-based (5% change).
+    pub fn should_update_context(&self, new_percent: f64) -> bool {
+        let elapsed = match &self.context_updated_at {
+            Some(ts) => {
+                let last: DateTime<Utc> = match ts.parse() {
+                    Ok(t) => t,
+                    Err(_) => return true,
+                };
+                (Utc::now() - last).num_seconds()
+            }
+            None => i64::MAX, // Never updated
+        };
+
+        let current = self.context_percent.unwrap_or(0.0);
+        if current < 70.0 {
+            elapsed >= 30 // Time-based below 70%
+        } else {
+            (new_percent - current).abs() >= 5.0 // Delta-based at/above 70%
+        }
+    }
+
+    /// Update context tracking fields and detect compaction.
+    pub fn update_context(&mut self, tokens: u64, percent: f64, source: &str) {
+        // E2: Compaction detection — tokens dropped >40% from previous reading
+        if let Some(prev) = self.context_tokens {
+            if prev > 0 && tokens < prev * 60 / 100 {
+                self.compaction_suspected = true;
+                tracing::info!(
+                    prev_tokens = prev, new_tokens = tokens,
+                    "Compaction suspected: tokens dropped {:.0}%",
+                    (1.0 - tokens as f64 / prev as f64) * 100.0
+                );
+            } else {
+                self.compaction_suspected = false;
+            }
+        }
+        self.context_tokens = Some(tokens);
+        self.context_percent = Some(percent);
+        self.context_updated_at = Some(Utc::now().to_rfc3339());
+        self.context_source = Some(source.to_string());
     }
 
     /// Drain all scheduled wakes that are due (target_beat <= current beat).

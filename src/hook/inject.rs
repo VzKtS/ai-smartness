@@ -97,7 +97,13 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
 
     // Record interaction in beat system
     let mut beat_state = BeatState::load(&agent_data);
-    beat_state.record_interaction(None, None);
+    beat_state.record_interaction(session_id, None);
+
+    // E1: Context token tracking from Claude Code transcript
+    if let Some(sid) = session_id {
+        update_context_from_transcript(&mut beat_state, sid);
+    }
+
     beat_state.save(&agent_data);
 
     // Load and update session state
@@ -302,6 +308,46 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
         print!("{}\n\n{}", injection, message);
     }
     tracing::info!("inject::run() completed");
+}
+
+/// E1: Update context tokens from Claude Code transcript JSONL.
+/// Finds the transcript for the current session, reads last usage, applies throttle.
+fn update_context_from_transcript(beat_state: &mut BeatState, session_id: &str) {
+    use ai_smartness::storage::transcript;
+
+    let transcript_path = match transcript::find_transcript(session_id) {
+        Some(p) => p,
+        None => {
+            tracing::debug!(session_id, "Transcript not found, skipping context tracking");
+            return;
+        }
+    };
+
+    let info = match transcript::read_last_usage(&transcript_path) {
+        Some(i) => i,
+        None => {
+            tracing::debug!("Failed to parse usage from transcript");
+            return;
+        }
+    };
+
+    // Adaptive throttle: skip update if not needed
+    if !beat_state.should_update_context(info.percent) {
+        tracing::debug!(
+            percent = info.percent,
+            "Context update throttled (no significant change)"
+        );
+        return;
+    }
+
+    tracing::info!(
+        tokens = info.total_tokens,
+        percent = format!("{:.1}", info.percent),
+        window = info.window_size,
+        "Context tokens updated from transcript"
+    );
+
+    beat_state.update_context(info.total_tokens, info.percent, "transcript");
 }
 
 fn extract_message(input: &str) -> String {

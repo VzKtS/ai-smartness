@@ -11,4 +11,5 @@ pub mod project_registry_impl;
 pub mod shared_storage;
 pub mod threads;
 pub mod topic_index;
+pub mod transcript;
 pub mod concept_index;
