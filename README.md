@@ -1,6 +1,6 @@
 ## AI Smartness ##
 
-[![AI Smartness Demo](./readme-src/ai-smartness-loop.png)](https://youtu.be/VyybK5BYJrA)
+![AI Smartness Demo](./readme-src/ai-smartness.gif)
 
 Meta-cognition layer for Claude Code agents (and other ones soon "OpenAI-codex,mistral" will come after) with multi-agent memory isolation, cognitive acting, and intelligent memory management.
 
