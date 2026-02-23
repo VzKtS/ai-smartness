@@ -8,7 +8,7 @@ A persistent memory system that transforms Claude Code into an agent capable of 
 
 Compatible with VS Code (Actually work) & Claude Code CLI (Active resolving et dev but can work or will soon).
 
-![AI Smartness Dashboard](.ai-smartness/readme-src/ai-smartness-dashboard.png)
+![AI Smartness Dashboard](.readme-src/ai-smartness-dashboard.png)
 
 ## Creator speech ##
 
@@ -16,7 +16,7 @@ Where I want to go: the goal is to offer a system whose runtime engine provider 
 
 One of the primary goals was to offer the possibility of running an advanced multi-agent system that could operate without API billing through a flat-rate plan (Claude MAX 100/200). Meanwhile, Anthropic launched the "Team Agent," which is far from convincing me, and which, in my use case, motivates me to continue its development and the related research.
 
-![AI Smartness Graph](.ai-smartness/readme-src/ai-smartness-graph.png)
+![AI Smartness Graph](.readme-src/ai-smartness-graph.png)
 
 ## This description is not exhaustive. ##
 
