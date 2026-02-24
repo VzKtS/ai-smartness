@@ -112,9 +112,18 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     session.save(&agent_data);
 
     // Send prompt to daemon for extraction (fire-and-forget)
-    let _ = ai_smartness::processing::daemon_ipc_client::send_capture(
-        project_hash, agent_id, "prompt", &message,
-    );
+    // Phase A: skip capture for short prompts (< MIN_PROMPT_LENGTH chars)
+    if message.chars().count() < ai_smartness::constants::MIN_PROMPT_LENGTH {
+        tracing::debug!(
+            chars = message.chars().count(),
+            min = ai_smartness::constants::MIN_PROMPT_LENGTH,
+            "Prompt too short for capture, skip IPC"
+        );
+    } else {
+        let _ = ai_smartness::processing::daemon_ipc_client::send_prompt_capture(
+            project_hash, agent_id, &message, session_id,
+        );
+    }
 
     // Load user profile, auto-detect traits and rules from message
     let mut profile = UserProfile::load(&agent_data);

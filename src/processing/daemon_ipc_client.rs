@@ -73,6 +73,25 @@ pub fn send_capture(
     call_daemon("tool_capture", params)
 }
 
+/// Send a prompt capture to the daemon (distinct from tool captures).
+/// Uses "prompt_capture" method so the daemon creates a CaptureJob with is_prompt=true.
+pub fn send_prompt_capture(
+    project_hash: &str,
+    agent_id: &str,
+    prompt: &str,
+    session_id: Option<&str>,
+) -> AiResult<serde_json::Value> {
+    let mut params = serde_json::json!({
+        "project_hash": project_hash,
+        "agent_id": agent_id,
+        "prompt": prompt,
+    });
+    if let Some(sid) = session_id {
+        params["session_id"] = serde_json::Value::String(sid.to_string());
+    }
+    call_daemon("prompt_capture", params)
+}
+
 /// Ping the daemon to check if it's alive.
 pub fn ping() -> AiResult<bool> {
     match call_daemon("ping", serde_json::json!({})) {

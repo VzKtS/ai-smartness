@@ -71,6 +71,25 @@ pub fn process_capture(
         .filter(|p| !p.is_expired(ttl))
         .map(|ctx| ctx.content.as_str());
 
+    // Phase B: Gate LLM relevance for short prompts (51-150 chars)
+    if source_type == "prompt" {
+        let char_count = cleaned.chars().count();
+        if char_count <= ai_smartness::constants::PROMPT_RELEVANCE_GATE_MAX {
+            match check_prompt_relevance(&cleaned, agent_context, guardian) {
+                Ok(true) => {
+                    tracing::info!(chars = char_count, "Short prompt judged RELEVANT by gate LLM");
+                }
+                Ok(false) => {
+                    tracing::info!(chars = char_count, "Short prompt judged NOT relevant, dropping");
+                    return Ok(None);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Relevance gate LLM failed, proceeding normally");
+                }
+            }
+        }
+    }
+
     let extraction = extractor::extract(
         &cleaned,
         source,
@@ -181,5 +200,64 @@ pub fn process_prompt(
     guardian: &GuardianConfig,
 ) -> AiResult<Option<String>> {
     tracing::info!(prompt_len = prompt.len(), "Processing prompt capture");
+
+    // Phase A safety net: reject prompts < MIN_PROMPT_LENGTH chars (defence in depth)
+    if prompt.chars().count() < ai_smartness::constants::MIN_PROMPT_LENGTH {
+        tracing::debug!(chars = prompt.chars().count(), "Prompt too short, skipping");
+        return Ok(None);
+    }
+
     process_capture(conn, pending, "prompt", prompt, None, thread_quota, guardian)
+}
+
+/// Gate LLM for short prompts (51-150 chars).
+/// Judges whether the prompt has extractive value relative to current context.
+///
+/// Procedural order: raw content FIRST, context at END.
+/// Consistent with the Thinkbridge pipeline — the LLM judges content
+/// before being influenced by existing context.
+fn check_prompt_relevance(
+    prompt: &str,
+    agent_context: Option<&str>,
+    guardian: &GuardianConfig,
+) -> ai_smartness::AiResult<bool> {
+    let context_block = match agent_context {
+        Some(ctx) if !ctx.is_empty() => format!(
+            "\n\nRecent agent context:\n---\n{}\n---",
+            truncate_safe(ctx, 500)
+        ),
+        _ => String::new(),
+    };
+
+    let gate_prompt = format!(
+        r#"Evaluate whether this user message contains extractable information (concepts, decisions, facts, intentions).
+
+Message:
+"{}"
+{}
+
+Reply ONLY with JSON: {{"relevant": true}} or {{"relevant": false}}
+- true = contains at least one concept, fact, decision or actionable intention
+- false = purely procedural message, confirmation, acknowledgment, or conversational noise
+
+Examples false: "yes that's good", "ok perfect", "go", "dispatch", "thanks", "I just wanted to make sure"
+Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", "add a 30s timeout""#,
+        prompt, context_block
+    );
+
+    let model = guardian.extraction.llm.model.as_cli_flag();
+    let response = ai_smartness::processing::llm_subprocess::call_claude_with_model(&gate_prompt, model)?;
+
+    // Parse JSON response
+    if let Some(start) = response.find('{') {
+        if let Some(end) = response.rfind('}') {
+            let json_str = &response[start..=end];
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                return Ok(v.get("relevant").and_then(|r| r.as_bool()).unwrap_or(true));
+            }
+        }
+    }
+
+    // Parse failure → fail-open (treat as relevant)
+    Ok(true)
 }
