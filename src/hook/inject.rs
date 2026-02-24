@@ -8,6 +8,7 @@
 //!   0.5  Onboarding (first session only)
 //!   1.   Lightweight context (thread count, beat, memory pressure)
 //!   1.5  Session state (continuity, files modified, resume context)
+//!   1.6  Post-compaction synthesis (when context was compacted — session snapshot)
 //!   2.   Cognitive inbox (inter-agent messages)
 //!   3.   Pins (user-pinned content + pins.json with expiration)
 //!   4.   Memory retrieval (similar threads)
@@ -32,6 +33,8 @@ use ai_smartness::storage::migrations;
 use ai_smartness::storage::path_utils;
 use ai_smartness::storage::threads::ThreadStorage;
 use rusqlite::Connection;
+
+use super::compact;
 
 /// Run the inject hook.
 /// `input` is the raw stdin already read by hook/mod.rs.
@@ -106,6 +109,17 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
 
     beat_state.save(&agent_data);
 
+    // Compaction synthesis — generate or load when compaction detected
+    let compaction_synthesis = if beat_state.compaction_suspected {
+        tracing::info!("Compaction detected — generating session synthesis");
+        let synthesis = compact::generate_synthesis(&conn, project_hash, agent_id);
+        beat_state.compaction_suspected = false;
+        beat_state.save(&agent_data);
+        synthesis
+    } else {
+        compact::load_latest_synthesis(project_hash, agent_id)
+    };
+
     // Load and update session state
     let mut session = SessionState::load(&agent_data, agent_id, project_hash);
     session.record_prompt(&message);
@@ -172,6 +186,18 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
             }
         }
         None => tracing::debug!("Layer 1.5: no session context"),
+    }
+
+    // Layer 1.6: Post-compaction synthesis (session snapshot after context compaction)
+    if let Some(ref synthesis) = compaction_synthesis {
+        let layer = format!("<system-reminder>\n{}\n</system-reminder>", synthesis);
+        if layer.len() < budget {
+            budget -= layer.len();
+            injections.push(layer);
+            tracing::info!(size = synthesis.len(), "Layer 1.6: post-compaction synthesis injected");
+        } else {
+            tracing::debug!("Layer 1.6: exceeds budget, skipped");
+        }
     }
 
     // Layer 1.7: Cognitive nudge (conditional maintenance reminder)

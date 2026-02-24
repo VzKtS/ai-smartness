@@ -5,10 +5,9 @@
 
 use std::path::Path;
 
-use ai_smartness::storage::database::{open_connection, ConnectionRole};
-use ai_smartness::storage::migrations;
 use ai_smartness::storage::path_utils;
 use ai_smartness::storage::threads::ThreadStorage;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,23 +27,19 @@ pub struct WorkItem {
 }
 
 /// Generate a synthesis of current work context.
-/// Called when context window is near capacity.
-pub fn generate_synthesis(project_hash: &str, agent_id: &str) -> Option<String> {
-    let db_path = path_utils::agent_db_path(project_hash, agent_id);
-    if !db_path.exists() {
-        return None;
-    }
-
-    let conn = open_connection(&db_path, ConnectionRole::Hook).ok()?;
-    migrations::migrate_agent_db(&conn).ok()?;
-
-    let threads = ThreadStorage::list_active(&conn).ok()?;
+/// Called when context compaction is detected.
+pub fn generate_synthesis(conn: &Connection, project_hash: &str, agent_id: &str) -> Option<String> {
+    let threads = ThreadStorage::list_active(conn).ok()?;
     if threads.is_empty() {
         return None;
     }
 
+    // Sort by importance (most critical threads first)
+    let mut sorted = threads;
+    sorted.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+
     // Build synthesis from active threads
-    let active_work: Vec<WorkItem> = threads
+    let active_work: Vec<WorkItem> = sorted
         .iter()
         .take(10)
         .map(|t| WorkItem {
@@ -55,7 +50,7 @@ pub fn generate_synthesis(project_hash: &str, agent_id: &str) -> Option<String> 
         .collect();
 
     // Key insights: threads with high importance
-    let mut key_insights: Vec<String> = threads.iter()
+    let mut key_insights: Vec<String> = sorted.iter()
         .filter(|t| t.importance >= 0.7)
         .take(5)
         .map(|t| {
@@ -83,7 +78,7 @@ pub fn generate_synthesis(project_hash: &str, agent_id: &str) -> Option<String> 
     }
 
     // Open questions: threads tagged __focus__ (active investigation topics)
-    let open_questions: Vec<String> = threads.iter()
+    let open_questions: Vec<String> = sorted.iter()
         .filter(|t| t.tags.iter().any(|tag| tag.contains("__focus__")))
         .take(5)
         .map(|t| {
@@ -102,8 +97,7 @@ pub fn generate_synthesis(project_hash: &str, agent_id: &str) -> Option<String> 
         open_questions,
     };
 
-    // Save to synthesis dir
-    let agent_data = path_utils::agent_data_dir(project_hash, agent_id);
+    // Save to synthesis dir (reuse agent_data from pins read above)
     save_synthesis(&agent_data, &synthesis);
 
     // Return formatted for injection
@@ -133,7 +127,7 @@ fn format_for_injection(synthesis: &SynthesisReport) -> String {
         for item in &synthesis.active_work {
             out.push_str(&format!("- {}", item.title));
             if let Some(ref s) = item.summary {
-                out.push_str(&format!(": {}", &s[..s.len().min(100)]));
+                out.push_str(&format!(": {}", ai_smartness::constants::truncate_safe(s, 100)));
             }
             out.push('\n');
         }
