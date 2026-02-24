@@ -9,3 +9,6 @@ libonnxruntime.*
 
 # Claude Code (local only)
 .claude/
+
+# Personal scripts
+ai-smartness-stats.sh
