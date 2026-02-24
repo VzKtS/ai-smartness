@@ -77,6 +77,23 @@ impl SharedStorage {
     }
 
     pub fn subscribe(conn: &Connection, sub: &Subscription) -> AiResult<()> {
+        // Validate that the shared thread exists before attempting subscription.
+        // This prevents FK constraint violations when subscribing to non-existent shared_ids.
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM shared_threads WHERE shared_id = ?1",
+                params![&sub.shared_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| AiError::Storage(format!("Failed to check shared thread existence: {}", e)))?;
+
+        if !exists {
+            return Err(AiError::InvalidInput(format!(
+                "Cannot subscribe: shared thread '{}' does not exist",
+                sub.shared_id
+            )));
+        }
+
         let now = time_utils::to_sqlite(&time_utils::now());
         conn.execute(
             "INSERT OR REPLACE INTO subscriptions (id, shared_id, subscriber_agent, subscribed_at)
@@ -243,5 +260,70 @@ mod tests {
         let ids: Vec<&str> = results.iter().map(|r| r.shared_id.as_str()).collect();
         assert!(ids.contains(&"s1"));
         assert!(ids.contains(&"s2"));
+    }
+
+    #[test]
+    fn test_subscribe_validates_shared_thread_exists() {
+        let conn = setup_shared_db();
+        insert_shared(&conn, "s1", "[\"test\"]", "network");
+
+        // Subscription to existing shared thread should succeed
+        let sub = Subscription {
+            shared_id: "s1".to_string(),
+            subscriber_agent: "agent-a".to_string(),
+            subscribed_at: time_utils::now(),
+            last_synced: None,
+        };
+        let result = SharedStorage::subscribe(&conn, &sub);
+        assert!(result.is_ok(), "Should succeed for existing shared thread");
+
+        // Subscription to non-existent shared thread should fail (FK constraint validation)
+        let bad_sub = Subscription {
+            shared_id: "s999".to_string(),
+            subscriber_agent: "agent-b".to_string(),
+            subscribed_at: time_utils::now(),
+            last_synced: None,
+        };
+        let result = SharedStorage::subscribe(&conn, &bad_sub);
+        assert!(result.is_err(), "Should fail for non-existent shared thread");
+        assert!(
+            result.unwrap_err().to_string().contains("does not exist"),
+            "Error should mention non-existent shared thread"
+        );
+    }
+
+    #[test]
+    fn test_batch_subscribe_to_valid_threads() {
+        let conn = setup_shared_db();
+        // Create 10 shared threads
+        for i in 1..=10 {
+            insert_shared(&conn, &format!("s{}", i), "[\"test\"]", "network");
+        }
+
+        // Subscribe agent to all 10 threads — should all succeed
+        for i in 1..=10 {
+            let sub = Subscription {
+                shared_id: format!("s{}", i),
+                subscriber_agent: "agent-x".to_string(),
+                subscribed_at: time_utils::now(),
+                last_synced: None,
+            };
+            let result = SharedStorage::subscribe(&conn, &sub);
+            assert!(
+                result.is_ok(),
+                "Subscription to s{} failed: {:?}",
+                i,
+                result.err()
+            );
+        }
+
+        // Verify all subscriptions were recorded
+        let subs = SharedStorage::list_subscriptions(&conn, "agent-x").unwrap();
+        assert_eq!(
+            subs.len(),
+            10,
+            "Should have exactly 10 subscriptions, got {}",
+            subs.len()
+        );
     }
 }
