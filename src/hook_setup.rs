@@ -167,11 +167,20 @@ fn install_local_permissions(claude_dir: &Path) -> Result<()> {
 
 /// Sync full_permissions into a project's `settings.local.json`.
 ///
-/// When `enabled` is true, adds `Bash(*)`, `Edit(*)`, `Write(*)` to `permissions.allow`.
+/// When `enabled` is true, adds all tool patterns to `permissions.allow` in `.claude/settings.local.json`.
 /// When false, removes them.
 pub fn sync_full_permissions(project_path: &Path, enabled: bool) -> Result<()> {
     let local_path = project_path.join(".claude/settings.local.json");
-    let patterns = ["Bash(*)", "Edit(*)", "Write(*)"];
+    let patterns = [
+        "Bash(*)",
+        "Edit(*)",
+        "Write(*)",
+        "MultiEdit(*)",
+        "WebFetch(*)",
+        "WebSearch(*)",
+        "NotebookEdit(*)",
+        "Task(*)",
+    ];
 
     let mut local: serde_json::Value = if local_path.exists() {
         let content = std::fs::read_to_string(&local_path)
