@@ -1890,7 +1890,6 @@ function refreshGraphColors() {
     RELATION_COLORS['ChildOf'] = getThemeColor('--info') || '#40b0e8';
     RELATION_COLORS['Sibling'] = getThemeColor('--success') || '#40d0a0';
     RELATION_COLORS['Extends'] = getThemeColor('--warning') || '#e8a735';
-    RELATION_COLORS['Depends'] = getThemeColor('--warning') || '#d07040';
     RELATION_COLORS['Contradicts'] = getThemeColor('--danger') || '#ef4444';
     RELATION_COLORS['Replaces'] = getThemeColor('--accent') || '#6090c8';
     if (graphNodes.length > 0) {
