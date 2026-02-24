@@ -90,13 +90,18 @@ fn resolve_agent(project_hash: &str, cli_agent_id: Option<&str>) -> Option<Strin
         }
     }
 
-    // 7. First registered agent
-    if let Some(first) = agents.first() {
-        tracing::info!(agent = %first, source = "first_registered", "Agent resolved (fallback to first registered)");
-        return Some(first.clone());
+    // No silent fallback. Unassigned sessions must be explicitly assigned.
+    // This prevents "session theft" where the alphabetically-first agent (e.g. arc)
+    // gets hijacked by every unassigned session.
+    let agent_count = agents.len();
+    if agent_count > 0 {
+        tracing::warn!(
+            agent_count,
+            "No agent assigned to this session. {} agents registered but none matched. \
+             Use ai_agent_select or set AI_SMARTNESS_AGENT_ID.",
+            agent_count
+        );
     }
-
-    // 8. No agents at all
     None
 }
 
@@ -228,9 +233,10 @@ pub fn run(project_hash: Option<&str>, agent_id: Option<&str>) {
         }
         None => {
             eprintln!(
-                "[ai-mcp] Error: No agent identity found.\n\
-                 Register an agent first: ai-smartness agent add <name> --project-hash {}\n\
-                 Or set AI_SMARTNESS_AGENT_ID environment variable.",
+                "[ai-mcp] Error: No agent assigned to this session.\n\
+                 Assign an agent:  call ai_agent_select with your session_id\n\
+                 Or register one:  ai-smartness agent add <name> --project-hash {}\n\
+                 Or set env var:   AI_SMARTNESS_AGENT_ID=<agent_id>",
                 project_hash
             );
             std::process::exit(1);
