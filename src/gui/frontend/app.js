@@ -1836,6 +1836,19 @@ let graphDrag = null;
 let graphHoveredNode = null;
 let graphSelectedNode = null;
 let graphAnimFrame = null;
+let graphRawThreads = [];
+let graphRawBridges = [];
+let graphSearchQuery = '';
+let graphHoveredEdge = null;
+
+// F0: rAF-throttled draw scheduler — prevents redundant repaints within one frame
+function scheduleGraphDraw() {
+    if (graphAnimFrame) return;
+    graphAnimFrame = requestAnimationFrame(() => {
+        graphAnimFrame = null;
+        drawGraph();
+    });
+}
 
 const GRAPH_COLORS = {
     active: '#00cc85',
@@ -1917,31 +1930,14 @@ async function loadGraph() {
     if (!aid) return;
 
     try {
-        const [activeThreads, bridges] = await Promise.all([
-            invoke('get_threads', { projectHash, agentId: aid, statusFilter: 'active' }),
+        const [threads, bridges] = await Promise.all([
+            invoke('get_threads', { projectHash, agentId: aid, statusFilter: 'all' }),
             invoke('get_bridges', { projectHash, agentId: aid }),
         ]);
 
-        // Lazy-load threads referenced by bridges but not in active set
-        const activeIds = new Set(activeThreads.map(t => t.id));
-        const missingIds = new Set();
-        for (const b of bridges) {
-            if (!activeIds.has(b.source_id)) missingIds.add(b.source_id);
-            if (!activeIds.has(b.target_id)) missingIds.add(b.target_id);
-        }
-        let threads = activeThreads;
-        if (missingIds.size > 0) {
-            try {
-                const allThreads = await invoke('get_threads', {
-                    projectHash, agentId: aid, statusFilter: 'all'
-                });
-                const missing = allThreads.filter(t => missingIds.has(t.id));
-                threads = [...activeThreads, ...missing];
-            } catch (_) { /* fallback: use active only */ }
-        }
-
-        // Filter dead bridges (weight <= 0.05)
         const liveBridges = bridges.filter(b => b.weight > 0.05);
+        graphRawThreads = threads;
+        graphRawBridges = liveBridges;
         buildGraph(threads, liveBridges);
         forceLayout(150);
         centerGraph();
@@ -1956,10 +1952,9 @@ async function loadGraph() {
 }
 
 function buildGraph(threads, bridges) {
-    const filter = document.getElementById('graph-filter').value;
     const idSet = new Set(threads.map(t => t.id));
 
-    // Build edges from bridges (only where both endpoints exist)
+    // Build edges with enriched fields
     graphEdges = bridges
         .filter(b => idSet.has(b.source_id) && idSet.has(b.target_id))
         .map(b => ({
@@ -1968,17 +1963,29 @@ function buildGraph(threads, bridges) {
             weight: b.weight || 0,
             relation: b.relation_type || 'RelatedTo',
             reason: b.reason || '',
+            confidence: b.confidence || 0,
+            shared_concepts: b.shared_concepts || [],
+            use_count: b.use_count || 0,
+            bridge_status: (b.status || 'Active').toLowerCase(),
         }));
 
-    // Filter nodes
-    let filtered = threads;
-    if (filter === 'bridged') {
-        const bridgedIds = new Set();
-        graphEdges.forEach(e => { bridgedIds.add(e.source); bridgedIds.add(e.target); });
-        filtered = threads.filter(t => bridgedIds.has(t.id));
-    }
+    // F4: Multi-criteria filtering
+    const fActive = document.getElementById('graph-f-active')?.checked ?? true;
+    const fSuspended = document.getElementById('graph-f-suspended')?.checked ?? false;
+    const fArchived = document.getElementById('graph-f-archived')?.checked ?? false;
+    const fImpMin = (parseInt(document.getElementById('graph-f-imp')?.value || '0')) / 100;
+    const fMinBridges = parseInt(document.getElementById('graph-f-bridges')?.value || '0');
 
-    // Build nodes with random initial positions
+    let filtered = threads.filter(t => {
+        const s = (t.status || 'Active').toLowerCase();
+        if (s === 'active' && !fActive) return false;
+        if (s === 'suspended' && !fSuspended) return false;
+        if (s === 'archived' && !fArchived) return false;
+        if ((t.importance || 0.5) < fImpMin) return false;
+        return true;
+    });
+
+    // Build nodes with enriched fields
     graphNodes = filtered.map(t => ({
         id: t.id,
         title: t.title || 'Untitled',
@@ -1986,6 +1993,13 @@ function buildGraph(threads, bridges) {
         importance: t.importance || 0.5,
         weight: t.weight || 0.5,
         topics: t.topics || [],
+        labels: t.labels || [],
+        concepts: t.concepts || [],
+        summary: t.summary || '',
+        origin_type: t.origin_type || '',
+        injection_stats: t.injection_stats || null,
+        created_at: t.created_at || '',
+        last_active: t.last_active || '',
         x: (Math.random() - 0.5) * 600,
         y: (Math.random() - 0.5) * 400,
         vx: 0, vy: 0,
@@ -1995,6 +2009,27 @@ function buildGraph(threads, bridges) {
     // Re-filter edges to match filtered nodes
     const nodeIds = new Set(graphNodes.map(n => n.id));
     graphEdges = graphEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
+
+    // F4: Min bridges connectivity filter
+    if (fMinBridges > 0) {
+        const bc = {};
+        graphEdges.forEach(e => { bc[e.source] = (bc[e.source] || 0) + 1; bc[e.target] = (bc[e.target] || 0) + 1; });
+        graphNodes = graphNodes.filter(n => (bc[n.id] || 0) >= fMinBridges);
+        const nodeIds2 = new Set(graphNodes.map(n => n.id));
+        graphEdges = graphEdges.filter(e => nodeIds2.has(e.source) && nodeIds2.has(e.target));
+    }
+}
+
+// F4: Apply filters client-side and re-layout
+function applyGraphFilters() {
+    if (graphRawThreads.length === 0) return;
+    buildGraph(graphRawThreads, graphRawBridges);
+    forceLayout(150);
+    centerGraph();
+    scheduleGraphDraw();
+    renderGraphLegend();
+    document.getElementById('graph-stats').textContent =
+        `${graphNodes.length} threads, ${graphEdges.length} bridges`;
 }
 
 // Barnes-Hut quadtree for O(n log n) repulsion force calculation.
@@ -2202,28 +2237,49 @@ function drawGraph() {
     const nodeMap = {};
     graphNodes.forEach(n => { nodeMap[n.id] = n; });
 
+    // F0: Viewport bounds in world space for off-screen culling
+    const viewL = -tx / scale - 120, viewR = (rect.width - tx) / scale + 120;
+    const viewT = -ty / scale - 80, viewB = (rect.height - ty) / scale + 80;
+
+    // F1: Search matching set
+    const sq = graphSearchQuery.toLowerCase();
+    const searchOn = sq.length > 0;
+    const searchHits = searchOn ? new Set(
+        graphNodes.filter(n =>
+            n.title.toLowerCase().includes(sq) ||
+            n.topics.some(t => t.toLowerCase().includes(sq)) ||
+            n.labels.some(l => l.toLowerCase().includes(sq))
+        ).map(n => n.id)
+    ) : null;
+
     // Draw edges
     for (const e of graphEdges) {
         const a = nodeMap[e.source], b = nodeMap[e.target];
         if (!a || !b) continue;
+        // F0: Cull edges fully off-screen
+        if ((a.x < viewL && b.x < viewL) || (a.x > viewR && b.x > viewR) ||
+            (a.y < viewT && b.y < viewT) || (a.y > viewB && b.y > viewB)) continue;
+        // F1: Hide edges between non-matching nodes
+        if (searchOn && !searchHits.has(e.source) && !searchHits.has(e.target)) continue;
+
         const ax = a.x * scale + tx, ay = a.y * scale + ty;
         const bx = b.x * scale + tx, by = b.y * scale + ty;
 
         const isHighlight = graphSelectedNode &&
             (e.source === graphSelectedNode.id || e.target === graphSelectedNode.id);
+        const isEdgeHover = graphHoveredEdge === e;
 
         ctx.beginPath();
         ctx.moveTo(ax, ay);
         ctx.lineTo(bx, by);
-        ctx.strokeStyle = isHighlight
+        ctx.strokeStyle = (isHighlight || isEdgeHover)
             ? GRAPH_COLORS.edge_highlight
             : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default);
-        ctx.lineWidth = isHighlight ? 2.5 : Math.max(0.5, Math.sqrt(e.weight) * 3);
-        ctx.globalAlpha = isHighlight ? 1 : 0.55 + Math.sqrt(e.weight) * 0.4;
+        ctx.lineWidth = (isHighlight || isEdgeHover) ? 2.5 : Math.max(0.5, Math.sqrt(e.weight) * 3);
+        ctx.globalAlpha = (isHighlight || isEdgeHover) ? 1 : 0.55 + Math.sqrt(e.weight) * 0.4;
         ctx.stroke();
         ctx.globalAlpha = 1;
 
-        // F1: Edge labels (relation_type + weight)
         if (showLabels || showWeights) {
             const mx = (ax + bx) / 2, my = (ay + by) / 2;
             ctx.font = '9px monospace';
@@ -2238,12 +2294,16 @@ function drawGraph() {
 
     // Draw nodes as labeled rectangles
     for (const n of graphNodes) {
+        // F0: Cull nodes off-screen
+        if (n.x < viewL || n.x > viewR || n.y < viewT || n.y > viewB) continue;
+
         const nx = n.x * scale + tx, ny = n.y * scale + ty;
         const isHovered = graphHoveredNode === n;
         const isSelected = graphSelectedNode === n;
+        // F1: Dim non-matching nodes during search
+        const isDimmed = searchOn && !searchHits.has(n.id);
 
         const label = n.title.length > 22 ? n.title.substring(0, 20) + '..' : n.title;
-        // F3: Scale font & padding with importance (range 0.8x to 1.3x)
         const impScale = 0.8 + (n.importance || 0.5) * 0.5;
         const fontSize = Math.max(9, 11 * Math.sqrt(scale) * impScale);
         ctx.font = `${fontSize}px sans-serif`;
@@ -2252,7 +2312,6 @@ function drawGraph() {
         const rw = tw + padX * 2;
         const rh = fontSize + padY * 2;
 
-        // Store world-space dimensions for hit detection
         n._rw = rw / scale;
         n._rh = rh / scale;
 
@@ -2262,7 +2321,7 @@ function drawGraph() {
         ctx.beginPath();
         ctx.roundRect(rx, ry, rw, rh, cr);
         ctx.fillStyle = GRAPH_COLORS[n.status] || GRAPH_COLORS.active;
-        ctx.globalAlpha = 0.3 + n.weight * 0.7;
+        ctx.globalAlpha = isDimmed ? 0.12 : (0.3 + n.weight * 0.7);
         ctx.fill();
         ctx.globalAlpha = 1;
 
@@ -2272,13 +2331,14 @@ function drawGraph() {
             ctx.stroke();
         }
 
-        // Draw label inside rectangle
-        ctx.fillStyle = GRAPH_COLORS.text;
+        ctx.fillStyle = isDimmed ? GRAPH_COLORS.text_dim : GRAPH_COLORS.text;
+        ctx.globalAlpha = isDimmed ? 0.25 : 1;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, nx, ny);
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
+        ctx.globalAlpha = 1;
     }
 }
 
@@ -2295,6 +2355,24 @@ function graphNodeAt(wx, wy) {
         const hw = (n._rw || n.radius * 2) / 2 + 4;
         const hh = (n._rh || n.radius * 2) / 2 + 4;
         if (Math.abs(n.x - wx) <= hw && Math.abs(n.y - wy) <= hh) return n;
+    }
+    return null;
+}
+
+// F6: Edge hit detection — point-to-segment distance
+function graphEdgeAt(wx, wy) {
+    const threshold = 8 / graphTransform.scale;
+    const nm = {};
+    graphNodes.forEach(n => { nm[n.id] = n; });
+    for (const e of graphEdges) {
+        const a = nm[e.source], b = nm[e.target];
+        if (!a || !b) continue;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        if (len2 === 0) continue;
+        const t = Math.max(0, Math.min(1, ((wx - a.x) * dx + (wy - a.y) * dy) / len2));
+        const px = a.x + t * dx, py = a.y + t * dy;
+        if (Math.sqrt((wx - px) ** 2 + (wy - py) ** 2) < threshold) return e;
     }
     return null;
 }
@@ -2327,32 +2405,54 @@ if (graphCanvas) {
                 graphDrag.node.y = wy + graphDrag.offsetY;
                 graphDrag.moved = true;
             }
-            drawGraph();
+            scheduleGraphDraw();
             return;
         }
 
         const node = graphNodeAt(wx, wy);
-        if (node !== graphHoveredNode) {
-            graphHoveredNode = node;
-            graphCanvas.style.cursor = node ? 'pointer' : 'grab';
-            drawGraph();
-        }
+        const edge = node ? null : graphEdgeAt(wx, wy);
+        const needRedraw = node !== graphHoveredNode || edge !== graphHoveredEdge;
+        graphHoveredNode = node;
+        graphHoveredEdge = edge;
+        graphCanvas.style.cursor = (node || edge) ? 'pointer' : 'grab';
+        if (needRedraw) scheduleGraphDraw();
 
-        // F0: Tooltip on hover
+        // F6: Enriched tooltips for nodes and edges
         const tooltip = document.getElementById('graph-tooltip');
         if (node) {
-            const bridgeCount = graphEdges.filter(e => e.source === node.id || e.target === node.id).length;
+            const bc = graphEdges.filter(e => e.source === node.id || e.target === node.id).length;
+            let age = '';
+            if (node.created_at) {
+                const d = Math.floor((Date.now() - new Date(node.created_at).getTime()) / 86400000);
+                age = `Created: ${d}d ago`;
+            }
+            if (node.last_active) {
+                const d = Math.floor((Date.now() - new Date(node.last_active).getTime()) / 86400000);
+                age += (age ? ' · ' : '') + `Active: ${d}d ago`;
+            }
             tooltip.innerHTML =
                 `<strong style="color:${GRAPH_COLORS.text}">${esc(node.title)}</strong><br>` +
                 `<span style="color:${GRAPH_COLORS[node.status] || GRAPH_COLORS.info}">● ${node.status}</span>` +
-                ` &nbsp; Importance: <strong>${node.importance.toFixed(2)}</strong><br>` +
-                `Weight: ${node.weight.toFixed(2)} &nbsp; Bridges: ${bridgeCount}` +
-                (node.topics.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '');
+                ` &nbsp; Imp: <strong>${node.importance.toFixed(2)}</strong> &nbsp; W: ${node.weight.toFixed(2)} &nbsp; Bridges: ${bc}` +
+                (age ? `<br><span style="color:${GRAPH_COLORS.text_dim}">${age}</span>` : '') +
+                (node.labels.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Labels:</span> ${esc(node.labels.slice(0, 3).join(', '))}` : '') +
+                (node.topics.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '') +
+                (node.origin_type ? `<br><span style="color:${GRAPH_COLORS.text_dim}">Origin: ${esc(node.origin_type)}</span>` : '');
+        } else if (edge) {
+            const nm = {};
+            graphNodes.forEach(n => { nm[n.id] = n; });
+            const src = nm[edge.source], tgt = nm[edge.target];
+            tooltip.innerHTML =
+                `<strong style="color:${RELATION_COLORS[edge.relation] || GRAPH_COLORS.info}">${esc(edge.relation)}</strong><br>` +
+                `${esc((src?.title || '').substring(0, 25))} → ${esc((tgt?.title || '').substring(0, 25))}<br>` +
+                `Weight: <strong>${edge.weight.toFixed(2)}</strong> &nbsp; Confidence: ${edge.confidence.toFixed(2)}` +
+                (edge.reason ? `<br><span style="color:${GRAPH_COLORS.text_dim}">${esc(edge.reason.substring(0, 80))}</span>` : '') +
+                (edge.shared_concepts.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Shared:</span> ${esc(edge.shared_concepts.slice(0, 5).join(', '))}` : '');
+        }
+        if (node || edge) {
             const containerRect = graphCanvas.parentElement.getBoundingClientRect();
-            const canvasRect = graphCanvas.getBoundingClientRect();
             let tipX = e.clientX - containerRect.left + 14;
             let tipY = e.clientY - containerRect.top + 14;
-            // Keep tooltip within container bounds
             tooltip.style.display = 'block';
             if (tipX + 280 > containerRect.width) tipX = tipX - 300;
             if (tipY + 120 > containerRect.height) tipY = tipY - 130;
@@ -2367,7 +2467,7 @@ if (graphCanvas) {
         if (graphDrag && graphDrag.node && !graphDrag.moved) {
             graphSelectedNode = graphDrag.node;
             showGraphDetail(graphDrag.node);
-            drawGraph();
+            scheduleGraphDraw();
         }
         graphDrag = null;
     });
@@ -2376,7 +2476,8 @@ if (graphCanvas) {
         graphDrag = null;
         graphHoveredNode = null;
         document.getElementById('graph-tooltip').style.display = 'none';
-        drawGraph();
+        graphHoveredEdge = null;
+        scheduleGraphDraw();
     });
 
     graphCanvas.addEventListener('wheel', (e) => {
@@ -2389,7 +2490,7 @@ if (graphCanvas) {
         graphTransform.x = sx - (sx - graphTransform.x) * (newScale / graphTransform.scale);
         graphTransform.y = sy - (sy - graphTransform.y) * (newScale / graphTransform.scale);
         graphTransform.scale = newScale;
-        drawGraph();
+        scheduleGraphDraw();
     }, { passive: false });
 }
 
@@ -2397,12 +2498,41 @@ function showGraphDetail(node) {
     const panel = document.getElementById('graph-detail');
     panel.style.display = 'block';
     document.getElementById('graph-detail-title').textContent = node.title;
-    document.getElementById('graph-detail-meta').innerHTML =
-        `<strong>Status:</strong> ${esc(node.status)}<br>` +
-        `<strong>Weight:</strong> ${node.weight.toFixed(2)}<br>` +
-        `<strong>Importance:</strong> ${node.importance.toFixed(2)}<br>` +
-        `<strong>Topics:</strong> ${node.topics.join(', ') || '-'}`;
 
+    let meta = `<strong>Status:</strong> <span style="color:${GRAPH_COLORS[node.status] || GRAPH_COLORS.active}">● ${node.status}</span><br>`;
+    meta += `<strong>Weight:</strong> ${node.weight.toFixed(2)} &nbsp; <strong>Importance:</strong> ${node.importance.toFixed(2)}<br>`;
+    if (node.origin_type) meta += `<strong>Origin:</strong> ${esc(node.origin_type)}<br>`;
+    meta += `<strong>Topics:</strong> ${node.topics.join(', ') || '-'}<br>`;
+    if (node.labels.length > 0) {
+        meta += `<strong>Labels:</strong> ` + node.labels.map(l =>
+            `<span style="display:inline-block;padding:1px 6px;border-radius:10px;background:rgba(100,200,255,0.15);color:${GRAPH_COLORS.info};font-size:11px;margin:1px">${esc(l)}</span>`
+        ).join(' ') + '<br>';
+    }
+    if (node.concepts.length > 0) {
+        meta += `<strong>Concepts:</strong> <span style="color:var(--text-dim)">${esc(node.concepts.slice(0, 12).join(', '))}</span><br>`;
+    }
+    if (node.summary) {
+        meta += `<strong>Summary:</strong> <span style="color:var(--text-dim);font-style:italic">${esc(node.summary.substring(0, 200))}</span><br>`;
+    }
+    // Age info
+    let age = '';
+    if (node.created_at) {
+        const d = Math.floor((Date.now() - new Date(node.created_at).getTime()) / 86400000);
+        age += `Created ${d}d ago`;
+    }
+    if (node.last_active) {
+        const d = Math.floor((Date.now() - new Date(node.last_active).getTime()) / 86400000);
+        age += (age ? ' · ' : '') + `Active ${d}d ago`;
+    }
+    if (age) meta += `<strong>Age:</strong> ${age}<br>`;
+    // Injection stats
+    if (node.injection_stats) {
+        const is = node.injection_stats;
+        meta += `<strong>Injections:</strong> ${is.injection_count || 0} &nbsp; <strong>Used:</strong> ${is.used_count || 0}<br>`;
+    }
+    document.getElementById('graph-detail-meta').innerHTML = meta;
+
+    // Bridges section with enriched info
     const connected = graphEdges.filter(e => e.source === node.id || e.target === node.id);
     if (connected.length > 0) {
         const nodeMap = {};
@@ -2414,7 +2544,7 @@ function showGraphDetail(node) {
                 const other = nodeMap[otherId];
                 const otherTitle = other ? other.title.substring(0, 30) : otherId.substring(0, 8);
                 return `<span style="color:${RELATION_COLORS[e.relation] || GRAPH_COLORS.info}">${esc(e.relation)}</span> ` +
-                    `→ ${esc(otherTitle)} (${e.weight.toFixed(2)})`;
+                    `→ ${esc(otherTitle)} <span style="color:var(--text-dim)">(w:${e.weight.toFixed(2)} c:${e.confidence.toFixed(2)})</span>`;
             }).join('<br>');
     } else {
         document.getElementById('graph-detail-bridges').innerHTML =
@@ -2425,14 +2555,64 @@ function showGraphDetail(node) {
 document.getElementById('btn-graph-detail-close')?.addEventListener('click', () => {
     document.getElementById('graph-detail').style.display = 'none';
     graphSelectedNode = null;
-    drawGraph();
+    scheduleGraphDraw();
 });
 
 document.getElementById('btn-graph-refresh')?.addEventListener('click', loadGraph);
 document.getElementById('graph-agent-select')?.addEventListener('change', loadGraph);
-document.getElementById('graph-filter')?.addEventListener('change', loadGraph);
-document.getElementById('graph-show-labels')?.addEventListener('change', drawGraph);
-document.getElementById('graph-show-weights')?.addEventListener('change', drawGraph);
+document.getElementById('graph-show-labels')?.addEventListener('change', () => scheduleGraphDraw());
+document.getElementById('graph-show-weights')?.addEventListener('change', () => scheduleGraphDraw());
+
+// F1: Search input — live filtering + Enter to center + Escape to clear
+document.getElementById('graph-search')?.addEventListener('input', (e) => {
+    graphSearchQuery = e.target.value;
+    scheduleGraphDraw();
+});
+document.getElementById('graph-search')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        e.target.value = '';
+        graphSearchQuery = '';
+        scheduleGraphDraw();
+    } else if (e.key === 'Enter') {
+        const q = graphSearchQuery.toLowerCase();
+        if (!q) return;
+        const match = graphNodes.find(n =>
+            n.title.toLowerCase().includes(q) ||
+            n.topics.some(t => t.toLowerCase().includes(q)) ||
+            n.labels.some(l => l.toLowerCase().includes(q))
+        );
+        if (match) {
+            const canvas = document.getElementById('graph-canvas');
+            const rect = canvas.getBoundingClientRect();
+            graphTransform.x = rect.width / 2 - match.x * graphTransform.scale;
+            graphTransform.y = rect.height / 2 - match.y * graphTransform.scale;
+            graphSelectedNode = match;
+            showGraphDetail(match);
+            scheduleGraphDraw();
+        }
+    }
+});
+
+// F4: Filter controls — all trigger client-side re-filter
+document.getElementById('graph-f-active')?.addEventListener('change', applyGraphFilters);
+document.getElementById('graph-f-suspended')?.addEventListener('change', applyGraphFilters);
+document.getElementById('graph-f-archived')?.addEventListener('change', applyGraphFilters);
+document.getElementById('graph-f-bridges')?.addEventListener('change', applyGraphFilters);
+document.getElementById('graph-f-imp')?.addEventListener('input', (e) => {
+    document.getElementById('graph-f-imp-label').textContent = (parseInt(e.target.value) / 100).toFixed(2);
+    applyGraphFilters();
+});
+document.getElementById('btn-graph-filter-reset')?.addEventListener('click', () => {
+    document.getElementById('graph-f-active').checked = true;
+    document.getElementById('graph-f-suspended').checked = false;
+    document.getElementById('graph-f-archived').checked = false;
+    document.getElementById('graph-f-imp').value = '0';
+    document.getElementById('graph-f-imp-label').textContent = '0.00';
+    document.getElementById('graph-f-bridges').value = '0';
+    const searchEl = document.getElementById('graph-search');
+    if (searchEl) { searchEl.value = ''; graphSearchQuery = ''; }
+    applyGraphFilters();
+});
 
 // F2: Legend — render relation colors + status colors
 function renderGraphLegend() {
@@ -2467,11 +2647,11 @@ function graphZoom(factor) {
     graphTransform.x = cx - (cx - graphTransform.x) * (newScale / graphTransform.scale);
     graphTransform.y = cy - (cy - graphTransform.y) * (newScale / graphTransform.scale);
     graphTransform.scale = newScale;
-    drawGraph();
+    scheduleGraphDraw();
 }
 document.getElementById('btn-graph-zoom-in')?.addEventListener('click', () => graphZoom(1.3));
 document.getElementById('btn-graph-zoom-out')?.addEventListener('click', () => graphZoom(1 / 1.3));
 document.getElementById('btn-graph-zoom-fit')?.addEventListener('click', () => {
     centerGraph();
-    drawGraph();
+    scheduleGraphDraw();
 });

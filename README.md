@@ -240,3 +240,38 @@ Rust Cargo workspace with 11 crates:
 - **ai-cli** — Command-line interface
 - **ai-hook** — Claude Code hooks (inject + capture)
 
+---
+
+## Current Status — v1.1.10
+
+**Release:** Main branch (v1.1.10) — stable release
+**Build:** Verified via meta-plan audit (2026-02-24)
+**Test coverage:** Unit tests + integration tests (Rust: `cargo test`)
+
+### Sprint Completion Status
+
+| Sprint | Feature | Status | LOC | Notes |
+|--------|---------|--------|-----|-------|
+| 1–3 ✅ | Memory audit, bridge decay fix, context tracking | **DONE** | ~2000 | 8 plans fully implemented & verified |
+| 4 🔄 | DAG graph features (search, filter, detail panel) | **IN PROGRESS** | 1175 | Wave 1-5: search + filter + minimap |
+| 5 🔄 | TUI-headless + isolation fixes (B1-B3) | **IN PROGRESS** | 30 | Project hash filtering, agent query isolation |
+| Final 📋 | Arborescence refactor (20 → 3 root files) | **QUEUED** | 600+ | After Sprint 4-5 stabilization |
+
+**Total remaining:** ~2660 LOC (vs initial 6760+ estimate)
+
+---
+
+## Roadmap Highlights
+
+**Dynamic Quota Engine (DQE)** — Replaces fixed thread modes (Light/Normal/Heavy/Max) with dynamic quota: `base = 100/sqrt(n_agents) × activity × subscription_tier`. MIN=5, MAX=300, coordinator 2× boost. Infrastructure ready, ~310 LOC to ship.
+
+**Provider Portability** — Codebase architecturally multi-provider (`AiProvider` trait, `HookMechanism` enum, DB `provider` column). Runtime currently Claude-only. Gap: ~1500–2000 LOC to activate.
+
+**Remote GUI** — Same binary as local/remote client. Project config: `local` / `remote://host:port` / `p2p://peer-id`. Blocker: 32 direct SQLite opens need migration to HTTP/REST API (~3000 LOC).
+
+**Arborescence Refactor** — Major restructure: 20 root files → 3, all files < 800 LOC, new modules `core/`, `config/`, `adapters/`, dead code removal. Zero functional change.
+
+---
+
+See [docs/FEATURES.md](docs/FEATURES.md) for exhaustive feature inventory and [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for complete user guide.
+
