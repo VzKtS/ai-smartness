@@ -67,17 +67,19 @@ impl Decayer {
             }
         }
 
-        // 2. Decay bridge weights (Active + Weak — so Weak bridges can still die)
+        // 2. Decay bridge weights — delta-based (fixes compound decay bug)
+        // Uses last_reinforced as the delta checkpoint: each cycle computes
+        // decay only for the time since last_reinforced, then updates it.
         let mut bridges = BridgeStorage::list_active(conn)?;
         bridges.extend(BridgeStorage::list_by_status(conn, BridgeStatus::Weak)?);
         for bridge in &bridges {
-            let reference_time = bridge.last_reinforced.unwrap_or(bridge.created_at);
-            let age_days = (now - reference_time).num_hours() as f64 / 24.0;
-            if age_days <= 0.0 {
+            let reference = bridge.last_reinforced.unwrap_or(bridge.created_at);
+            let delta_days = (now - reference).num_hours() as f64 / 24.0;
+            if delta_days <= 0.0 {
                 continue;
             }
 
-            let decay_factor = 0.5f64.powf(age_days / cfg.bridge_half_life);
+            let decay_factor = 0.5f64.powf(delta_days / cfg.bridge_half_life);
             let new_weight = bridge.weight * decay_factor;
 
             if new_weight < cfg.bridge_death_threshold {
@@ -86,8 +88,10 @@ impl Decayer {
             } else if new_weight < crate::constants::BRIDGE_WEAK_THRESHOLD {
                 BridgeStorage::update_status(conn, &bridge.id, BridgeStatus::Weak)?;
                 BridgeStorage::update_weight(conn, &bridge.id, new_weight)?;
+                BridgeStorage::update_last_reinforced(conn, &bridge.id, now)?;
             } else {
                 BridgeStorage::update_weight(conn, &bridge.id, new_weight)?;
+                BridgeStorage::update_last_reinforced(conn, &bridge.id, now)?;
             }
         }
 

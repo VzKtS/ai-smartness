@@ -510,7 +510,7 @@ pub fn get_bridges(
         .map_err(|e| e.to_string())?;
     migrations::migrate_agent_db(&conn).map_err(|e| e.to_string())?;
 
-    let bridges = BridgeStorage::list_all(&conn).map_err(|e| e.to_string())?;
+    let bridges = BridgeStorage::list_active(&conn).map_err(|e| e.to_string())?;
     let result: Vec<serde_json::Value> = bridges.iter().map(|b| {
         serde_json::json!({
             "id": b.id,

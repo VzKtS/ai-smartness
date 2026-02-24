@@ -1831,9 +1831,11 @@ const GRAPH_COLORS = {
 
 const RELATION_COLORS = {
     'ChildOf': '#8ad4ff',
-    'SiblingOf': '#b5e86c',
-    'RelatedTo': '#ffd56c',
-    'Supersedes': '#d68cff',
+    'Sibling': '#b5e86c',
+    'Extends': '#ffd56c',
+    'Depends': '#ff9f6c',
+    'Contradicts': '#ff6c6c',
+    'Replaces': '#d68cff',
 };
 
 async function loadGraph() {
@@ -1858,11 +1860,32 @@ async function loadGraph() {
     if (!aid) return;
 
     try {
-        const [threads, bridges] = await Promise.all([
+        const [activeThreads, bridges] = await Promise.all([
             invoke('get_threads', { projectHash, agentId: aid, statusFilter: 'active' }),
             invoke('get_bridges', { projectHash, agentId: aid }),
         ]);
-        buildGraph(threads, bridges);
+
+        // Lazy-load threads referenced by bridges but not in active set
+        const activeIds = new Set(activeThreads.map(t => t.id));
+        const missingIds = new Set();
+        for (const b of bridges) {
+            if (!activeIds.has(b.source_id)) missingIds.add(b.source_id);
+            if (!activeIds.has(b.target_id)) missingIds.add(b.target_id);
+        }
+        let threads = activeThreads;
+        if (missingIds.size > 0) {
+            try {
+                const allThreads = await invoke('get_threads', {
+                    projectHash, agentId: aid, statusFilter: 'all'
+                });
+                const missing = allThreads.filter(t => missingIds.has(t.id));
+                threads = [...activeThreads, ...missing];
+            } catch (_) { /* fallback: use active only */ }
+        }
+
+        // Filter dead bridges (weight <= 0.05)
+        const liveBridges = bridges.filter(b => b.weight > 0.05);
+        buildGraph(threads, liveBridges);
         forceLayout(150);
         centerGraph();
         drawGraph();

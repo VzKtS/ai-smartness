@@ -211,6 +211,19 @@ impl BridgeStorage {
         Ok(())
     }
 
+    pub fn update_last_reinforced(
+        conn: &Connection,
+        id: &str,
+        when: chrono::DateTime<chrono::Utc>,
+    ) -> AiResult<()> {
+        conn.execute(
+            "UPDATE bridges SET last_reinforced = ?1 WHERE id = ?2",
+            params![time_utils::to_sqlite(&when), id],
+        )
+        .map_err(|e| AiError::Storage(format!("Update bridge last_reinforced failed: {}", e)))?;
+        Ok(())
+    }
+
     pub fn update_status(conn: &Connection, id: &str, status: BridgeStatus) -> AiResult<()> {
         conn.execute(
             "UPDATE bridges SET status = ?1 WHERE id = ?2",
