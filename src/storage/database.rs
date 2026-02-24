@@ -86,3 +86,53 @@ pub fn checkpoint_passive(conn: &Connection) -> AiResult<()> {
         .map_err(|e| AiError::Storage(format!("WAL checkpoint failed: {}", e)))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::{DAEMON_WAL_AUTOCHECKPOINT, HOOK_WAL_AUTOCHECKPOINT, SQLITE_BUSY_TIMEOUT_MS};
+
+    fn tmp_db_path() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        (dir, path)
+    }
+
+    #[test]
+    fn test_open_connection_smoke() {
+        let (_dir, path) = tmp_db_path();
+        let conn = open_connection(&path, ConnectionRole::Hook);
+        assert!(conn.is_ok(), "open_connection should not error");
+    }
+
+    #[test]
+    fn test_busy_timeout_set_correctly() {
+        let (_dir, path) = tmp_db_path();
+        let conn = open_connection(&path, ConnectionRole::Hook).unwrap();
+        let timeout: u32 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout, SQLITE_BUSY_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn test_daemon_wal_autocheckpoint() {
+        let (_dir, path) = tmp_db_path();
+        let conn = open_connection(&path, ConnectionRole::Daemon).unwrap();
+        let ckpt: u32 = conn
+            .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(ckpt, DAEMON_WAL_AUTOCHECKPOINT);
+    }
+
+    #[test]
+    fn test_hook_wal_autocheckpoint() {
+        let (_dir, path) = tmp_db_path();
+        let conn = open_connection(&path, ConnectionRole::Hook).unwrap();
+        let ckpt: u32 = conn
+            .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(ckpt, HOOK_WAL_AUTOCHECKPOINT);
+        assert_ne!(ckpt, DAEMON_WAL_AUTOCHECKPOINT);
+    }
+}

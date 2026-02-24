@@ -105,3 +105,136 @@ pub fn handle_sync(
         Ok(serde_json::json!({"synced_all": synced}))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{params, Connection};
+
+    fn setup_shared_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_shared_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_agent_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_agent_db(&conn).unwrap();
+        conn
+    }
+
+    fn setup_registry_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        ai_smartness::storage::migrations::migrate_registry_db(&conn).unwrap();
+        conn
+    }
+
+    fn insert_shared(conn: &Connection, id: &str, topics: &str) {
+        let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+        conn.execute(
+            "INSERT INTO shared_threads (shared_id, source_thread_id, owner_agent, title, topics, visibility, published_at, updated_at)
+             VALUES (?1, ?2, 'agent-a', ?3, ?4, 'network', ?5, ?5)",
+            params![id, format!("src-{id}"), format!("Thread {id}"), topics, now],
+        ).unwrap();
+    }
+
+    fn make_ctx<'a>(agent: &'a Connection, registry: &'a Connection, shared: &'a Connection) -> ToolContext<'a> {
+        ToolContext {
+            agent_conn: agent,
+            registry_conn: registry,
+            shared_conn: shared,
+            project_hash: "test-proj",
+            agent_id: "test-agent",
+        }
+    }
+
+    #[test]
+    fn test_discover_empty() {
+        let agent = setup_agent_db();
+        let reg = setup_registry_db();
+        let shared = setup_shared_db();
+        let ctx = make_ctx(&agent, &reg, &shared);
+
+        let result = handle_discover(&serde_json::json!({}), &ctx).unwrap();
+        assert_eq!(result["count"], 0);
+    }
+
+    #[test]
+    fn test_discover_returns_shared_threads() {
+        let agent = setup_agent_db();
+        let reg = setup_registry_db();
+        let shared = setup_shared_db();
+        insert_shared(&shared, "s1", "[\"rust\"]");
+        insert_shared(&shared, "s2", "[\"python\"]");
+        let ctx = make_ctx(&agent, &reg, &shared);
+
+        let result = handle_discover(&serde_json::json!({}), &ctx).unwrap();
+        assert_eq!(result["count"], 2);
+    }
+
+    #[test]
+    fn test_subscribe_and_unsubscribe() {
+        let agent = setup_agent_db();
+        let reg = setup_registry_db();
+        let shared = setup_shared_db();
+        insert_shared(&shared, "s1", "[\"rust\"]");
+        let ctx = make_ctx(&agent, &reg, &shared);
+
+        let sub_result = handle_subscribe(&serde_json::json!({"shared_id": "s1"}), &ctx).unwrap();
+        assert_eq!(sub_result["subscribed"], "s1");
+
+        let unsub_result = handle_unsubscribe(&serde_json::json!({"shared_id": "s1"}), &ctx).unwrap();
+        assert_eq!(unsub_result["unsubscribed"], "s1");
+    }
+
+    #[test]
+    fn test_recommend_excludes_subscribed() {
+        let agent = setup_agent_db();
+        let reg = setup_registry_db();
+        let shared = setup_shared_db();
+        insert_shared(&shared, "s1", "[\"rust\"]");
+        insert_shared(&shared, "s2", "[\"python\"]");
+        let ctx = make_ctx(&agent, &reg, &shared);
+
+        // Subscribe to s1
+        handle_subscribe(&serde_json::json!({"shared_id": "s1"}), &ctx).unwrap();
+
+        let result = handle_recommend(&serde_json::json!({}), &ctx).unwrap();
+        let recs = result["recommendations"].as_array().unwrap();
+        // s1 is subscribed, but both are owned by agent-a, not test-agent
+        // So recommend excludes subscribed (s1) but includes s2
+        assert!(recs.iter().all(|r| r["shared_id"] != "s1"));
+        assert!(recs.iter().any(|r| r["shared_id"] == "s2"));
+    }
+
+    #[test]
+    fn test_sync_single() {
+        let agent = setup_agent_db();
+        let reg = setup_registry_db();
+        let shared = setup_shared_db();
+        insert_shared(&shared, "s1", "[\"rust\"]");
+        let ctx = make_ctx(&agent, &reg, &shared);
+
+        handle_subscribe(&serde_json::json!({"shared_id": "s1"}), &ctx).unwrap();
+        let result = handle_sync(&serde_json::json!({"shared_id": "s1"}), &ctx).unwrap();
+        assert_eq!(result["synced"], "s1");
+    }
+
+    #[test]
+    fn test_sync_all() {
+        let agent = setup_agent_db();
+        let reg = setup_registry_db();
+        let shared = setup_shared_db();
+        insert_shared(&shared, "s1", "[\"rust\"]");
+        insert_shared(&shared, "s2", "[\"python\"]");
+        let ctx = make_ctx(&agent, &reg, &shared);
+
+        handle_subscribe(&serde_json::json!({"shared_id": "s1"}), &ctx).unwrap();
+        handle_subscribe(&serde_json::json!({"shared_id": "s2"}), &ctx).unwrap();
+        let result = handle_sync(&serde_json::json!({}), &ctx).unwrap();
+        assert_eq!(result["synced_all"], 2);
+    }
+}
