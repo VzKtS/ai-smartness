@@ -1824,21 +1824,58 @@ let graphSelectedNode = null;
 let graphAnimFrame = null;
 
 const GRAPH_COLORS = {
-    active: '#4caf50',
-    suspended: '#ff9800',
-    archived: '#666',
-    edge_default: 'rgba(160,220,255,0.5)',
-    edge_highlight: 'rgba(180,230,255,0.95)',
+    active: '#00cc85',
+    suspended: '#e8a735',
+    archived: '#3a4e46',
+    edge_default: 'rgba(0,120,184,0.5)',
+    edge_highlight: 'rgba(0,204,133,0.95)',
+    text: '#e2ece8',
+    text_dim: '#5e7a70',
+    surface: '#0c1614',
+    info: '#0078b8',
 };
 
 const RELATION_COLORS = {
-    'ChildOf': '#8ad4ff',
-    'Sibling': '#b5e86c',
-    'Extends': '#ffd56c',
-    'Depends': '#ff9f6c',
-    'Contradicts': '#ff6c6c',
-    'Replaces': '#d68cff',
+    'ChildOf': '#40b0e8',
+    'Sibling': '#40d0a0',
+    'Extends': '#e8a735',
+    'Depends': '#d07040',
+    'Contradicts': '#ef4444',
+    'Replaces': '#6090c8',
 };
+
+// Read CSS variable value from computed style (cached — call only on theme change)
+function getThemeColor(varName) {
+    return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+}
+
+// Refresh graph colors from CSS variables — called on theme/mode change, NEVER in render loop
+function refreshGraphColors() {
+    GRAPH_COLORS.active = getThemeColor('--success') || '#00cc85';
+    GRAPH_COLORS.suspended = getThemeColor('--warning') || '#e8a735';
+    GRAPH_COLORS.archived = getThemeColor('--text-disabled') || '#3a4e46';
+    GRAPH_COLORS.edge_default = (getThemeColor('--info') || '#0078b8') + '80';
+    GRAPH_COLORS.edge_highlight = (getThemeColor('--accent') || '#00cc85') + 'F2';
+    GRAPH_COLORS.text = getThemeColor('--text') || '#e2ece8';
+    GRAPH_COLORS.text_dim = getThemeColor('--text-dim') || '#5e7a70';
+    GRAPH_COLORS.surface = getThemeColor('--surface') || '#0c1614';
+    GRAPH_COLORS.info = getThemeColor('--info') || '#0078b8';
+    RELATION_COLORS['Extends'] = getThemeColor('--warning') || '#e8a735';
+    RELATION_COLORS['Contradicts'] = getThemeColor('--danger') || '#ef4444';
+    if (graphNodes.length > 0) {
+        drawGraph();
+        renderGraphLegend();
+    }
+}
+
+// Watch for theme/mode changes to refresh graph colors
+new MutationObserver(() => { refreshGraphColors(); }).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-theme', 'data-mode']
+});
+
+// Initial color sync
+refreshGraphColors();
 
 async function loadGraph() {
     if (!projectHash) {
@@ -2172,7 +2209,7 @@ function drawGraph() {
         if (showLabels || showWeights) {
             const mx = (ax + bx) / 2, my = (ay + by) / 2;
             ctx.font = '9px monospace';
-            ctx.fillStyle = '#aaa';
+            ctx.fillStyle = GRAPH_COLORS.text_dim;
             let edgeLabel = '';
             if (showLabels) edgeLabel += e.relation;
             if (showLabels && showWeights) edgeLabel += ' ';
@@ -2212,13 +2249,13 @@ function drawGraph() {
         ctx.globalAlpha = 1;
 
         if (isHovered || isSelected) {
-            ctx.strokeStyle = '#fff';
+            ctx.strokeStyle = GRAPH_COLORS.text;
             ctx.lineWidth = 2;
             ctx.stroke();
         }
 
         // Draw label inside rectangle
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = GRAPH_COLORS.text;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, nx, ny);
@@ -2288,11 +2325,11 @@ if (graphCanvas) {
         if (node) {
             const bridgeCount = graphEdges.filter(e => e.source === node.id || e.target === node.id).length;
             tooltip.innerHTML =
-                `<strong style="color:#fff">${esc(node.title)}</strong><br>` +
-                `<span style="color:${GRAPH_COLORS[node.status] || '#6cf'}">● ${node.status}</span>` +
+                `<strong style="color:${GRAPH_COLORS.text}">${esc(node.title)}</strong><br>` +
+                `<span style="color:${GRAPH_COLORS[node.status] || GRAPH_COLORS.info}">● ${node.status}</span>` +
                 ` &nbsp; Importance: <strong>${node.importance.toFixed(2)}</strong><br>` +
                 `Weight: ${node.weight.toFixed(2)} &nbsp; Bridges: ${bridgeCount}` +
-                (node.topics.length > 0 ? `<br><span style="color:#8ad4ff">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '');
+                (node.topics.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '');
             const containerRect = graphCanvas.parentElement.getBoundingClientRect();
             const canvasRect = graphCanvas.getBoundingClientRect();
             let tipX = e.clientX - containerRect.left + 14;
@@ -2358,7 +2395,7 @@ function showGraphDetail(node) {
                 const otherId = e.source === node.id ? e.target : e.source;
                 const other = nodeMap[otherId];
                 const otherTitle = other ? other.title.substring(0, 30) : otherId.substring(0, 8);
-                return `<span style="color:${RELATION_COLORS[e.relation] || '#6cf'}">${esc(e.relation)}</span> ` +
+                return `<span style="color:${RELATION_COLORS[e.relation] || GRAPH_COLORS.info}">${esc(e.relation)}</span> ` +
                     `→ ${esc(otherTitle)} (${e.weight.toFixed(2)})`;
             }).join('<br>');
     } else {
@@ -2386,18 +2423,18 @@ function renderGraphLegend() {
     const showLegend = document.getElementById('graph-show-legend')?.checked;
     if (!showLegend) { legend.style.display = 'none'; return; }
     legend.style.display = 'block';
-    let html = '<strong style="color:#fff;font-size:12px">Legend</strong><br>';
-    html += '<span style="color:#888">— Nodes —</span><br>';
+    let html = `<strong style="color:${GRAPH_COLORS.text};font-size:12px">Legend</strong><br>`;
+    html += `<span style="color:${GRAPH_COLORS.text_dim}">— Nodes —</span><br>`;
     html += `<span style="color:${GRAPH_COLORS.active}">●</span> Active &nbsp; `;
     html += `<span style="color:${GRAPH_COLORS.suspended}">●</span> Suspended &nbsp; `;
     html += `<span style="color:${GRAPH_COLORS.archived}">●</span> Archived<br>`;
-    html += '<span style="color:#888">— Edges —</span><br>';
+    html += `<span style="color:${GRAPH_COLORS.text_dim}">— Edges —</span><br>`;
     const activeRelations = new Set(graphEdges.map(e => e.relation));
     for (const [rel, color] of Object.entries(RELATION_COLORS)) {
         if (!activeRelations.has(rel)) continue;
         html += `<span style="color:${color}">━</span> ${rel} &nbsp; `;
     }
-    html += '<br><span style="color:#888;font-size:10px">Node size ∝ importance</span>';
+    html += `<br><span style="color:${GRAPH_COLORS.text_dim};font-size:10px">Node size ∝ importance</span>`;
     legend.innerHTML = html;
 }
 document.getElementById('graph-show-legend')?.addEventListener('change', renderGraphLegend);
