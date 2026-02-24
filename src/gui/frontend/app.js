@@ -1878,9 +1878,9 @@ function getThemeColor(varName) {
 
 // Refresh graph colors from CSS variables — called on theme/mode change, NEVER in render loop
 function refreshGraphColors() {
-    GRAPH_COLORS.active = getThemeColor('--success') || '#00cc85';
-    GRAPH_COLORS.suspended = getThemeColor('--warning') || '#e8a735';
-    GRAPH_COLORS.archived = getThemeColor('--text-disabled') || '#3a4e46';
+    GRAPH_COLORS.active = getThemeColor('--accent') || '#00cc85';
+    GRAPH_COLORS.suspended = getThemeColor('--info') || '#0078b8';
+    GRAPH_COLORS.archived = getThemeColor('--primary') || '#0c1614';
     GRAPH_COLORS.edge_default = (getThemeColor('--info') || '#0078b8') + '80';
     GRAPH_COLORS.edge_highlight = (getThemeColor('--accent') || '#00cc85') + 'F2';
     GRAPH_COLORS.text = getThemeColor('--text') || '#e2ece8';
