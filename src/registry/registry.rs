@@ -60,6 +60,9 @@ pub(crate) fn agent_from_row(row: &Row) -> rusqlite::Result<Agent> {
             .ok()
             .flatten()
             .unwrap_or(false),
+        expected_model: row.get::<_, Option<String>>("expected_model")
+            .ok()
+            .flatten(),
     })
 }
 
@@ -76,8 +79,8 @@ impl AgentRegistry {
                 id, project_hash, name, description, role, capabilities,
                 status, last_seen, registered_at,
                 supervisor_id, coordination_mode, team, specializations, thread_mode,
-                report_to, custom_role, workspace_path, full_permissions
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                report_to, custom_role, workspace_path, full_permissions, expected_model
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 agent.id,
                 agent.project_hash,
@@ -97,6 +100,7 @@ impl AgentRegistry {
                 agent.custom_role,
                 agent.workspace_path,
                 agent.full_permissions,
+                agent.expected_model,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Register agent failed: {}", e)))?;
@@ -504,6 +508,10 @@ impl AgentRegistry {
             values.push(Box::new(fp));
             sets.push(format!("full_permissions = ?{}", values.len()));
         }
+        if let Some(ref em) = updates.expected_model {
+            values.push(Box::new(em.clone()));
+            sets.push(format!("expected_model = ?{}", values.len()));
+        }
 
         if sets.is_empty() {
             return Ok(());
@@ -557,6 +565,7 @@ impl AgentRegistry {
             custom_role,
             workspace_path: None,
             full_permissions: None,
+            expected_model: None,
         };
         Self::update(conn, agent_id, project_hash, &updates)
     }
@@ -770,6 +779,7 @@ pub struct AgentUpdate {
     pub custom_role: Option<String>,
     pub workspace_path: Option<String>,
     pub full_permissions: Option<bool>,
+    pub expected_model: Option<Option<String>>,
 }
 
 /// Hierarchy tree node.
@@ -838,6 +848,7 @@ mod tests {
             custom_role: None,
             workspace_path: String::new(),
             full_permissions: false,
+            expected_model: None,
         }
     }
 

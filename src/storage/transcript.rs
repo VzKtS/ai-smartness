@@ -19,6 +19,7 @@ pub struct ContextInfo {
     pub input: u64,
     pub output: u64,
     pub window_size: u64,
+    pub model: Option<String>,
 }
 
 /// Find the transcript JSONL file for a given session_id.
@@ -105,6 +106,8 @@ fn parse_last_usage(content: &str) -> Option<ContextInfo> {
 
     let percent = (total as f64 / window_size as f64) * 100.0;
 
+    let model = find_last_json_string(content, "model");
+
     Some(ContextInfo {
         total_tokens: total,
         percent,
@@ -113,6 +116,7 @@ fn parse_last_usage(content: &str) -> Option<ContextInfo> {
         input,
         output,
         window_size,
+        model,
     })
 }
 
@@ -128,6 +132,15 @@ fn find_last_json_number(content: &str, key: &str) -> Option<u64> {
         return None;
     }
     digits.parse().ok()
+}
+
+/// Find the last occurrence of `"key":"VALUE"` in content and return the string value.
+fn find_last_json_string(content: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{}\":\"", key);
+    let pos = content.rfind(&pattern)?;
+    let start = pos + pattern.len();
+    let end = content[start..].find('"')? + start;
+    Some(content[start..end].to_string())
 }
 
 #[cfg(test)]
@@ -151,8 +164,15 @@ mod tests {
     }
 
     #[test]
+    fn test_find_last_json_string() {
+        let content = r#""model":"claude-3-opus","model":"claude-sonnet-4-20250514""#;
+        assert_eq!(find_last_json_string(content, "model"), Some("claude-sonnet-4-20250514".to_string()));
+        assert_eq!(find_last_json_string(content, "missing"), None);
+    }
+
+    #[test]
     fn test_parse_last_usage_complete() {
-        let content = r#"{"type":"assistant","cache_creation_input_tokens":298,"cache_read_input_tokens":153696,"input_tokens":1,"output_tokens":24}"#;
+        let content = r#"{"type":"assistant","model":"claude-sonnet-4-20250514","cache_creation_input_tokens":298,"cache_read_input_tokens":153696,"input_tokens":1,"output_tokens":24}"#;
         let info = parse_last_usage(content).unwrap();
         assert_eq!(info.cache_creation, 298);
         assert_eq!(info.cache_read, 153696);
@@ -161,6 +181,7 @@ mod tests {
         assert_eq!(info.total_tokens, 154019);
         assert_eq!(info.window_size, 200_000);
         assert!((info.percent - 77.0).abs() < 0.1);
+        assert_eq!(info.model, Some("claude-sonnet-4-20250514".to_string()));
     }
 
     #[test]

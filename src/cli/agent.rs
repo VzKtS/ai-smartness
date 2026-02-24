@@ -57,6 +57,7 @@ pub fn add(
             custom_role: None,
             workspace_path: None,
             full_permissions: None,
+            expected_model: None,
         };
         AgentRegistry::update(&reg_conn, id, &hash, &update)
             .context("Failed to update renamed agent")?;
@@ -103,6 +104,7 @@ pub fn add(
         custom_role: None,
         workspace_path: String::new(),
         full_permissions: false,
+        expected_model: None,
     };
 
     AgentRegistry::register(&reg_conn, &agent)

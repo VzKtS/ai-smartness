@@ -48,6 +48,9 @@ pub struct BeatState {
     /// Source of context data: "transcript" (99%) or "tool_io" (30-50% fallback).
     #[serde(default)]
     pub context_source: Option<String>,
+    /// Current model detected from transcript (e.g. "claude-sonnet-4-20250514").
+    #[serde(default)]
+    pub model: Option<String>,
     /// True when a context compaction is suspected (tokens dropped >40%).
     #[serde(default)]
     pub compaction_suspected: bool,
@@ -126,6 +129,7 @@ impl Default for BeatState {
             context_percent: None,
             context_updated_at: None,
             context_source: None,
+            model: None,
             compaction_suspected: false,
             last_nudge_type: String::new(),
             last_nudge_beat: 0,
@@ -311,7 +315,7 @@ impl BeatState {
     }
 
     /// Update context tracking fields and detect compaction.
-    pub fn update_context(&mut self, tokens: u64, percent: f64, source: &str) {
+    pub fn update_context(&mut self, tokens: u64, percent: f64, source: &str, model: Option<String>) {
         // E2: Compaction detection — tokens dropped >40% from previous reading
         if let Some(prev) = self.context_tokens {
             if prev > 0 && tokens < prev * 60 / 100 {
@@ -329,6 +333,9 @@ impl BeatState {
         self.context_percent = Some(percent);
         self.context_updated_at = Some(Utc::now().to_rfc3339());
         self.context_source = Some(source.to_string());
+        if model.is_some() {
+            self.model = model;
+        }
     }
 
     /// Drain all scheduled wakes that are due (target_beat <= current beat).

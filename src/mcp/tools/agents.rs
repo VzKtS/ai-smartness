@@ -144,6 +144,7 @@ pub fn handle_agent_configure(
         custom_role: optional_str(params, "custom_role"),
         workspace_path: optional_str(params, "workspace_path"),
         full_permissions: super::optional_bool(params, "full_permissions"),
+        expected_model: super::optional_str(params, "expected_model").map(|s| if s.is_empty() { None } else { Some(s) }),
     };
 
     AgentRegistry::update(ctx.registry_conn, &agent_id, &project_hash, &update)?;
@@ -415,6 +416,7 @@ mod tests {
             custom_role: None,
             workspace_path: String::new(),
             full_permissions: false,
+            expected_model: None,
         };
         AgentRegistry::register(conn, &agent).unwrap();
     }

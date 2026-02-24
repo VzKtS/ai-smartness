@@ -96,6 +96,7 @@ pub fn run(path: Option<&str>) -> Result<()> {
         custom_role: None,
         workspace_path: String::new(),
         full_permissions: false,
+        expected_model: None,
     };
     ai_smartness::registry::registry::AgentRegistry::register(&reg_conn2, &agent)
         .context("Failed to register main agent")?;

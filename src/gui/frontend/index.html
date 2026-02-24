@@ -986,6 +986,15 @@
                     <option value="max">Max (200 threads)</option>
                 </select>
             </div>
+            <div class="modal-field">
+                <label for="new-agent-model" title="Expected Claude model for this agent. Used for mismatch detection when the agent runs on a different model than configured.">Expected Model</label>
+                <select id="new-agent-model">
+                    <option value="">— Default —</option>
+                    <option value="haiku">Haiku</option>
+                    <option value="sonnet">Sonnet</option>
+                    <option value="opus">Opus</option>
+                </select>
+            </div>
             <div class="modal-field modal-field-inline">
                 <input type="checkbox" id="new-agent-supervisor-flag">
                 <label for="new-agent-supervisor-flag" data-i18n="modal.issupervisor" title="Mark this agent as a supervisor node in the hierarchy. Supervisors appear as parent nodes in the team tree and can coordinate subordinate agents.">Is Supervisor</label>

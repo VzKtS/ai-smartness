@@ -400,6 +400,7 @@ mod tests {
             custom_role: None,
             workspace_path: String::new(),
             full_permissions: false,
+            expected_model: None,
         };
         AgentRegistry::register(conn, &agent).unwrap();
     }

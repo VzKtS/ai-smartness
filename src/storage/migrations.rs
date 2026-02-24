@@ -432,6 +432,14 @@ pub fn migrate_registry_db(conn: &Connection) -> AiResult<()> {
         set_schema_version(conn, 6)?;
     }
 
+    // V7: add expected_model column to agents
+    if version < 7 {
+        conn.execute_batch(
+            "ALTER TABLE agents ADD COLUMN expected_model TEXT;"
+        ).map_err(|e| AiError::Storage(format!("Registry DB V7 migration failed: {}", e)))?;
+        set_schema_version(conn, 7)?;
+    }
+
     Ok(())
 }
 

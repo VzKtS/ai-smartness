@@ -179,6 +179,9 @@ pub struct Agent {
 
     // --- Permissions ---
     pub full_permissions: bool,
+
+    // --- Model preference ---
+    pub expected_model: Option<String>,
 }
 
 // ── Role Templates ──

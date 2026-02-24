@@ -853,6 +853,7 @@ pub fn list_agents(project_hash: String) -> Result<serde_json::Value, String> {
             "report_to": a.report_to,
             "custom_role": a.custom_role,
             "full_permissions": a.full_permissions,
+            "expected_model": a.expected_model,
         })
     }).collect();
 
@@ -872,6 +873,7 @@ pub fn add_agent(
     report_to: Option<String>,
     custom_role: Option<String>,
     full_permissions: Option<bool>,
+    expected_model: Option<String>,
 ) -> Result<serde_json::Value, String> {
     tracing::info!(
         agent = %agent_id, name = %name, role = %role,
@@ -923,6 +925,7 @@ pub fn add_agent(
             custom_role: custom_role.clone(),
             workspace_path: None,
             full_permissions: full_permissions,
+            expected_model: expected_model.clone().map(|s| if s.is_empty() { None } else { Some(s) }),
         };
         AgentRegistry::update(&reg_conn, &agent_id, &project_hash, &update)
             .map_err(|e| e.to_string())?;
@@ -977,6 +980,7 @@ pub fn add_agent(
         custom_role,
         workspace_path: String::new(),
         full_permissions: full_permissions.unwrap_or(false),
+        expected_model: expected_model.filter(|s| !s.is_empty()),
     };
 
     AgentRegistry::register(&reg_conn, &agent)
@@ -1038,6 +1042,7 @@ pub fn update_agent(
     report_to: Option<String>,
     custom_role: Option<String>,
     full_permissions: Option<bool>,
+    expected_model: Option<String>,
 ) -> Result<serde_json::Value, String> {
     tracing::info!(
         agent = %agent_id, name = ?name, role = ?role, is_supervisor = ?is_supervisor,
@@ -1083,6 +1088,7 @@ pub fn update_agent(
         custom_role,
         workspace_path: None,
         full_permissions,
+        expected_model: expected_model.map(|s| if s.is_empty() { None } else { Some(s) }),
     };
 
     AgentRegistry::update(&reg_conn, &agent_id, &project_hash, &update)

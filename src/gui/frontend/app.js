@@ -504,6 +504,7 @@ async function addAgent() {
     const customRoleVal = document.getElementById('new-agent-custom-role').value.trim() || null;
     const reportToVal = document.getElementById('new-agent-report-to').value || null;
     const fullPermsVal = document.getElementById('new-agent-full-permissions').checked;
+    const modelVal = document.getElementById('new-agent-model').value || null;
     const errEl = document.getElementById('add-agent-error');
 
     if (!projectHash) { errEl.textContent = 'Select a project first'; return; }
@@ -523,6 +524,7 @@ async function addAgent() {
             reportTo: reportToVal,
             customRole: customRoleVal,
             fullPermissions: fullPermsVal,
+            expectedModel: modelVal,
         });
         document.getElementById('modal-add-agent').classList.remove('open');
         loadAgents();
@@ -1025,6 +1027,13 @@ function toggleAgentEditRow(tr, agent, toggleBtn) {
     const threadModeOptions = threadModes.map(m =>
         `<option value="${m.value}" ${m.value === curMode ? 'selected' : ''}>${m.label}</option>`
     ).join('');
+    const curModel = agent.expected_model || '';
+    const modelOptions = [
+        { value: '', label: '— Default —' },
+        { value: 'haiku', label: 'Haiku' },
+        { value: 'sonnet', label: 'Sonnet' },
+        { value: 'opus', label: 'Opus' },
+    ].map(m => `<option value="${m.value}" ${m.value === curModel ? 'selected' : ''}>${m.label}</option>`).join('');
 
     editTr.innerHTML = `<td colspan="10">
         <div class="agent-edit-form">
@@ -1052,6 +1061,9 @@ function toggleAgentEditRow(tr, agent, toggleBtn) {
                 </label>
                 <label>Thread Mode
                     <select class="ae-thread-mode">${threadModeOptions}</select>
+                </label>
+                <label>Expected Model
+                    <select class="ae-expected-model">${modelOptions}</select>
                 </label>
                 <label class="ae-inline">
                     <input type="checkbox" class="ae-is-supervisor" ${isSup ? 'checked' : ''}>
@@ -1110,6 +1122,7 @@ async function saveAgentEdit(editTr, original) {
     const customRole = editTr.querySelector('.ae-custom-role')?.value?.trim() ?? '';
     const reportTo = editTr.querySelector('.ae-report-to')?.value ?? '';
     const fullPermissions = editTr.querySelector('.ae-full-permissions')?.checked ?? false;
+    const expectedModel = editTr.querySelector('.ae-expected-model')?.value || null;
 
     const capabilities = capsStr ? capsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
     const specializations = specsStr ? specsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
@@ -1130,6 +1143,7 @@ async function saveAgentEdit(editTr, original) {
             reportTo,
             customRole,
             fullPermissions,
+            expectedModel,
         });
         if (result.threads_suspended > 0) {
             alert(`Thread mode updated. ${result.threads_suspended} thread(s) suspended to enforce new quota.`);

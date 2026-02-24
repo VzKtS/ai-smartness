@@ -150,13 +150,29 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     // Pre-fetch agent identity + authoritative quota from registry.
     // Called early so agent_quota is available to layers 1.7, 4, and 6.
     // The identity string is injected later at Layer 5.
-    let (agent_identity, agent_quota) = match build_agent_identity(project_hash, agent_id) {
-        Some((ctx, quota)) => (Some(ctx), quota),
+    let (agent_identity, agent_quota, expected_model) = match build_agent_identity(project_hash, agent_id) {
+        Some((ctx, quota, em)) => (Some(ctx), quota, em),
         None => {
             tracing::debug!(agent = agent_id, "Agent not found in registry, using beat.json quota fallback");
-            (None, beat_state.quota)
+            (None, beat_state.quota, None)
         }
     };
+
+    // Model mismatch warning: compare transcript model with expected_model
+    if let (Some(ref detected), Some(ref expected)) = (&beat_state.model, &expected_model) {
+        if !detected.contains(expected) {
+            let warning = format!(
+                "<system-reminder>\nWARNING: Model mismatch — this agent expects \"{}\" but is running on \"{}\". \
+                 Use /model to switch or update expected_model in GUI.\n</system-reminder>",
+                expected, detected
+            );
+            if warning.len() < budget {
+                budget -= warning.len();
+                injections.push(warning);
+                tracing::warn!(expected = %expected, detected = %detected, "Model mismatch detected");
+            }
+        }
+    }
 
     // Layer 1: Lightweight context + beat + session_id
     match build_lightweight_context(&conn, &agent_data, session_id) {
@@ -382,7 +398,7 @@ fn update_context_from_transcript(beat_state: &mut BeatState, session_id: &str) 
         "Context tokens updated from transcript"
     );
 
-    beat_state.update_context(info.total_tokens, info.percent, "transcript");
+    beat_state.update_context(info.total_tokens, info.percent, "transcript", info.model);
 }
 
 fn extract_message(input: &str) -> String {
@@ -614,7 +630,7 @@ fn build_memory_context(conn: &Connection, message: &str, agent_quota: usize) ->
 }
 
 /// Layer 5: Agent identity — role, hierarchy, subordinates.
-fn build_agent_identity(project_hash: &str, agent_id: &str) -> Option<(String, usize)> {
+fn build_agent_identity(project_hash: &str, agent_id: &str) -> Option<(String, usize, Option<String>)> {
     let registry_db = path_utils::registry_db_path();
     if !registry_db.exists() {
         tracing::debug!("Layer 5: registry DB not found");
@@ -679,7 +695,7 @@ fn build_agent_identity(project_hash: &str, agent_id: &str) -> Option<(String, u
          After switching, tell the user the change takes effect from their next message.\n",
     );
 
-    Some((ctx, agent_quota))
+    Some((ctx, agent_quota, agent.expected_model))
 }
 
 /// Layer 0.5: Onboarding prompt — injected once at first session.
