@@ -5,6 +5,7 @@
 //! Fallback: heuristic extraction when LLM unavailable.
 
 use crate::config::{ExtractionConfig, ImportanceRatingConfig, LabelSuggestionConfig};
+use crate::constants::truncate_safe;
 use crate::AiResult;
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +80,12 @@ pub fn extract(
     }
 
     match extract_via_llm(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context) {
-        Ok(extraction) => {
+        Ok(mut extraction) => {
+            // Prompt and Response: override summary with verbatim content (truncated).
+            // These are already human-readable — LLM synthesis only degrades them.
+            if matches!(source, ExtractionSource::Prompt | ExtractionSource::Response) {
+                extraction.summary = truncate_safe(content, 250).to_string();
+            }
             tracing::info!(mode = "llm", title = %extraction.title, confidence = extraction.confidence, "Extraction complete");
             Ok(extraction)
         }
@@ -200,19 +206,19 @@ Higher alignment = higher importance. No alignment does NOT mean low importance 
     };
 
     format!(
-        r#"Your role is to process the content provided to you in order to extract only the concepts that are humanly understandable.
+        r#"Your role is to process the content provided to you in order to extract only the text that are humanly understandable.
 
 ## ÉTAPE 1 — Classification (analysez le contenu ci-dessous, SANS contexte externe)
 
 ### title (max 50 chars)
 Specific, descriptive title capturing the core subject of the content.
 
-### subjects (2-5 items)
+### subjects (2-3 items)
 Concrete topics, concepts, or entities present in the content.
 Prefer specific terms over vague ones.
 Exclude noise words: {noise_words}
 
-## summary (max 200 chars)
+## summary (max 250 chars)
 Concise description of what this content contains.
 
 ### confidence (0.0-1.0)
@@ -225,12 +231,12 @@ Your self-assessment of how well YOU understood this content.
 Confidence measures YOUR comprehension, not content quality or relevance.
 A perfectly clear text about any subject = high confidence.
 
-### labels (1-4 items)
+### labels (1-3 items)
 Describe WHAT the content covers. Must reflect the subject matter.{label_hint}
 
 ## STEP 1B — Semantic explosion
 
-From the title, subjects, and labels you produced in Step 1, generate an associative concept cloud.
+From the topics and labels you produced in Step 1, generate an associative concept cloud.
 Include: synonyms, related domains, hypernyms, hyponyms, adjacent concepts.
 Single lowercase words only, **in English only**. No duplicates. Do NOT repeat subjects or labels.
 Between 5 and 25 items.
