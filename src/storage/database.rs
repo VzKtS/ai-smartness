@@ -43,16 +43,16 @@ pub fn open_connection(path: &std::path::Path, role: ConnectionRole) -> AiResult
 /// - foreign_keys = ON
 /// - temp_store = MEMORY
 fn configure_common(conn: &Connection) -> AiResult<()> {
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "PRAGMA journal_mode = WAL;
+         PRAGMA busy_timeout = {};
          PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -2000;
          PRAGMA foreign_keys = ON;
          PRAGMA temp_store = MEMORY;",
-    )
+        SQLITE_BUSY_TIMEOUT_MS,
+    ))
     .map_err(|e| AiError::Storage(format!("Failed to configure pragmas: {}", e)))?;
-    conn.execute(&format!("PRAGMA busy_timeout = {}", SQLITE_BUSY_TIMEOUT_MS), [])
-        .map_err(|e| AiError::Storage(format!("Failed to set busy_timeout: {}", e)))?;
     Ok(())
 }
 
