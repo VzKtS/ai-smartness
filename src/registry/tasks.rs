@@ -262,3 +262,91 @@ impl<T> OptionalExt<T> for Result<T, rusqlite::Error> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::{Agent, AgentStatus, CoordinationMode, ThreadMode};
+    use crate::registry::registry::AgentRegistry;
+    use crate::storage::migrations;
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+        migrations::migrate_registry_db(&conn).unwrap();
+        conn
+    }
+
+    fn insert_project(conn: &Connection, ph: &str) {
+        let now = crate::time_utils::to_sqlite(&crate::time_utils::now());
+        conn.execute(
+            "INSERT INTO projects (hash, path, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![ph, format!("/tmp/{}", ph), ph, now],
+        )
+        .unwrap();
+    }
+
+    fn register_agent(conn: &Connection, id: &str, ph: &str) {
+        let now = chrono::Utc::now();
+        let agent = Agent {
+            id: id.into(),
+            project_hash: ph.into(),
+            name: id.into(),
+            description: String::new(),
+            role: "dev".into(),
+            capabilities: vec![],
+            status: AgentStatus::Active,
+            last_seen: now,
+            registered_at: now,
+            supervisor_id: None,
+            coordination_mode: CoordinationMode::Autonomous,
+            team: None,
+            specializations: vec![],
+            thread_mode: ThreadMode::Normal,
+            current_activity: String::new(),
+            report_to: None,
+            custom_role: None,
+            workspace_path: String::new(),
+            full_permissions: false,
+            expected_model: None,
+        };
+        AgentRegistry::register(conn, &agent).unwrap();
+    }
+
+    // T-B3-storage: get_task filters by project_hash
+    #[test]
+    fn test_get_task_cross_project_isolation() {
+        let conn = setup_db();
+        insert_project(&conn, "proj-p");
+        insert_project(&conn, "proj-q");
+        register_agent(&conn, "worker-p", "proj-p");
+        register_agent(&conn, "worker-q", "proj-q");
+
+        // Create task in project P
+        let task = AgentTask {
+            id: "task-iso-1".into(),
+            project_hash: "proj-p".into(),
+            assigned_to: "worker-p".into(),
+            assigned_by: "worker-p".into(),
+            title: "Isolated task".into(),
+            description: String::new(),
+            priority: TaskPriority::Normal,
+            status: TaskStatus::Pending,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deadline: None,
+            dependencies: vec![],
+            result: None,
+        };
+        AgentTaskStorage::create_task(&conn, &task).unwrap();
+
+        // Get from project P → found
+        let found = AgentTaskStorage::get_task(&conn, "task-iso-1", "proj-p").unwrap();
+        assert!(found.is_some(), "Task should be found in its own project");
+
+        // Get from project Q → not found
+        let not_found = AgentTaskStorage::get_task(&conn, "task-iso-1", "proj-q").unwrap();
+        assert!(not_found.is_none(), "Task must be invisible from other project");
+    }
+}

@@ -531,4 +531,151 @@ mod tests {
 
         let _ = std::fs::remove_file(&signal_path);
     }
+
+    // -- Groupe B: Cross-project isolation helpers --
+
+    const PH_A: &str = "test-ph-proj-a";
+    const PH_B: &str = "test-ph-proj-b";
+
+    fn insert_project_with_hash(conn: &Connection, ph: &str) {
+        let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+        conn.execute(
+            "INSERT OR IGNORE INTO projects (hash, path, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![ph, format!("/tmp/{}", ph), ph, now],
+        ).unwrap();
+    }
+
+    fn register_agent_in_project(conn: &Connection, id: &str, project_hash: &str, caps: Vec<String>) {
+        let now = chrono::Utc::now();
+        let agent = ai_smartness::agent::Agent {
+            id: id.to_string(),
+            project_hash: project_hash.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            role: "programmer".to_string(),
+            capabilities: caps,
+            status: ai_smartness::agent::AgentStatus::Active,
+            last_seen: now,
+            registered_at: now,
+            supervisor_id: None,
+            coordination_mode: ai_smartness::agent::CoordinationMode::Autonomous,
+            team: None,
+            specializations: vec![],
+            thread_mode: ai_smartness::agent::ThreadMode::Normal,
+            current_activity: String::new(),
+            report_to: None,
+            custom_role: None,
+            workspace_path: String::new(),
+            full_permissions: false,
+            expected_model: None,
+        };
+        AgentRegistry::register(conn, &agent).unwrap();
+    }
+
+    // T-B1.1: agent_query — agents from project A invisible from project B
+    #[test]
+    fn test_agent_query_cross_project_isolation() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project_with_hash(&registry_conn, PH_A);
+        insert_project_with_hash(&registry_conn, PH_B);
+
+        // Register "coding" agent in project A only
+        register_agent_in_project(&registry_conn, "coder-a", PH_A, vec!["coding".into()]);
+        // Register "testing" agent in project B
+        register_agent_in_project(&registry_conn, "tester-b", PH_B, vec!["testing".into()]);
+
+        // Query from project B context for "coding" capability → 0 results
+        let ctx_b = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH_B,
+            agent_id: "tester-b",
+        };
+        let params = serde_json::json!({"capability": "coding"});
+        let result = handle_agent_query(&params, &ctx_b).unwrap();
+        assert_eq!(result["count"], 0, "Project B must not see project A's agents");
+
+        // Query from project A context → finds coder-a
+        let ctx_a = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH_A,
+            agent_id: "coder-a",
+        };
+        let result_a = handle_agent_query(&params, &ctx_a).unwrap();
+        assert_eq!(result_a["count"], 1, "Project A should find its own agent");
+    }
+
+    // T-B2.1: agent_configure ignores params project_hash, uses ctx
+    #[test]
+    fn test_agent_configure_uses_ctx_project_hash() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project_with_hash(&registry_conn, PH_A);
+        insert_project_with_hash(&registry_conn, PH_B);
+        register_agent_in_project(&registry_conn, "agent-cfg", PH_A, vec![]);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH_A,
+            agent_id: "agent-cfg",
+        };
+
+        // Pass a DIFFERENT project_hash in params — it must be ignored
+        let params = serde_json::json!({
+            "agent_id": "agent-cfg",
+            "project_hash": PH_B,
+            "role": "architect",
+        });
+        let result = handle_agent_configure(&params, &ctx).unwrap();
+        assert_eq!(result["configured"], "agent-cfg");
+
+        // Verify the update applied to project A (ctx), not project B (params)
+        let agents = AgentRegistry::list(&registry_conn, Some(PH_A), None, None).unwrap();
+        let agent = agents.iter().find(|a| a.id == "agent-cfg").unwrap();
+        assert_eq!(agent.role, "architect", "Update should apply to ctx project");
+    }
+
+    // T-B3.1: task_status — task from project A invisible from project B
+    #[test]
+    fn test_task_status_cross_project_isolation() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project_with_hash(&registry_conn, PH_A);
+        insert_project_with_hash(&registry_conn, PH_B);
+        register_agent_in_project(&registry_conn, "worker-a", PH_A, vec![]);
+        register_agent_in_project(&registry_conn, "worker-b", PH_B, vec![]);
+
+        // Create task in project A
+        let ctx_a = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH_A,
+            agent_id: "worker-a",
+        };
+        let del_params = serde_json::json!({"to": "worker-a", "task": "Isolated task"});
+        let del_result = handle_task_delegate(&del_params, &ctx_a).unwrap();
+        let task_id = del_result["task_id"].as_str().unwrap();
+
+        // Query from project B context → not found
+        let ctx_b = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH_B,
+            agent_id: "worker-b",
+        };
+        let status_params = serde_json::json!({"task_id": task_id});
+        let result = handle_task_status(&status_params, &ctx_b);
+        assert!(result.is_err(), "Task from project A must be invisible from project B");
+    }
 }

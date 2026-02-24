@@ -63,7 +63,11 @@ fn resolve_agent(project_hash: &str, cli_agent_id: Option<&str>) -> Option<Strin
     }
 
     let agents = list_project_agents(project_hash);
+    resolve_agent_late(project_hash, &agents)
+}
 
+/// Core resolution logic (steps 4–7), testable with injected agents list.
+fn resolve_agent_late(project_hash: &str, agents: &[String]) -> Option<String> {
     // 4. Single-agent shortcut
     if agents.len() == 1 {
         tracing::info!(agent = %agents[0], source = "single_agent", "Agent resolved");
@@ -71,7 +75,7 @@ fn resolve_agent(project_hash: &str, cli_agent_id: Option<&str>) -> Option<Strin
     }
 
     // 5. Parent process session: extract session_id from PPID's --resume arg
-    if let Some(agent) = resolve_from_parent_session(project_hash, &agents) {
+    if let Some(agent) = resolve_from_parent_session(project_hash, agents) {
         return Some(agent);
     }
 
@@ -303,5 +307,71 @@ pub fn run(project_hash: Option<&str>, agent_id: Option<&str>) {
             eprintln!("[ai-mcp] Failed to initialize: {}", e);
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // T-M30.1: Multiple agents, no session file → None (no fallback to first())
+    #[test]
+    fn test_resolve_no_session_no_fallback() {
+        let agents = vec![
+            "agent_alpha".to_string(),
+            "agent_beta".to_string(),
+            "agent_gamma".to_string(),
+        ];
+        // Use a project hash that will never have a session file on disk
+        let result = resolve_agent_late("nonexistent-ph-m301", &agents);
+        assert_eq!(result, None, "Must NOT fall back to first agent");
+    }
+
+    // T-M30.2: Session file points to valid agent → returns it
+    #[test]
+    fn test_resolve_session_correct_project() {
+        let ph = "test-m302-session-ok";
+        let session_path = ai_smartness::storage::path_utils::agent_session_path(ph);
+        let project_dir = session_path.parent().unwrap().to_path_buf();
+
+        // Setup: create session file pointing to agent_b
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(&session_path, "agent_b").unwrap();
+
+        let agents = vec!["agent_a".to_string(), "agent_b".to_string()];
+        let result = resolve_agent_late(ph, &agents);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&project_dir);
+
+        assert_eq!(result, Some("agent_b".to_string()));
+    }
+
+    // T-M30.3: Session file points to agent NOT in agents list → None (cross-project isolation)
+    #[test]
+    fn test_resolve_session_wrong_project_isolation() {
+        let ph = "test-m303-session-iso";
+        let session_path = ai_smartness::storage::path_utils::agent_session_path(ph);
+        let project_dir = session_path.parent().unwrap().to_path_buf();
+
+        // Setup: session file references an agent from a *different* project
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(&session_path, "foreign_agent").unwrap();
+
+        let agents = vec!["agent_a".to_string(), "agent_b".to_string()];
+        let result = resolve_agent_late(ph, &agents);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&project_dir);
+
+        assert_eq!(result, None, "Agent from different project must not resolve");
+    }
+
+    // T-M30.4: CLI arg takes priority over everything
+    #[test]
+    fn test_resolve_cli_arg_priority() {
+        // CLI arg is checked first (step 1), before env vars or DB
+        let result = resolve_agent("", Some("explicit-cli-agent"));
+        assert_eq!(result, Some("explicit-cli-agent".to_string()));
     }
 }
