@@ -232,8 +232,9 @@ pub fn handle_agent_tasks(
 }
 
 /// Select a different agent for this session.
-/// Writes a per-session agent file (keyed by session_id) so the next hook invocation
-/// uses the new agent. Also updates the global session file as fallback.
+/// Writes a per-session agent file (keyed by session_id or PID fallback) so the next hook invocation
+/// uses the new agent. The global session file is never written from MCP to prevent contamination
+/// across multiple VSCode windows.
 pub fn handle_agent_select(
     params: &serde_json::Value,
     ctx: &ToolContext,
@@ -264,22 +265,24 @@ pub fn handle_agent_select(
         );
     }
 
-    // 3. Write global session file ONLY when no session_id is provided.
-    //    When session_id is present, the per-session file provides isolation
-    //    and writing the global would break other panels' agent resolution.
+    // 3. When no session_id is provided, use PID as a fallback key for per-session file.
+    //    The MCP must NEVER write the global session file — this prevents contamination
+    //    across multiple VSCode windows (each window has a different agent).
     if session_id.is_none() {
-        let session_path =
-            ai_smartness::storage::path_utils::agent_session_path(ctx.project_hash);
-        if let Some(parent) = session_path.parent() {
+        let pid = std::process::id();
+        let pid_path =
+            ai_smartness::storage::path_utils::per_session_agent_path(ctx.project_hash, &pid.to_string());
+        if let Some(parent) = pid_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        std::fs::write(&session_path, &target_agent_id).map_err(|e| {
-            ai_smartness::AiError::Storage(format!("Failed to write session file: {}", e))
+        std::fs::write(&pid_path, &target_agent_id).map_err(|e| {
+            ai_smartness::AiError::Storage(format!("Failed to write per-PID agent file: {}", e))
         })?;
         tracing::info!(
             from = ctx.agent_id,
             to = %target_agent_id,
-            "Agent session switched (global)"
+            pid,
+            "Agent session switched (per-PID fallback)"
         );
     }
 

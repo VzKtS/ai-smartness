@@ -100,14 +100,10 @@ fn resolve_agent(project_hash: &str, cli_agent_id: Option<&str>) -> Option<Strin
     None
 }
 
-/// Extract session_id from parent process (Claude Code CLI) command line,
-/// then look up the per-session agent file to determine this MCP's agent.
-///
-/// The parent process is the Claude Code CLI that spawned this MCP server.
-/// Its cmdline contains `--resume {session_id}` which uniquely identifies the panel.
-/// The per-session agent file maps session_id → agent_id.
+/// Extract session_id from parent process (Claude Code CLI) command line.
+/// Returns the session_id if found in the parent's --resume argument, None otherwise.
 #[cfg(target_os = "linux")]
-fn resolve_from_parent_session(project_hash: &str, agents: &[String]) -> Option<String> {
+fn extract_parent_session_id() -> Option<String> {
     // Read parent PID from /proc/self/stat (field 4 after the comm field)
     let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
     let after_comm = stat.rfind(')')? + 2;
@@ -130,10 +126,26 @@ fn resolve_from_parent_session(project_hash: &str, agents: &[String]) -> Option<
     }
 
     tracing::debug!(session_id, "Extracted session_id from parent --resume arg");
+    Some(session_id.to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn extract_parent_session_id() -> Option<String> {
+    None
+}
+
+/// Extract session_id from parent process (Claude Code CLI) command line,
+/// then look up the per-session agent file to determine this MCP's agent.
+///
+/// The parent process is the Claude Code CLI that spawned this MCP server.
+/// Its cmdline contains `--resume {session_id}` which uniquely identifies the panel.
+/// The per-session agent file maps session_id → agent_id.
+fn resolve_from_parent_session(project_hash: &str, agents: &[String]) -> Option<String> {
+    let session_id = extract_parent_session_id()?;
 
     // Look up per-session agent file
     let per_session_path =
-        ai_smartness::storage::path_utils::per_session_agent_path(project_hash, session_id);
+        ai_smartness::storage::path_utils::per_session_agent_path(project_hash, &session_id);
     let agent_id = std::fs::read_to_string(&per_session_path).ok()?;
     let agent_id = agent_id.trim().to_string();
 
@@ -160,12 +172,6 @@ fn resolve_from_parent_session(project_hash: &str, agents: &[String]) -> Option<
     None
 }
 
-#[cfg(not(target_os = "linux"))]
-fn resolve_from_parent_session(_project_hash: &str, _agents: &[String]) -> Option<String> {
-    // On non-Linux platforms, this resolution step is not available.
-    // Falls through to global session file or first registered agent.
-    None
-}
 
 /// Run MCP JSON-RPC server on stdin/stdout.
 pub fn run(project_hash: Option<&str>, agent_id: Option<&str>) {
@@ -230,6 +236,56 @@ pub fn run(project_hash: Option<&str>, agent_id: Option<&str>) {
             std::process::exit(1);
         }
     };
+
+    // Write per-session agent file so hooks find the agent identity on first invocation.
+    // This prevents hooks from falling back to the global session file when per-session
+    // isolation is needed.
+    //
+    // Priority: per-session (session_id) > per-PID (fallback if no session_id).
+    if let Some(session_id) = extract_parent_session_id() {
+        let per_session_path =
+            ai_smartness::storage::path_utils::per_session_agent_path(&project_hash, &session_id);
+        if let Some(parent) = per_session_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&per_session_path, &agent_id) {
+            tracing::warn!(
+                path = %per_session_path.display(),
+                session_id,
+                "Failed to write per-session agent file: {}",
+                e
+            );
+        } else {
+            tracing::debug!(
+                path = %per_session_path.display(),
+                session_id,
+                "Wrote per-session agent file at startup"
+            );
+        }
+    } else {
+        // No session_id (non-Linux, or Claude Code without --resume).
+        // Write per-PID file so hooks don't fall back to global.
+        let pid = std::process::id();
+        let pid_path =
+            ai_smartness::storage::path_utils::per_session_agent_path(&project_hash, &pid.to_string());
+        if let Some(parent) = pid_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&pid_path, &agent_id) {
+            tracing::warn!(
+                path = %pid_path.display(),
+                pid,
+                "Failed to write per-PID agent file: {}",
+                e
+            );
+        } else {
+            tracing::debug!(
+                path = %pid_path.display(),
+                pid,
+                "Wrote per-PID agent file at startup (fallback)"
+            );
+        }
+    }
 
     match McpServer::new(project_hash, agent_id) {
         Ok(mut server) => {
