@@ -12,3 +12,6 @@ libonnxruntime.*
 
 # Personal scripts
 ai-smartness-stats.sh
+
+# Work in progress / doc deliverables
+docs/
