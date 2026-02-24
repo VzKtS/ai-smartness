@@ -11,7 +11,7 @@
 use crate::{id_gen, time_utils};
 use crate::bridge::{BridgeStatus, BridgeType, ThinkBridge};
 use crate::config::GossipConfig;
-use crate::thread::{Thread, ThreadStatus};
+use crate::thread::{OriginType, Thread, ThreadStatus};
 use crate::AiResult;
 use crate::storage::bridges::BridgeStorage;
 use crate::storage::concept_index::ConceptIndex;
@@ -302,18 +302,73 @@ impl Gossip {
     }
 
     /// Determine bridge relation type based on thread relationships.
+    /// Cascade (most specific → fallback): ChildOf → Extends (structural) →
+    /// Contradicts (split siblings) → Sibling (same parent) → Replaces
+    /// (active/inactive) → Depends (concept superset) → Extends (heuristic) → Sibling.
     fn determine_relation(source: &Thread, target: &Thread, weight: f64) -> BridgeType {
+        // 1. Structural: parent-child
         if source.parent_id.as_deref() == Some(&*target.id) {
-            BridgeType::ChildOf
-        } else if target.parent_id.as_deref() == Some(&*source.id) {
-            BridgeType::Extends
-        } else if source.parent_id.is_some() && source.parent_id == target.parent_id {
-            BridgeType::Sibling
-        } else if weight >= 0.80 && source.created_at > target.created_at {
-            BridgeType::Extends
-        } else {
-            BridgeType::Sibling
+            return BridgeType::ChildOf;
         }
+        if target.parent_id.as_deref() == Some(&*source.id) {
+            return BridgeType::Extends;
+        }
+
+        // 2. Contradicts: both threads split from the same parent (intentional divergence)
+        if source.origin_type == OriginType::Split
+            && target.origin_type == OriginType::Split
+            && source.parent_id.is_some()
+            && source.parent_id == target.parent_id
+        {
+            return BridgeType::Contradicts;
+        }
+
+        // 3. Structural: same parent → Sibling
+        if source.parent_id.is_some() && source.parent_id == target.parent_id {
+            return BridgeType::Sibling;
+        }
+
+        // 4. Replaces: active thread supersedes inactive one on the same topic
+        if weight >= 0.40 {
+            if source.status == ThreadStatus::Active && target.status != ThreadStatus::Active {
+                return BridgeType::Replaces;
+            }
+            if target.status == ThreadStatus::Active && source.status != ThreadStatus::Active {
+                return BridgeType::Replaces;
+            }
+        }
+
+        // 5. Depends: source is a strict concept superset of target + temporal
+        if weight >= 0.50
+            && source.created_at > target.created_at
+            && source.concepts.len() > target.concepts.len()
+            && Self::is_concept_superset(&source.concepts, &target.concepts)
+        {
+            return BridgeType::Depends;
+        }
+
+        // 6. Extends: strong overlap + temporal (heuristic)
+        if weight >= 0.80 && source.created_at > target.created_at {
+            return BridgeType::Extends;
+        }
+
+        // 7. Fallback
+        BridgeType::Sibling
+    }
+
+    /// Returns true if `superset` contains >=80% of `subset`'s concepts (case-insensitive).
+    /// Requires subset to have at least 2 concepts to avoid trivial matches.
+    fn is_concept_superset(superset: &[String], subset: &[String]) -> bool {
+        if subset.len() < 2 {
+            return false;
+        }
+        let super_lower: std::collections::HashSet<String> =
+            superset.iter().map(|c| c.to_lowercase()).collect();
+        let match_count = subset
+            .iter()
+            .filter(|c| super_lower.contains(&c.to_lowercase()))
+            .count();
+        match_count as f64 / subset.len() as f64 >= 0.80
     }
 
     /// Shared topics between two threads.

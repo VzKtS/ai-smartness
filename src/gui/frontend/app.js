@@ -2161,8 +2161,8 @@ function drawGraph() {
         ctx.strokeStyle = isHighlight
             ? GRAPH_COLORS.edge_highlight
             : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default);
-        ctx.lineWidth = isHighlight ? 2.5 : Math.max(1, e.weight * 3);
-        ctx.globalAlpha = isHighlight ? 1 : 0.55 + e.weight * 0.4;
+        ctx.lineWidth = isHighlight ? 2.5 : Math.max(0.5, Math.sqrt(e.weight) * 3);
+        ctx.globalAlpha = isHighlight ? 1 : 0.55 + Math.sqrt(e.weight) * 0.4;
         ctx.stroke();
         ctx.globalAlpha = 1;
 
@@ -2390,7 +2390,9 @@ function renderGraphLegend() {
     html += `<span style="color:${GRAPH_COLORS.suspended}">●</span> Suspended &nbsp; `;
     html += `<span style="color:${GRAPH_COLORS.archived}">●</span> Archived<br>`;
     html += '<span style="color:#888">— Edges —</span><br>';
+    const activeRelations = new Set(graphEdges.map(e => e.relation));
     for (const [rel, color] of Object.entries(RELATION_COLORS)) {
+        if (!activeRelations.has(rel)) continue;
         html += `<span style="color:${color}">━</span> ${rel} &nbsp; `;
     }
     html += '<br><span style="color:#888;font-size:10px">Node size ∝ importance</span>';
