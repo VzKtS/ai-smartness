@@ -1,3 +1,4 @@
+use crate::constants::SQLITE_BUSY_TIMEOUT_MS;
 use crate::{AiError, AiResult};
 use rusqlite::Connection;
 
@@ -36,7 +37,7 @@ pub fn open_connection(path: &std::path::Path, role: ConnectionRole) -> AiResult
 
 /// Pragmas communs a toutes les connexions:
 /// - journal_mode = WAL
-/// - busy_timeout = 5000
+/// - busy_timeout = SQLITE_BUSY_TIMEOUT_MS (constants.rs)
 /// - synchronous = NORMAL
 /// - cache_size = -2000 (2 MB)
 /// - foreign_keys = ON
@@ -44,13 +45,14 @@ pub fn open_connection(path: &std::path::Path, role: ConnectionRole) -> AiResult
 fn configure_common(conn: &Connection) -> AiResult<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
-         PRAGMA busy_timeout = 5000;
          PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -2000;
          PRAGMA foreign_keys = ON;
          PRAGMA temp_store = MEMORY;",
     )
     .map_err(|e| AiError::Storage(format!("Failed to configure pragmas: {}", e)))?;
+    conn.execute(&format!("PRAGMA busy_timeout = {}", SQLITE_BUSY_TIMEOUT_MS), [])
+        .map_err(|e| AiError::Storage(format!("Failed to set busy_timeout: {}", e)))?;
     Ok(())
 }
 

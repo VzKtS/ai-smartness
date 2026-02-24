@@ -180,7 +180,7 @@ impl BridgeStorage {
 
     pub fn list_all(conn: &Connection) -> AiResult<Vec<ThinkBridge>> {
         let mut stmt = conn
-            .prepare("SELECT * FROM bridges ORDER BY weight DESC")
+            .prepare("SELECT * FROM bridges WHERE weight > 0 ORDER BY weight DESC")
             .map_err(|e| AiError::Storage(e.to_string()))?;
 
         let bridges = stmt
