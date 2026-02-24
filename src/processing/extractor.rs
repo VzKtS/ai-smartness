@@ -84,7 +84,7 @@ pub fn extract(
             // Prompt and Response: override summary with verbatim content (truncated).
             // These are already human-readable — LLM synthesis only degrades them.
             if matches!(source, ExtractionSource::Prompt | ExtractionSource::Response) {
-                extraction.summary = truncate_safe(content, 250).to_string();
+                extraction.summary = truncate_safe(content, crate::constants::VERBATIM_SUMMARY_LIMIT).to_string();
             }
             tracing::info!(mode = "llm", title = %extraction.title, confidence = extraction.confidence, "Extraction complete");
             Ok(extraction)

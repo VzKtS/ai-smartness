@@ -148,7 +148,7 @@ impl ThreadManager {
                 let old_concepts: HashSet<String> = ThreadStorage::get(conn, &thread_id)?
                     .map(|t| t.concepts.into_iter().collect())
                     .unwrap_or_default();
-                Self::update_thread(conn, &thread_id, extraction, content, file_path, embed_mode)?;
+                Self::update_thread(conn, &thread_id, extraction, content, source_type, file_path, embed_mode)?;
                 // Birth bridges for NEW concepts only
                 let new_concepts: Vec<String> = extraction.concepts.iter()
                     .filter(|c| !old_concepts.contains(*c))
@@ -184,7 +184,7 @@ impl ThreadManager {
             ThreadAction::Reactivate { thread_id } => {
                 tracing::info!(action = "Reactivate", thread_id = %thread_id, "Action decided");
                 Self::reactivate_thread(conn, &thread_id)?;
-                Self::update_thread(conn, &thread_id, extraction, content, file_path, embed_mode)?;
+                Self::update_thread(conn, &thread_id, extraction, content, source_type, file_path, embed_mode)?;
                 Ok(Some(thread_id))
             }
         }
@@ -264,11 +264,15 @@ impl ThreadManager {
 
         tracing::info!(thread_id = %thread_id, title = %extraction.title, topics = ?extraction.subjects, "Thread created");
 
-        // Add initial message (truncate to 2000 chars)
-        let truncated = content.len() > 2000;
+        // Add initial message (truncate: 10k for prompt/response, 2k for others)
+        let limit = match source_type {
+            "prompt" | "response" => CONTENT_LIMIT_CONVERSATION,
+            _ => CONTENT_LIMIT_DEFAULT,
+        };
+        let truncated = content.len() > limit;
         let msg_content = if truncated {
-            tracing::warn!(thread_id = %thread_id, len = content.len(), "Message truncated to 2000 chars");
-            truncate_safe(content, 2000).to_string()
+            tracing::warn!(thread_id = %thread_id, len = content.len(), limit = limit, "Message truncated");
+            truncate_safe(content, limit).to_string()
         } else {
             content.to_string()
         };
@@ -316,6 +320,7 @@ impl ThreadManager {
         thread_id: &str,
         extraction: &Extraction,
         content: &str,
+        source_type: &str,
         file_path: Option<&str>,
         embed_mode: &EmbeddingMode,
     ) -> AiResult<()> {
@@ -324,10 +329,14 @@ impl ThreadManager {
             None => return Ok(()),
         };
 
-        let truncated = content.len() > 2000;
+        let limit = match source_type {
+            "prompt" | "response" => CONTENT_LIMIT_CONVERSATION,
+            _ => CONTENT_LIMIT_DEFAULT,
+        };
+        let truncated = content.len() > limit;
         let msg_content = if truncated {
-            tracing::warn!(thread_id = %thread_id, len = content.len(), "Message truncated to 2000 chars");
-            truncate_safe(content, 2000).to_string()
+            tracing::warn!(thread_id = %thread_id, len = content.len(), limit = limit, "Message truncated");
+            truncate_safe(content, limit).to_string()
         } else {
             content.to_string()
         };
@@ -337,7 +346,7 @@ impl ThreadManager {
             msg_id: id_gen::message_id(),
             content: msg_content,
             source: "capture".to_string(),
-            source_type: "update".to_string(),
+            source_type: source_type.to_string(),
             timestamp: time_utils::now(),
             metadata: serde_json::Value::Object(Default::default()),
             is_truncated: truncated,

@@ -611,6 +611,20 @@ fn build_memory_context(conn: &Connection, message: &str, agent_quota: usize) ->
             let topics: Vec<&str> = main.topics.iter().take(5).map(|s| s.as_str()).collect();
             ctx.push_str(&format!("Topics: {}\n", topics.join(", ")));
         }
+
+        // Deep injection: include full payload for the top-relevance thread
+        if let Ok(messages) = ThreadStorage::get_messages(conn, &main.id) {
+            let any_truncated = messages.iter().any(|m| m.is_truncated);
+            let total_len: usize = messages.iter().map(|m| m.content.len()).sum();
+            if !any_truncated && total_len <= 10_000 && !messages.is_empty() {
+                ctx.push_str("Content:\n");
+                for msg in &messages {
+                    ctx.push_str(&msg.content);
+                    ctx.push('\n');
+                }
+                ctx.push_str("---\n");
+            }
+        }
     }
 
     if threads.len() > 1 {
