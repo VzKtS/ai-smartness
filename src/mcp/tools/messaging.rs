@@ -13,11 +13,33 @@ use ai_smartness::registry::registry::AgentRegistry;
 
 use super::{optional_array, optional_str, optional_usize, required_str, ToolContext};
 
-/// Write a wake signal file so the VSCode extension can wake the target agent.
+/// Write a wake signal file so the VSCode extension / CLI controller can wake the target agent.
 /// `mode`: "cognitive" or "inbox" — tells the extension which prompt to inject.
 /// `interrupt`: if true, the extension bypasses idle-check and injects immediately.
+///
+/// Ghost wake fix: if an unacknowledged signal already exists, skip overwrite unless
+/// the new signal is an interrupt. This prevents concurrent senders from silently
+/// dropping wake triggers (the messages remain in the DB; only the file trigger is affected).
 pub(crate) fn emit_wake_signal(target_agent: &str, from_agent: &str, subject: &str, mode: &str, interrupt: bool) {
     let signal_path = path_utils::wake_signal_path(target_agent);
+
+    // If a non-acknowledged signal already exists, only overwrite for interrupt signals
+    if !interrupt && signal_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&signal_path) {
+            if let Ok(existing) = serde_json::from_str::<serde_json::Value>(&content) {
+                let already_pending = !existing
+                    .get("acknowledged")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if already_pending {
+                    // Don't overwrite — existing signal will still wake the agent.
+                    // The new message is already stored in the shared DB inbox.
+                    return;
+                }
+            }
+        }
+    }
+
     let signal = serde_json::json!({
         "agent_id": target_agent,
         "from": from_agent,
@@ -406,12 +428,13 @@ mod tests {
         let _ = std::fs::remove_file(&p);
     }
 
-    // T-C1.1: emit_wake_signal interrupt field
+    // T-C1.1: emit_wake_signal interrupt field + ghost wake protection
     #[test]
     fn test_emit_wake_signal_interrupt_flag() {
         let agent = "test_wake_int_1";
         cleanup_signal(agent);
 
+        // First signal: interrupt=true → should be written
         emit_wake_signal(agent, "sender", "test subject", "cognitive", true);
         let content = std::fs::read_to_string(
             ai_smartness::storage::path_utils::wake_signal_path(agent),
@@ -419,12 +442,23 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(json["interrupt"], true);
 
-        emit_wake_signal(agent, "sender", "test subject", "cognitive", false);
+        // Ghost wake fix: non-interrupt does NOT overwrite a pending (unacknowledged) signal
+        emit_wake_signal(agent, "sender", "test subject 2", "cognitive", false);
         let content2 = std::fs::read_to_string(
             ai_smartness::storage::path_utils::wake_signal_path(agent),
         ).unwrap();
         let json2: serde_json::Value = serde_json::from_str(&content2).unwrap();
-        assert_eq!(json2["interrupt"], false);
+        // Should still have the interrupt=true signal (not overwritten)
+        assert_eq!(json2["interrupt"], true, "Non-interrupt should not overwrite pending signal");
+
+        // Interrupt DOES overwrite a pending signal
+        emit_wake_signal(agent, "sender", "urgent!", "cognitive", true);
+        let content3 = std::fs::read_to_string(
+            ai_smartness::storage::path_utils::wake_signal_path(agent),
+        ).unwrap();
+        let json3: serde_json::Value = serde_json::from_str(&content3).unwrap();
+        assert_eq!(json3["interrupt"], true, "Interrupt should always overwrite");
+        assert_eq!(json3["message"], "urgent!");
 
         cleanup_signal(agent);
     }

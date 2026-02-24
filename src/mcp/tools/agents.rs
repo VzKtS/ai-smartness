@@ -46,7 +46,7 @@ pub fn handle_agent_query(
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
     let capability = required_str(params, "capability")?;
-    let agents = Discovery::find_by_capability(ctx.registry_conn, &capability)?;
+    let agents = Discovery::find_by_capability(ctx.registry_conn, &capability, ctx.project_hash)?;
 
     let results: Vec<serde_json::Value> = agents
         .iter()
@@ -128,7 +128,9 @@ pub fn handle_agent_configure(
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
     let agent_id = required_str(params, "agent_id")?;
-    let project_hash = required_str(params, "project_hash")?;
+    // B2: always use ctx.project_hash — params-derived project_hash is unreliable
+    // across sessions and can silently operate on the wrong project
+    let project_hash = ctx.project_hash;
 
     let update = ai_smartness::registry::registry::AgentUpdate {
         name: optional_str(params, "name"),
@@ -147,7 +149,7 @@ pub fn handle_agent_configure(
         expected_model: super::optional_str(params, "expected_model").map(|s| if s.is_empty() { None } else { Some(s) }),
     };
 
-    AgentRegistry::update(ctx.registry_conn, &agent_id, &project_hash, &update)?;
+    AgentRegistry::update(ctx.registry_conn, &agent_id, project_hash, &update)?;
     Ok(serde_json::json!({"configured": agent_id}))
 }
 
@@ -341,7 +343,7 @@ pub fn handle_task_status(
 ) -> AiResult<serde_json::Value> {
     let task_id = required_str(params, "task_id")?;
 
-    if let Some(task) = AgentTaskStorage::get_task(ctx.registry_conn, &task_id)? {
+    if let Some(task) = AgentTaskStorage::get_task(ctx.registry_conn, &task_id, ctx.project_hash)? {
         Ok(serde_json::json!({
             "id": task.id,
             "title": task.title,
@@ -451,7 +453,7 @@ mod tests {
         let result = handle_task_delegate(&params, &ctx).unwrap();
         let task_id = result["task_id"].as_str().unwrap();
 
-        let task = ai_smartness::registry::tasks::AgentTaskStorage::get_task(&registry_conn, task_id)
+        let task = ai_smartness::registry::tasks::AgentTaskStorage::get_task(&registry_conn, task_id, PH)
             .unwrap()
             .unwrap();
         assert!(

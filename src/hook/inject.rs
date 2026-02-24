@@ -865,7 +865,7 @@ fn build_cognitive_nudge(
 ) -> Option<(String, String)> {
     let beat = beat_state.beat;
     let cooldown = 10u64;
-    let active = ThreadStorage::count(conn).unwrap_or(0);
+    let active = ThreadStorage::count_by_status(conn, &ThreadStatus::Active).unwrap_or(0);
 
     // Priority-ordered conditions — first match wins
     // 1. Recall staleness

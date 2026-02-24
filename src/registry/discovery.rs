@@ -7,17 +7,18 @@ use rusqlite::{params, Connection};
 pub struct Discovery;
 
 impl Discovery {
-    /// Find agents by capability (substring match in JSON array).
-    pub fn find_by_capability(conn: &Connection, capability: &str) -> AiResult<Vec<Agent>> {
+    /// Find agents by capability (substring match in JSON array), filtered by project.
+    pub fn find_by_capability(conn: &Connection, capability: &str, project_hash: &str) -> AiResult<Vec<Agent>> {
         let pattern = format!("%\"{}\"%" , capability.to_lowercase());
         let mut stmt = conn
             .prepare(
-                "SELECT * FROM agents WHERE status != 'offline' AND LOWER(capabilities) LIKE ?1",
+                "SELECT * FROM agents WHERE status != 'offline' \
+                 AND project_hash = ?2 AND LOWER(capabilities) LIKE ?1",
             )
             .map_err(|e| AiError::Storage(e.to_string()))?;
 
         let agents = stmt
-            .query_map(params![pattern], crate::registry::registry::agent_from_row)
+            .query_map(params![pattern, project_hash], crate::registry::registry::agent_from_row)
             .map_err(|e| AiError::Storage(e.to_string()))?
             .filter_map(|r| r.ok())
             .collect();
@@ -25,17 +26,18 @@ impl Discovery {
         Ok(agents)
     }
 
-    /// Find agents by specialization (substring match in JSON array).
-    pub fn find_by_specialization(conn: &Connection, spec: &str) -> AiResult<Vec<Agent>> {
+    /// Find agents by specialization (substring match in JSON array), filtered by project.
+    pub fn find_by_specialization(conn: &Connection, spec: &str, project_hash: &str) -> AiResult<Vec<Agent>> {
         let pattern = format!("%\"{}\"%" , spec.to_lowercase());
         let mut stmt = conn
             .prepare(
-                "SELECT * FROM agents WHERE status != 'offline' AND LOWER(specializations) LIKE ?1",
+                "SELECT * FROM agents WHERE status != 'offline' \
+                 AND project_hash = ?2 AND LOWER(specializations) LIKE ?1",
             )
             .map_err(|e| AiError::Storage(e.to_string()))?;
 
         let agents = stmt
-            .query_map(params![pattern], crate::registry::registry::agent_from_row)
+            .query_map(params![pattern, project_hash], crate::registry::registry::agent_from_row)
             .map_err(|e| AiError::Storage(e.to_string()))?
             .filter_map(|r| r.ok())
             .collect();

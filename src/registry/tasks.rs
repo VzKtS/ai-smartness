@@ -98,13 +98,13 @@ impl AgentTaskStorage {
         Ok(())
     }
 
-    pub fn get_task(conn: &Connection, task_id: &str) -> AiResult<Option<AgentTask>> {
+    pub fn get_task(conn: &Connection, task_id: &str, project_hash: &str) -> AiResult<Option<AgentTask>> {
         let mut stmt = conn
-            .prepare("SELECT * FROM agent_tasks WHERE id = ?1")
+            .prepare("SELECT * FROM agent_tasks WHERE id = ?1 AND project_hash = ?2")
             .map_err(|e| AiError::Storage(e.to_string()))?;
 
         let result = stmt
-            .query_row(params![task_id], task_from_row)
+            .query_row(params![task_id, project_hash], task_from_row)
             .optional()
             .map_err(|e| AiError::Storage(e.to_string()))?;
 
