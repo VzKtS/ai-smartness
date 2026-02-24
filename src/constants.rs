@@ -6,7 +6,7 @@ pub const MAX_AGENTS_FREE: usize = 5;
 pub const DB_SIZE_WARNING_BYTES: u64 = 100 * 1024 * 1024; // 100 MB
 
 // === SQLite Tuning ===
-pub const SQLITE_BUSY_TIMEOUT_MS: u32 = 5_000;
+pub const SQLITE_BUSY_TIMEOUT_MS: u32 = 1_000;
 pub const HOOK_QUERY_TIMEOUT_MS: u64 = 100;
 
 // === Thread Decay ===
@@ -66,7 +66,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 // === Daemon ===
 pub const DAEMON_WAL_AUTOCHECKPOINT: u32 = 1_000;
-pub const HOOK_WAL_AUTOCHECKPOINT: u32 = 0;
+pub const HOOK_WAL_AUTOCHECKPOINT: u32 = 100;
 pub const PRUNE_INTERVAL_SECS: u64 = 300; // 5 min — all periodic tasks
 
 // === Connection Pool (global daemon) ===

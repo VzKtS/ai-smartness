@@ -7,7 +7,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ai_smartness::config::GuardianConfig;
@@ -22,6 +22,7 @@ use ai_smartness::storage::cognitive_inbox::CognitiveInbox;
 use ai_smartness::storage::database::{self, ConnectionRole};
 use ai_smartness::storage::path_utils;
 use ai_smartness::storage::threads::ThreadStorage;
+use ai_smartness::thread::Thread;
 use rusqlite::Connection;
 
 use super::connection_pool::ConnectionPool;
@@ -150,19 +151,6 @@ pub fn run_prune_loop(
                     conn
                 };
 
-                let conn_guard = match conn.lock() {
-                    Ok(g) => g,
-                    Err(e) => {
-                        tracing::error!(
-                            project = %key.project_hash,
-                            agent = %key.agent_id,
-                            error = %e,
-                            "Failed to lock connection for prune"
-                        );
-                        continue;
-                    }
-                };
-
                 tracing::debug!(
                     project = %key.project_hash,
                     agent = %key.agent_id,
@@ -179,10 +167,7 @@ pub fn run_prune_loop(
                 };
 
                 let data_dir = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
-                run_prune_cycle(&conn_guard, &guardian, &data_dir, &key.project_hash);
-
-                // Drop conn_guard before backup (which opens its own connection)
-                drop(conn_guard);
+                run_prune_cycle(&conn, &guardian, &data_dir, &key.project_hash);
 
                 // 7. Scheduled backup (outside prune cycle — needs key context)
                 run_task("backup", || {
@@ -239,23 +224,24 @@ pub fn run_prune_loop(
     tracing::info!("Prune loop stopped");
 }
 
-/// Single prune cycle for one agent — runs all tasks sequentially.
-fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir: &std::path::Path, project_hash: &str) {
+/// Single prune cycle for one agent — each task acquires/releases the lock
+/// independently to reduce contention (~5s per task instead of ~60s continuous).
+fn run_prune_cycle(conn_mtx: &Mutex<Connection>, guardian: &GuardianConfig, agent_data_dir: &std::path::Path, project_hash: &str) {
     // 1. Gossip v2: concept-based bridge discovery (config-driven limits)
     run_task("gossip", || {
-        let gossip = match Gossip::new(conn) {
+        let Ok(conn) = conn_mtx.lock() else { return };
+        let gossip = match Gossip::new(&conn) {
             Ok(g) => g,
             Err(e) => {
                 tracing::warn!("Gossip init error: {}", e);
                 return;
             }
         };
-        match gossip.run_cycle(conn, &guardian.gossip) {
+        match gossip.run_cycle(&conn, &guardian.gossip) {
             Ok((n, merge_candidates)) => {
                 if n > 0 {
                     tracing::info!("Gossip v2: created {} bridges", n);
                 }
-                // Evaluate merge candidates
                 if !merge_candidates.is_empty() {
                     tracing::info!(
                         "Gossip v2: {} merge candidates (scores: {})",
@@ -269,7 +255,7 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir:
                     let auto_threshold = guardian.gossip.merge_auto_threshold;
                     for candidate in merge_candidates.iter().take(max_per_cycle) {
                         if candidate.overlap_score >= auto_threshold {
-                            match MergeEvaluator::evaluate_and_execute(conn, candidate, &guardian.gossip.embedding.mode) {
+                            match MergeEvaluator::evaluate_and_execute(&conn, candidate, &guardian.gossip.embedding.mode) {
                                 Ok(true) => tracing::info!(
                                     "MergeEvaluator: auto-merged (score={:.2})",
                                     candidate.overlap_score
@@ -281,7 +267,6 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir:
                                 Err(e) => tracing::warn!("MergeEvaluator error: {}", e),
                             }
                         }
-                        // 0.60-0.85: stored for HealthGuard suggestion (future)
                     }
                 }
             }
@@ -290,35 +275,44 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir:
     });
 
     // 2. Decay: reduce weights, suspend low-weight threads
-    run_task("decay", || match Decayer::decay_active(conn, &guardian.decay) {
-        Ok(n) => {
-            if n > 0 {
-                tracing::info!("Decay: {} threads affected", n);
+    run_task("decay", || {
+        let Ok(conn) = conn_mtx.lock() else { return };
+        match Decayer::decay_active(&conn, &guardian.decay) {
+            Ok(n) => {
+                if n > 0 {
+                    tracing::info!("Decay: {} threads affected", n);
+                }
             }
+            Err(e) => tracing::warn!("Decay error: {}", e),
         }
-        Err(e) => tracing::warn!("Decay error: {}", e),
     });
 
     // 3. Archive: stale suspended -> archived (after config hours)
-    run_task("archive", || match Archiver::archive_stale(conn, &guardian.decay) {
-        Ok(n) => {
-            if n > 0 {
-                tracing::info!("Archived: {} threads", n);
+    run_task("archive", || {
+        let Ok(conn) = conn_mtx.lock() else { return };
+        match Archiver::archive_stale(&conn, &guardian.decay) {
+            Ok(n) => {
+                if n > 0 {
+                    tracing::info!("Archived: {} threads", n);
+                }
             }
+            Err(e) => tracing::warn!("Archive error: {}", e),
         }
-        Err(e) => tracing::warn!("Archive error: {}", e),
     });
 
     // 4. Cognitive inbox cleanup: expire stale messages
     run_task("inbox_cleanup", || {
-        if let Err(e) = CognitiveInbox::expire_stale(conn) {
+        let Ok(conn) = conn_mtx.lock() else { return };
+        if let Err(e) = CognitiveInbox::expire_stale(&conn) {
             tracing::warn!("Inbox cleanup error: {}", e);
         }
     });
 
-    // 5. Work context cleanup: clear expired work_contexts (> 24h)
-    run_task("work_context_cleanup", || {
-        match cleanup_stale_work_contexts(conn) {
+    // 5+6. Work context cleanup + injection decay (shared list_active cache)
+    run_task("work_context_and_injection", || {
+        let Ok(conn) = conn_mtx.lock() else { return };
+        let active = ThreadStorage::list_active(&conn).unwrap_or_default();
+        match cleanup_stale_work_contexts(&conn, &active) {
             Ok(n) => {
                 if n > 0 {
                     tracing::info!("WorkContext cleanup: {} expired", n);
@@ -326,11 +320,7 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir:
             }
             Err(e) => tracing::warn!("WorkContext cleanup error: {}", e),
         }
-    });
-
-    // 6. Injection tracking decay: reduce injection scores for unused threads
-    run_task("injection_decay", || {
-        match decay_injection_scores(conn) {
+        match decay_injection_scores(&conn, &active) {
             Ok(n) => {
                 if n > 0 {
                     tracing::info!("Injection decay: {} threads", n);
@@ -345,7 +335,8 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir:
         let beat_state = BeatState::load(agent_data_dir);
         if beat_state.beat % 288 == 0 {
             run_task("concept_backfill", || {
-                let threads = ThreadStorage::list_active(conn).unwrap_or_default();
+                let Ok(conn) = conn_mtx.lock() else { return };
+                let threads = ThreadStorage::list_active(&conn).unwrap_or_default();
                 let mut count = 0usize;
                 for thread in threads.iter()
                     .filter(|t| t.concepts.is_empty())
@@ -354,7 +345,7 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir:
                     if !thread.topics.is_empty() {
                         let concepts_json = serde_json::to_string(&thread.topics)
                             .unwrap_or_default();
-                        ThreadStorage::update_concepts(conn, &thread.id, &concepts_json).ok();
+                        ThreadStorage::update_concepts(&conn, &thread.id, &concepts_json).ok();
                         count += 1;
                     }
                 }
@@ -369,23 +360,24 @@ fn run_prune_cycle(conn: &Connection, guardian: &GuardianConfig, agent_data_dir:
 
     // 9. Shared orphan cleanup: remove shared_threads entries whose source thread is gone
     run_task("shared_orphan_cleanup", || {
-        if let Err(e) = cleanup_shared_orphans(conn, project_hash) {
+        let Ok(conn) = conn_mtx.lock() else { return };
+        if let Err(e) = cleanup_shared_orphans(&conn, project_hash) {
             tracing::warn!("Shared orphan cleanup error: {}", e);
         }
     });
 
     // 10. SQLite checkpoint (WAL mode)
     run_task("wal_checkpoint", || {
+        let Ok(conn) = conn_mtx.lock() else { return };
         conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);").ok();
     });
 }
 
 /// Clean work_contexts expired > 24h (freshness_factor == 0.0).
-fn cleanup_stale_work_contexts(conn: &Connection) -> ai_smartness::AiResult<usize> {
-    let active = ThreadStorage::list_active(conn)?;
+fn cleanup_stale_work_contexts(conn: &Connection, active: &[Thread]) -> ai_smartness::AiResult<usize> {
     let mut cleaned = 0;
 
-    for thread in &active {
+    for thread in active {
         if let Some(ref wc) = thread.work_context {
             if wc.is_expired() {
                 ThreadStorage::clear_work_context(conn, &thread.id)?;
@@ -398,11 +390,10 @@ fn cleanup_stale_work_contexts(conn: &Connection) -> ai_smartness::AiResult<usiz
 }
 
 /// Decay injection scores for threads injected but never used.
-fn decay_injection_scores(conn: &Connection) -> ai_smartness::AiResult<usize> {
-    let active = ThreadStorage::list_active(conn)?;
+fn decay_injection_scores(conn: &Connection, active: &[Thread]) -> ai_smartness::AiResult<usize> {
     let mut decayed = 0;
 
-    for thread in &active {
+    for thread in active {
         if let Some(ref stats) = thread.injection_stats {
             if stats.should_decay() {
                 let penalty = stats.compute_relevance_penalty();

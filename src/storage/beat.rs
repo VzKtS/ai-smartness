@@ -277,6 +277,10 @@ impl BeatState {
 
     /// Schedule a self-wake after N beats.
     pub fn schedule_wake(&mut self, after_beats: u64, reason: String) {
+        const MAX_SCHEDULED_WAKES: usize = 200;
+        if self.scheduled_wakes.len() >= MAX_SCHEDULED_WAKES {
+            self.scheduled_wakes.remove(0);
+        }
         self.scheduled_wakes.push(ScheduledWake {
             target_beat: self.beat + after_beats,
             reason,
