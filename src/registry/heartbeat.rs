@@ -186,6 +186,7 @@ mod tests {
             report_to: None,
             custom_role: None,
             workspace_path: String::new(),
+            full_permissions: false,
         };
         AgentRegistry::register(conn, &agent).unwrap();
     }

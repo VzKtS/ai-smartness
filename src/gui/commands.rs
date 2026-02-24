@@ -852,6 +852,7 @@ pub fn list_agents(project_hash: String) -> Result<serde_json::Value, String> {
             "registered_at": a.registered_at.to_rfc3339(),
             "report_to": a.report_to,
             "custom_role": a.custom_role,
+            "full_permissions": a.full_permissions,
         })
     }).collect();
 
@@ -870,6 +871,7 @@ pub fn add_agent(
     thread_mode: Option<String>,
     report_to: Option<String>,
     custom_role: Option<String>,
+    full_permissions: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     tracing::info!(
         agent = %agent_id, name = %name, role = %role,
@@ -920,6 +922,7 @@ pub fn add_agent(
             report_to: report_to.clone(),
             custom_role: custom_role.clone(),
             workspace_path: None,
+            full_permissions: full_permissions,
         };
         AgentRegistry::update(&reg_conn, &agent_id, &project_hash, &update)
             .map_err(|e| e.to_string())?;
@@ -973,6 +976,7 @@ pub fn add_agent(
         report_to,
         custom_role,
         workspace_path: String::new(),
+        full_permissions: full_permissions.unwrap_or(false),
     };
 
     AgentRegistry::register(&reg_conn, &agent)
@@ -1004,6 +1008,12 @@ pub fn add_agent(
                 Err(e) => tracing::warn!(error = %e, "GUI: failed to install hooks"),
             }
         }
+        // Sync full_permissions to settings.local.json
+        if full_permissions.unwrap_or(false) {
+            if let Err(e) = ai_smartness::hook_setup::sync_full_permissions(project_path, true) {
+                tracing::warn!(error = %e, "GUI: failed to sync full_permissions");
+            }
+        }
     } else {
         tracing::warn!(project = %&project_hash[..8.min(project_hash.len())], "GUI: project not found in registry");
     }
@@ -1027,6 +1037,7 @@ pub fn update_agent(
     thread_mode: Option<String>,
     report_to: Option<String>,
     custom_role: Option<String>,
+    full_permissions: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     tracing::info!(
         agent = %agent_id, name = ?name, role = ?role, is_supervisor = ?is_supervisor,
@@ -1071,10 +1082,25 @@ pub fn update_agent(
         report_to,
         custom_role,
         workspace_path: None,
+        full_permissions,
     };
 
     AgentRegistry::update(&reg_conn, &agent_id, &project_hash, &update)
         .map_err(|e| e.to_string())?;
+
+    // Sync full_permissions to settings.local.json if changed
+    if let Some(fp) = full_permissions {
+        use ai_smartness::project_registry::ProjectRegistryTrait;
+        let reg_conn2 = open_connection(&reg_path, ConnectionRole::Cli)
+            .map_err(|e| e.to_string())?;
+        let registry = SqliteProjectRegistry::new(reg_conn2);
+        if let Ok(Some(project)) = registry.get_project(&project_hash) {
+            let project_path = std::path::Path::new(&project.path);
+            if let Err(e) = ai_smartness::hook_setup::sync_full_permissions(project_path, fp) {
+                tracing::warn!(error = %e, "GUI: failed to sync full_permissions");
+            }
+        }
+    }
 
     // If thread_mode changed, notify daemon to update quota + enforce
     let mut threads_suspended = 0u64;

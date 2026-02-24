@@ -165,6 +165,68 @@ fn install_local_permissions(claude_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Sync full_permissions into a project's `settings.local.json`.
+///
+/// When `enabled` is true, adds `Bash(*)`, `Edit(*)`, `Write(*)` to `permissions.allow`.
+/// When false, removes them.
+pub fn sync_full_permissions(project_path: &Path, enabled: bool) -> Result<()> {
+    let local_path = project_path.join(".claude/settings.local.json");
+    let patterns = ["Bash(*)", "Edit(*)", "Write(*)"];
+
+    let mut local: serde_json::Value = if local_path.exists() {
+        let content = std::fs::read_to_string(&local_path)
+            .with_context(|| format!("Failed to read {}", local_path.display()))?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else if enabled {
+        serde_json::json!({})
+    } else {
+        return Ok(());
+    };
+
+    if !local.is_object() {
+        local = serde_json::json!({});
+    }
+
+    let permissions = local
+        .as_object_mut()
+        .unwrap()
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}));
+    if !permissions.is_object() {
+        *permissions = serde_json::json!({});
+    }
+    let allow = permissions
+        .as_object_mut()
+        .unwrap()
+        .entry("allow")
+        .or_insert_with(|| serde_json::json!([]));
+    if !allow.is_array() {
+        *allow = serde_json::json!([]);
+    }
+    let arr = allow.as_array_mut().unwrap();
+
+    if enabled {
+        for pat in &patterns {
+            if !arr.iter().any(|v| v.as_str() == Some(pat)) {
+                arr.push(serde_json::json!(pat));
+            }
+        }
+    } else {
+        arr.retain(|v| v.as_str().map(|s| !patterns.contains(&s)).unwrap_or(true));
+    }
+
+    // Ensure parent dir exists
+    if let Some(parent) = local_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let formatted = serde_json::to_string_pretty(&local)
+        .context("Failed to serialize settings.local.json")?;
+    std::fs::write(&local_path, formatted)
+        .with_context(|| format!("Failed to write {}", local_path.display()))?;
+
+    Ok(())
+}
+
 /// Install MCP server config into `{project_path}/.mcp.json`.
 ///
 /// - Creates `.mcp.json` if absent.

@@ -503,6 +503,7 @@ async function addAgent() {
     const threadModeVal = document.getElementById('new-agent-thread-mode').value;
     const customRoleVal = document.getElementById('new-agent-custom-role').value.trim() || null;
     const reportToVal = document.getElementById('new-agent-report-to').value || null;
+    const fullPermsVal = document.getElementById('new-agent-full-permissions').checked;
     const errEl = document.getElementById('add-agent-error');
 
     if (!projectHash) { errEl.textContent = 'Select a project first'; return; }
@@ -521,6 +522,7 @@ async function addAgent() {
             threadMode: threadModeVal,
             reportTo: reportToVal,
             customRole: customRoleVal,
+            fullPermissions: fullPermsVal,
         });
         document.getElementById('modal-add-agent').classList.remove('open');
         loadAgents();
@@ -1053,6 +1055,10 @@ function toggleAgentEditRow(tr, agent, toggleBtn) {
                     <input type="checkbox" class="ae-is-supervisor" ${isSup ? 'checked' : ''}>
                     ${dict['modal.issupervisor'] || 'Is Supervisor'}
                 </label>
+                <label class="ae-inline">
+                    <input type="checkbox" class="ae-full-permissions" ${agent.full_permissions ? 'checked' : ''}>
+                    Full Permissions
+                </label>
                 <label>Capabilities (comma-sep)
                     <input type="text" class="ae-capabilities" value="${esc((agent.capabilities||[]).join(', '))}">
                 </label>
@@ -1101,6 +1107,7 @@ async function saveAgentEdit(editTr, original) {
     const threadMode = editTr.querySelector('.ae-thread-mode')?.value || null;
     const customRole = editTr.querySelector('.ae-custom-role')?.value?.trim() ?? '';
     const reportTo = editTr.querySelector('.ae-report-to')?.value ?? '';
+    const fullPermissions = editTr.querySelector('.ae-full-permissions')?.checked ?? false;
 
     const capabilities = capsStr ? capsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
     const specializations = specsStr ? specsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
@@ -1120,6 +1127,7 @@ async function saveAgentEdit(editTr, original) {
             threadMode,
             reportTo,
             customRole,
+            fullPermissions,
         });
         if (result.threads_suspended > 0) {
             alert(`Thread mode updated. ${result.threads_suspended} thread(s) suspended to enforce new quota.`);

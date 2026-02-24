@@ -1103,9 +1103,6 @@ impl Default for GuardianConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HooksConfig {
-    /// Enable Guard Write hook (plan mode enforcement for Edit/Write).
-    #[serde(default = "default_true")]
-    pub guard_write_enabled: bool,
     /// Auto-allow MCP tool calls without permission prompts.
     #[serde(default = "default_true")]
     pub mcp_auto_allow: bool,
@@ -1114,7 +1111,6 @@ pub struct HooksConfig {
 impl Default for HooksConfig {
     fn default() -> Self {
         Self {
-            guard_write_enabled: true,
             mcp_auto_allow: true,
         }
     }

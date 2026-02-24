@@ -33,6 +33,7 @@ pub fn handle_agent_list(
                 "report_to": a.report_to,
                 "custom_role": a.custom_role,
                 "workspace_path": a.workspace_path,
+                "full_permissions": a.full_permissions,
             })
         })
         .collect();
@@ -95,6 +96,7 @@ pub fn handle_agent_status(
             "report_to": agent.report_to,
             "custom_role": agent.custom_role,
             "workspace_path": agent.workspace_path,
+            "full_permissions": agent.full_permissions,
         },
         "is_alive": alive,
         "subordinates": subordinates.iter().map(|a| serde_json::json!({"id": a.id, "name": a.name})).collect::<Vec<_>>(),
@@ -141,6 +143,7 @@ pub fn handle_agent_configure(
         report_to: optional_str(params, "report_to"),
         custom_role: optional_str(params, "custom_role"),
         workspace_path: optional_str(params, "workspace_path"),
+        full_permissions: super::optional_bool(params, "full_permissions"),
     };
 
     AgentRegistry::update(ctx.registry_conn, &agent_id, &project_hash, &update)?;
@@ -411,6 +414,7 @@ mod tests {
             report_to: None,
             custom_role: None,
             workspace_path: String::new(),
+            full_permissions: false,
         };
         AgentRegistry::register(conn, &agent).unwrap();
     }

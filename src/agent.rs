@@ -176,6 +176,9 @@ pub struct Agent {
 
     // --- Workspace isolation ---
     pub workspace_path: String,
+
+    // --- Permissions ---
+    pub full_permissions: bool,
 }
 
 // ── Role Templates ──

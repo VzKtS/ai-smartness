@@ -2,7 +2,7 @@ use crate::{AiError, AiResult};
 use rusqlite::Connection;
 
 /// Schema version actuelle
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
 
 /// Retourne la version de schema actuelle (0 si table absente)
 pub fn get_schema_version(conn: &Connection) -> AiResult<u32> {
@@ -421,6 +421,15 @@ pub fn migrate_registry_db(conn: &Connection) -> AiResult<()> {
              UPDATE agents SET custom_role = NULL WHERE custom_role = '';"
         ).map_err(|e| AiError::Storage(format!("Registry DB V5 migration failed: {}", e)))?;
         set_schema_version(conn, 5)?;
+    }
+
+    // V6: add full_permissions toggle, drop dead agent_permissions table
+    if version < 6 {
+        conn.execute_batch(
+            "ALTER TABLE agents ADD COLUMN full_permissions BOOLEAN NOT NULL DEFAULT 0;
+             DROP TABLE IF EXISTS agent_permissions;"
+        ).map_err(|e| AiError::Storage(format!("Registry DB V6 migration failed: {}", e)))?;
+        set_schema_version(conn, 6)?;
     }
 
     Ok(())

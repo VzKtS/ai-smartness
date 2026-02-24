@@ -763,16 +763,6 @@
             <!-- ── Hooks ── -->
             <div id="stab-hooks" class="sub-panel">
                 <div class="config-section">
-                    <h3 class="section-toggle open" data-section="hooks-guardwrite">Guard Write (Plan Mode)</h3>
-                    <div id="section-hooks-guardwrite" class="section-body open">
-                        <p class="hint" title="When enabled, Edit and Write tool calls are blocked unless a validated plan exists. This enforces a 'plan before you write' workflow.">Blocks Edit/Write without a validated plan_state.json. Prevents unplanned code modifications.</p>
-                        <div class="form-grid">
-                            <label title="Enable or disable the Guard Write hook. When disabled, all Edit/Write calls pass through without plan validation.">Guard Write Enabled
-                                <input type="checkbox" data-path="hooks.guard_write_enabled" checked></label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
                     <h3 class="section-toggle open" data-section="hooks-mcpperm">MCP Permissions</h3>
                     <div id="section-hooks-mcpperm" class="section-body open">
                         <p class="hint" title="When enabled, MCP tool calls (ai_recall, ai_thread_create, etc.) are automatically allowed without prompting. When disabled, each MCP tool call requires manual approval.">Auto-allow all AI Smartness MCP tools without permission prompts.</p>
@@ -1009,6 +999,10 @@
                 <select id="new-agent-report-to">
                     <option value="">— None —</option>
                 </select>
+            </div>
+            <div class="modal-field modal-field-inline">
+                <input type="checkbox" id="new-agent-full-permissions">
+                <label for="new-agent-full-permissions" title="Grant Bash(*), Edit(*), Write(*) permissions to this agent via settings.local.json. Allows the agent to operate without tool-approval prompts.">Full Permissions</label>
             </div>
             <div id="add-agent-error" style="color: var(--danger); font-size: 12px; min-height: 18px;"></div>
             <div class="modal-actions">

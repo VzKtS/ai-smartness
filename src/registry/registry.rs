@@ -56,6 +56,10 @@ pub(crate) fn agent_from_row(row: &Row) -> rusqlite::Result<Agent> {
             .ok()
             .flatten()
             .unwrap_or_default(),
+        full_permissions: row.get::<_, Option<bool>>("full_permissions")
+            .ok()
+            .flatten()
+            .unwrap_or(false),
     })
 }
 
@@ -72,8 +76,8 @@ impl AgentRegistry {
                 id, project_hash, name, description, role, capabilities,
                 status, last_seen, registered_at,
                 supervisor_id, coordination_mode, team, specializations, thread_mode,
-                report_to, custom_role, workspace_path
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                report_to, custom_role, workspace_path, full_permissions
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 agent.id,
                 agent.project_hash,
@@ -92,6 +96,7 @@ impl AgentRegistry {
                 agent.report_to,
                 agent.custom_role,
                 agent.workspace_path,
+                agent.full_permissions,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Register agent failed: {}", e)))?;
@@ -495,6 +500,10 @@ impl AgentRegistry {
             values.push(Box::new(wp.clone()));
             sets.push(format!("workspace_path = ?{}", values.len()));
         }
+        if let Some(fp) = updates.full_permissions {
+            values.push(Box::new(fp));
+            sets.push(format!("full_permissions = ?{}", values.len()));
+        }
 
         if sets.is_empty() {
             return Ok(());
@@ -547,6 +556,7 @@ impl AgentRegistry {
             report_to,
             custom_role,
             workspace_path: None,
+            full_permissions: None,
         };
         Self::update(conn, agent_id, project_hash, &updates)
     }
@@ -759,6 +769,7 @@ pub struct AgentUpdate {
     pub report_to: Option<String>,
     pub custom_role: Option<String>,
     pub workspace_path: Option<String>,
+    pub full_permissions: Option<bool>,
 }
 
 /// Hierarchy tree node.
@@ -826,6 +837,7 @@ mod tests {
             report_to: None,
             custom_role: None,
             workspace_path: String::new(),
+            full_permissions: false,
         }
     }
 

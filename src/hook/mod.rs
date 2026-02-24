@@ -1,6 +1,5 @@
 pub mod capture;
 pub mod compact;
-pub mod guard_write;
 pub mod health;
 pub mod inject;
 pub mod pretool;
