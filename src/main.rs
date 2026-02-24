@@ -58,6 +58,11 @@ enum Commands {
         #[command(subcommand)]
         action: DaemonAction,
     },
+    /// CLI-first controller (wake signal injection for terminal users)
+    Controller {
+        #[command(subcommand)]
+        action: ControllerAction,
+    },
     /// AI provider hook (inject/capture/health)
     Hook {
         #[command(subcommand)]
@@ -128,6 +133,20 @@ enum DaemonAction {
         #[arg(long, hide = true)]
         agent_id: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum ControllerAction {
+    /// Start the CLI controller (background)
+    Start {
+        /// Poll interval in milliseconds (default: 3000)
+        #[arg(long)]
+        interval: Option<u64>,
+    },
+    /// Stop the CLI controller
+    Stop,
+    /// Show controller status
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -275,6 +294,22 @@ fn main() {
             }
             DaemonAction::Status => {
                 cli::daemon::status()
+                    .unwrap_or_else(|e| eprintln!("Error: {}", e));
+            }
+        },
+
+        // Controller: CLI-first wake signal injection
+        Some(Commands::Controller { action }) => match action {
+            ControllerAction::Start { interval } => {
+                cli::controller::start(interval)
+                    .unwrap_or_else(|e| eprintln!("Error: {}", e));
+            }
+            ControllerAction::Stop => {
+                cli::controller::stop()
+                    .unwrap_or_else(|e| eprintln!("Error: {}", e));
+            }
+            ControllerAction::Status => {
+                cli::controller::status()
                     .unwrap_or_else(|e| eprintln!("Error: {}", e));
             }
         },
