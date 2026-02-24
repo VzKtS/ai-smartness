@@ -695,6 +695,8 @@ async function loadDashboard() {
             document.getElementById('btn-daemon-stop').disabled = true;
         }
         document.getElementById('daemon-version').textContent = ds.version || '-';
+        const versionEl = document.getElementById('version');
+        if (versionEl && ds.version) versionEl.textContent = `AI Smartness v${ds.version}`;
 
         const tc = data.totals;
         document.getElementById('thread-active').textContent = tc.active;
