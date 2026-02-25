@@ -38,6 +38,7 @@ exports.isDebounced = isDebounced;
 exports.buildPromptText = buildPromptText;
 exports.tryInject = tryInject;
 exports.tryInjectSync = tryInjectSync;
+exports.getMonitoredPids = getMonitoredPids;
 exports.cleanup = cleanup;
 const fs = __importStar(require("fs"));
 const paths = __importStar(require("./paths"));
@@ -261,39 +262,36 @@ async function tryInject(agentId, text) {
  * PID-targeted: reads beat.json to find the correct Claude process for this agent.
  * Falls back to first idle Claude process if PID not available.
  * Never blocks, never retries — the controller handles retry logic.
- *
- * options.skipIdleCheck: if true, bypass idle detection (used for urgent/interrupt signals).
  */
-function tryInjectSync(agentId, text, projHash, options) {
+function tryInjectSync(agentId, text, projHash) {
     if (isDebounced(agentId)) {
         return false;
     }
-    const skip = options?.skipIdleCheck === true;
     const payload = buildPayload(text);
+    // Track whether beat.json resolved a PID for this agent.
+    // If yes but process not found here → agent lives in another window.
+    let targetPidResolved = false;
     // Strategy 1: PID-targeted (if projHash available)
-    let pidTargeted = false;
     if (projHash) {
         const targetPid = readAgentPid(projHash, agentId);
         if (targetPid) {
-            pidTargeted = true;
+            targetPidResolved = true;
             const proc = findProcessByPid(targetPid);
-            if (proc?.stdin?.writable && (skip || isIdle(targetPid))) {
+            if (proc?.stdin?.writable && isIdle(targetPid)) {
                 try {
                     proc.stdin.write(payload);
                     lastInjectionTime.set(agentId, Date.now());
                     return true;
                 }
-                catch {
-                    return false;
-                }
+                catch { /* fall through */ }
             }
         }
     }
-    // Strategy 2: Fallback — only if PID targeting was unavailable and exactly ONE monitored process
-    // (single-agent compat). With multiple processes, PID targeting is required
-    // to avoid injecting into the wrong panel.
-    if (!pidTargeted && monitoredProcesses.size <= 1) {
-        const proc = skip ? findClaudeProcess() : findIdleClaudeProcess();
+    // Strategy 2: Fallback — ONLY when PID targeting is genuinely unavailable
+    // (no projHash, or beat.json doesn't exist yet during startup).
+    // If targetPid was resolved but not found → agent is in another window → BLOCK.
+    if (monitoredProcesses.size <= 1 && !targetPidResolved) {
+        const proc = findIdleClaudeProcess();
         if (proc?.stdin?.writable) {
             try {
                 proc.stdin.write(payload);
@@ -308,6 +306,14 @@ function tryInjectSync(agentId, text, projHash, options) {
     return false;
 }
 // ─── Cleanup ───
+// ─── Introspection ───
+/**
+ * Return the PIDs of Claude CLI processes monitored by this extension host.
+ * Used by extension.ts to determine which agents belong to this window.
+ */
+function getMonitoredPids() {
+    return monitoredProcesses;
+}
 function cleanup() {
     processActivity.clear();
     monitoredProcesses.clear();

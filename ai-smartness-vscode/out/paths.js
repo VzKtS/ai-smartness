@@ -46,6 +46,8 @@ exports.resolveProjectHash = resolveProjectHash;
 exports.sessionAgentsDir = sessionAgentsDir;
 exports.readSessionAgent = readSessionAgent;
 exports.listSessionAgents = listSessionAgents;
+exports.listSessionAgentsByPid = listSessionAgentsByPid;
+exports.readAgentCliPid = readAgentCliPid;
 const crypto = __importStar(require("crypto"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
@@ -165,6 +167,53 @@ function listSessionAgents(projHash) {
     }
     catch {
         return [];
+    }
+}
+/**
+ * List session agents as Map<MCP_PID, agentId>.
+ * Each file in session_agents/ is named by MCP server PID.
+ */
+function listSessionAgentsByPid(projHash) {
+    const dir = sessionAgentsDir(projHash);
+    const result = new Map();
+    try {
+        if (!fs.existsSync(dir)) {
+            return result;
+        }
+        for (const file of fs.readdirSync(dir)) {
+            const pid = parseInt(file, 10);
+            if (isNaN(pid)) {
+                continue;
+            }
+            try {
+                const agentId = fs.readFileSync(path.join(dir, file), 'utf8').trim();
+                if (agentId) {
+                    result.set(pid, agentId);
+                }
+            }
+            catch {
+                continue;
+            }
+        }
+    }
+    catch { /* ignore */ }
+    return result;
+}
+/**
+ * Read cli_pid from beat.json for a specific agent.
+ * Returns null if beat.json missing or no cli_pid field.
+ */
+function readAgentCliPid(projHash, agentId) {
+    try {
+        const beatPath = agentBeatPath(projHash, agentId);
+        if (!fs.existsSync(beatPath)) {
+            return null;
+        }
+        const beat = JSON.parse(fs.readFileSync(beatPath, 'utf8'));
+        return beat.cli_pid ?? null;
+    }
+    catch {
+        return null;
     }
 }
 //# sourceMappingURL=paths.js.map

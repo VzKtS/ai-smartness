@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AgentController = void 0;
+const paths = __importStar(require("./paths"));
 const stdinInjection = __importStar(require("./stdinInjection"));
 const wakeSignals = __importStar(require("./wakeSignals"));
 const COOLDOWN_MS = 10000;
@@ -109,25 +110,23 @@ class AgentController {
         if (this.processedSignalKeys.has(key)) {
             return;
         }
+        // Verify this agent's process is in OUR window before processing.
+        // If cli_pid is known but not in our monitored set → another window owns it.
+        if (this.projectHash) {
+            const monitoredPids = stdinInjection.getMonitoredPids();
+            if (monitoredPids.size > 0) {
+                const cliPid = paths.readAgentCliPid(this.projectHash, this.agentId);
+                if (cliPid !== null && !monitoredPids.has(cliPid)) {
+                    return;
+                }
+            }
+        }
         this.processedSignalKeys.add(key);
         this.onLog(`Wake signal: ${this.agentId} from ${signal.from}`);
         this.onNotify(`AI Smartness: Message for ${this.agentId} from ${signal.from}`);
         if (!autoPrompt) {
             wakeSignals.acknowledgeSignal(this.agentId);
             return;
-        }
-        // Interrupt: bypass idle check, inject immediately
-        if (signal.interrupt) {
-            const mode = signal.mode || this.communicationMode;
-            const text = stdinInjection.buildPromptText(this.agentId, signal.from, signal.message, mode);
-            const ok = stdinInjection.tryInjectSync(this.agentId, text, this.projectHash ?? undefined, { skipIdleCheck: true });
-            if (ok) {
-                this.onLog(`Interrupt injected to ${this.agentId}`);
-                wakeSignals.acknowledgeSignal(this.agentId);
-                this.enterCooldown();
-                return;
-            }
-            // Fall through to normal pending path if injection failed
         }
         this.currentSignal = signal;
         this.attempts = 0;
@@ -147,8 +146,7 @@ class AgentController {
         // Use signal's mode if present, otherwise fall back to global config
         const mode = this.currentSignal.mode || this.communicationMode;
         const text = stdinInjection.buildPromptText(this.agentId, this.currentSignal.from, this.currentSignal.message, mode);
-        const injectOpts = this.currentSignal.interrupt ? { skipIdleCheck: true } : undefined;
-        const ok = stdinInjection.tryInjectSync(this.agentId, text, this.projectHash ?? undefined, injectOpts);
+        const ok = stdinInjection.tryInjectSync(this.agentId, text, this.projectHash ?? undefined);
         if (ok) {
             this.onLog(`Injected wake to ${this.agentId}`);
             wakeSignals.acknowledgeSignal(this.agentId);

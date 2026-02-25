@@ -229,27 +229,50 @@ function isDaemonAlive() {
 // =====================================================================
 function detectAllAgents() {
     const agents = new Set();
-    // 1. Env var (applies to all sessions)
+    // 1. Env var — explicit per-window config, always include
     const envAgent = process.env.AI_SMARTNESS_AGENT;
     if (envAgent) {
         agents.add(envAgent);
     }
-    if (currentProjectHash) {
-        // 2. Per-session agent files — one file per Claude Code panel
-        const sessionAgents = paths.listSessionAgents(currentProjectHash);
-        for (const a of sessionAgents) {
-            agents.add(a);
-        }
-        // 3. Global session file (fallback for sessions without per-session binding)
-        const globalAgent = paths.readSessionAgent(currentProjectHash);
-        if (globalAgent) {
-            agents.add(globalAgent);
-        }
-    }
-    // 4. .mcp.json
+    // 2. .mcp.json — workspace-scoped, always include
     const mcpAgent = detectAgentFromMcpJson();
     if (mcpAgent) {
         agents.add(mcpAgent);
+    }
+    if (currentProjectHash) {
+        const monitoredPids = stdinInjection.getMonitoredPids();
+        if (monitoredPids.size === 0) {
+            // Grace period: no Claude processes discovered yet (startup).
+            // Include all agents — current behavior. Once processes appear,
+            // filtering kicks in and syncControllers removes foreign controllers.
+            const sessionAgents = paths.listSessionAgents(currentProjectHash);
+            for (const a of sessionAgents) {
+                agents.add(a);
+            }
+            const globalAgent = paths.readSessionAgent(currentProjectHash);
+            if (globalAgent) {
+                agents.add(globalAgent);
+            }
+        }
+        else {
+            // Normal: only include agents whose cli_pid matches our processes.
+            // Chain: session_agents/{mcp_pid} → agentId → beat.json → cli_pid
+            const pidToAgent = paths.listSessionAgentsByPid(currentProjectHash);
+            for (const [, agentId] of pidToAgent) {
+                const cliPid = paths.readAgentCliPid(currentProjectHash, agentId);
+                if (cliPid !== null && monitoredPids.has(cliPid)) {
+                    agents.add(agentId);
+                }
+            }
+            // Global session file — same cli_pid check
+            const globalAgent = paths.readSessionAgent(currentProjectHash);
+            if (globalAgent) {
+                const cliPid = paths.readAgentCliPid(currentProjectHash, globalAgent);
+                if (cliPid !== null && monitoredPids.has(cliPid)) {
+                    agents.add(globalAgent);
+                }
+            }
+        }
     }
     return [...agents];
 }
