@@ -514,6 +514,7 @@ fn tool_definitions() -> Vec<serde_json::Value> {
         tool_def("agent_tasks", "Manage tasks", &["action"], &[]),
         tool_def("task_delegate", "Delegate task", &["to", "task"], &["context", "priority"]),
         tool_def("task_status", "Task status", &["task_id"], &[]),
+        tool_def("task_complete", "Mark a delegated task as completed and auto-notify the delegator", &["task_id"], &["result"]),
         tool_def("metrics_cross_agent", "Cross-agent metrics", &[], &["agent_id", "period"]),
         tool_def("health_check", "Health check", &[], &[]),
         tool_def("topics_network", "Trending topics", &[], &["agent_id", "limit"]),

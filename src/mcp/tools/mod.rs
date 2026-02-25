@@ -171,6 +171,7 @@ fn route_plain_tool(
         // -- mcp-smartness-com: Tasks --
         "task_delegate" => agents::handle_task_delegate(params, ctx),
         "task_status" => agents::handle_task_status(params, ctx),
+        "task_complete" => agents::handle_task_complete(params, ctx),
 
         // -- mcp-smartness-com: Metrics & Health --
         "metrics_cross_agent" => status::handle_metrics(params, ctx),

@@ -5,6 +5,8 @@ use ai_smartness::registry::tasks::AgentTaskStorage;
 use ai_smartness::{id_gen, time_utils};
 use ai_smartness::agent::{AgentTask, TaskPriority, TaskStatus};
 use ai_smartness::constants::{truncate_safe, MAX_MESSAGE_SIZE_BYTES};
+use ai_smartness::message::{Message, MessagePriority, MessageStatus};
+use ai_smartness::storage::mcp_messages::McpMessages;
 use ai_smartness::AiResult;
 
 use super::{optional_str, required_str, ToolContext, ToolOutput};
@@ -361,6 +363,56 @@ pub fn handle_task_status(
     }
 }
 
+pub fn handle_task_complete(
+    params: &serde_json::Value,
+    ctx: &ToolContext,
+) -> AiResult<serde_json::Value> {
+    let task_id = required_str(params, "task_id")?;
+    let result = optional_str(params, "result");
+
+    AgentTaskStorage::update_task_status(
+        ctx.registry_conn,
+        &task_id,
+        TaskStatus::Completed,
+        result.as_deref(),
+    )?;
+
+    if let Some(task) = AgentTaskStorage::get_task(ctx.registry_conn, &task_id, ctx.project_hash)? {
+        let subject = format!("Task completed: {}", task.title);
+        let content = format!(
+            "Agent {} completed task \"{}\".\nResult: {}",
+            ctx.agent_id,
+            task.title,
+            result.as_deref().unwrap_or("(no result)")
+        );
+        let now = time_utils::now();
+        let msg = Message {
+            id: id_gen::message_id(),
+            from_agent: ctx.agent_id.to_string(),
+            to_agent: task.assigned_by.clone(),
+            subject: subject.clone(),
+            content,
+            priority: MessagePriority::Normal,
+            status: MessageStatus::Pending,
+            created_at: now,
+            ttl_expiry: now + chrono::Duration::hours(24),
+            read_at: None,
+            acked_at: None,
+            attachments: vec![],
+        };
+        McpMessages::send(ctx.shared_conn, &msg).ok();
+        // interrupt=true: task completion is always priority (avoid ghost-wake regression)
+        emit_wake_signal(&task.assigned_by, ctx.agent_id, &subject, "inbox", true);
+        Ok(serde_json::json!({
+            "completed": true,
+            "task_id": task_id,
+            "notified": task.assigned_by,
+        }))
+    } else {
+        Ok(serde_json::json!({"completed": true, "task_id": task_id, "notified": null}))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,6 +693,155 @@ mod tests {
         let agents = AgentRegistry::list(&registry_conn, Some(PH_A), None, None).unwrap();
         let agent = agents.iter().find(|a| a.id == "agent-cfg").unwrap();
         assert_eq!(agent.role, "architect", "Update should apply to ctx project");
+    }
+
+    // T4.1: task_complete updates status to Completed
+    #[test]
+    fn test_task_complete_updates_status() {
+        const TC_DEL: &str = "tc-del-1";
+        const TC_WRK: &str = "tc-wrk-1";
+
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, TC_DEL);
+        register_agent(&registry_conn, TC_WRK);
+
+        let ctx_del = ToolContext {
+            agent_conn: &agent_conn, registry_conn: &registry_conn,
+            shared_conn: &shared_conn, project_hash: PH, agent_id: TC_DEL,
+        };
+        let del = handle_task_delegate(
+            &serde_json::json!({"to": TC_WRK, "task": "Status update task"}),
+            &ctx_del,
+        ).unwrap();
+        let task_id = del["task_id"].as_str().unwrap().to_string();
+
+        let ctx_wrk = ToolContext {
+            agent_conn: &agent_conn, registry_conn: &registry_conn,
+            shared_conn: &shared_conn, project_hash: PH, agent_id: TC_WRK,
+        };
+        let result = handle_task_complete(
+            &serde_json::json!({"task_id": task_id}),
+            &ctx_wrk,
+        ).unwrap();
+        assert_eq!(result["completed"], true);
+
+        let task = AgentTaskStorage::get_task(&registry_conn, &result["task_id"].as_str().unwrap(), PH)
+            .unwrap().unwrap();
+        assert_eq!(task.status, TaskStatus::Completed);
+
+        let _ = std::fs::remove_file(ai_smartness::storage::path_utils::wake_signal_path(TC_DEL));
+        let _ = std::fs::remove_file(ai_smartness::storage::path_utils::wake_signal_path(TC_WRK));
+    }
+
+    // T4.2: task_complete notifies delegator with interrupt=true
+    #[test]
+    fn test_task_complete_notifies_delegator() {
+        const TC_DEL: &str = "tc-del-2";
+        const TC_WRK: &str = "tc-wrk-2";
+
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, TC_DEL);
+        register_agent(&registry_conn, TC_WRK);
+
+        let ctx_del = ToolContext {
+            agent_conn: &agent_conn, registry_conn: &registry_conn,
+            shared_conn: &shared_conn, project_hash: PH, agent_id: TC_DEL,
+        };
+        let del = handle_task_delegate(
+            &serde_json::json!({"to": TC_WRK, "task": "Notify test task"}),
+            &ctx_del,
+        ).unwrap();
+        let task_id = del["task_id"].as_str().unwrap();
+
+        let ctx_wrk = ToolContext {
+            agent_conn: &agent_conn, registry_conn: &registry_conn,
+            shared_conn: &shared_conn, project_hash: PH, agent_id: TC_WRK,
+        };
+        let result = handle_task_complete(
+            &serde_json::json!({"task_id": task_id}),
+            &ctx_wrk,
+        ).unwrap();
+        assert_eq!(result["notified"].as_str().unwrap(), TC_DEL);
+
+        // Delegator's inbox must contain a completion message
+        let msgs = McpMessages::inbox(&shared_conn, TC_DEL).unwrap();
+        assert!(!msgs.is_empty(), "Delegator inbox must have completion message");
+        assert!(msgs[0].subject.contains("completed"), "Message subject should mention completion");
+
+        // Wake signal for delegator must have interrupt=true (C2 fix)
+        let signal_path = ai_smartness::storage::path_utils::wake_signal_path(TC_DEL);
+        let sig_content = std::fs::read_to_string(&signal_path).unwrap();
+        let sig: serde_json::Value = serde_json::from_str(&sig_content).unwrap();
+        assert_eq!(sig["interrupt"], true, "task_complete wake signal must use interrupt=true");
+
+        let _ = std::fs::remove_file(&signal_path);
+        let _ = std::fs::remove_file(ai_smartness::storage::path_utils::wake_signal_path(TC_WRK));
+    }
+
+    // T4.3: task_complete stores result string
+    #[test]
+    fn test_task_complete_with_result() {
+        const TC_DEL: &str = "tc-del-3";
+        const TC_WRK: &str = "tc-wrk-3";
+
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+        register_agent(&registry_conn, TC_DEL);
+        register_agent(&registry_conn, TC_WRK);
+
+        let ctx_del = ToolContext {
+            agent_conn: &agent_conn, registry_conn: &registry_conn,
+            shared_conn: &shared_conn, project_hash: PH, agent_id: TC_DEL,
+        };
+        let del = handle_task_delegate(
+            &serde_json::json!({"to": TC_WRK, "task": "Result task"}),
+            &ctx_del,
+        ).unwrap();
+        let task_id = del["task_id"].as_str().unwrap().to_string();
+
+        let ctx_wrk = ToolContext {
+            agent_conn: &agent_conn, registry_conn: &registry_conn,
+            shared_conn: &shared_conn, project_hash: PH, agent_id: TC_WRK,
+        };
+        handle_task_complete(
+            &serde_json::json!({"task_id": task_id, "result": "Build passed: 122 tests"}),
+            &ctx_wrk,
+        ).unwrap();
+
+        let task = AgentTaskStorage::get_task(&registry_conn, &task_id, PH)
+            .unwrap().unwrap();
+        assert_eq!(task.result.as_deref(), Some("Build passed: 122 tests"));
+
+        let _ = std::fs::remove_file(ai_smartness::storage::path_utils::wake_signal_path(TC_DEL));
+        let _ = std::fs::remove_file(ai_smartness::storage::path_utils::wake_signal_path(TC_WRK));
+    }
+
+    // T4.4: task_complete with unknown task_id returns notified=null, no error
+    #[test]
+    fn test_task_complete_unknown_task() {
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+        insert_project(&registry_conn);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn, registry_conn: &registry_conn,
+            shared_conn: &shared_conn, project_hash: PH, agent_id: AGENT,
+        };
+        let result = handle_task_complete(
+            &serde_json::json!({"task_id": "nonexistent-task-id-xyz"}),
+            &ctx,
+        ).unwrap();
+        assert_eq!(result["completed"], true);
+        assert!(result["notified"].is_null(), "Unknown task must return notified=null");
     }
 
     // T-B3.1: task_status — task from project A invisible from project B

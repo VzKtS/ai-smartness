@@ -292,7 +292,7 @@ pub fn handle_msg_broadcast(
     if let Ok(agents) = AgentRegistry::list(ctx.registry_conn, Some(ctx.project_hash), None, None) {
         for agent in &agents {
             if agent.id != ctx.agent_id {
-                emit_wake_signal(&agent.id, ctx.agent_id, &msg.subject, "inbox", false);
+                emit_wake_signal(&agent.id, ctx.agent_id, &msg.subject, "inbox", true);
             }
         }
     }
@@ -338,6 +338,19 @@ pub fn handle_msg_inbox(
     // Mark all fetched messages as read so they don't accumulate
     for m in &messages {
         McpMessages::ack(ctx.shared_conn, &m.id).ok();
+    }
+
+    // Ghost wake fix: if inbox is now drained, remove the wake signal — but only
+    // if it is an "inbox" signal. A "cognitive" signal must not be wiped here.
+    if McpMessages::inbox(ctx.shared_conn, &effective_agent)?.is_empty() {
+        let signal_path = path_utils::wake_signal_path(&effective_agent);
+        if let Ok(content) = std::fs::read_to_string(&signal_path) {
+            if let Ok(sig) = serde_json::from_str::<serde_json::Value>(&content) {
+                if sig.get("mode").and_then(|m| m.as_str()) == Some("inbox") {
+                    std::fs::remove_file(&signal_path).ok();
+                }
+            }
+        }
     }
 
     Ok(serde_json::json!({"messages": results, "count": results.len()}))
@@ -523,6 +536,104 @@ mod tests {
         assert_eq!(json["acknowledged"], false);
         assert!(json["timestamp"].is_string());
 
+        cleanup_signal(agent);
+    }
+
+    // T1.1: Ghost wake fix — inbox drain removes inbox signal
+    #[test]
+    fn test_inbox_drain_removes_wake_signal() {
+        let agent = "test_ghost_drain_1";
+        cleanup_signal(agent);
+
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: "test-ph",
+            agent_id: agent,
+        };
+
+        // Send a message so inbox is non-empty, then emit inbox wake signal
+        let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+        let future = ai_smartness::time_utils::to_sqlite(
+            &(ai_smartness::time_utils::now() + chrono::Duration::hours(24))
+        );
+        shared_conn.execute(
+            "INSERT INTO mcp_messages (id, from_agent, to_agent, subject, payload, priority, expires_at, status, created_at)
+             VALUES ('m-ghost-1', 'sender', ?1, 'subj', 'body', 'normal', ?2, 'pending', ?3)",
+            rusqlite::params![agent, future, now],
+        ).unwrap();
+        emit_wake_signal(agent, "sender", "subj", "inbox", false);
+        assert!(path_utils::wake_signal_path(agent).exists(), "Signal should exist before inbox read");
+
+        // Read inbox → drains all messages → should remove inbox signal
+        handle_msg_inbox(&serde_json::json!({}), &ctx).unwrap();
+
+        assert!(!path_utils::wake_signal_path(agent).exists(), "Inbox signal should be removed after drain");
+        cleanup_signal(agent);
+    }
+
+    // T1.1: Ghost wake fix — signal kept when inbox still has messages (partial ack, low-level)
+    #[test]
+    fn test_inbox_partial_ack_keeps_signal() {
+        let agent = "test_ghost_partial_1";
+        cleanup_signal(agent);
+
+        let shared_conn = setup_shared_db();
+        let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+        let future = ai_smartness::time_utils::to_sqlite(
+            &(ai_smartness::time_utils::now() + chrono::Duration::hours(24))
+        );
+
+        // Insert 2 messages
+        for i in 1..=2u32 {
+            shared_conn.execute(
+                "INSERT INTO mcp_messages (id, from_agent, to_agent, subject, payload, priority, expires_at, status, created_at)
+                 VALUES (?1, 'sender', ?2, 'subj', 'body', 'normal', ?3, 'pending', ?4)",
+                rusqlite::params![format!("m-partial-{i}"), agent, future, now],
+            ).unwrap();
+        }
+        emit_wake_signal(agent, "sender", "subj", "inbox", false);
+
+        // Ack only 1 message directly — inbox still has 1 remaining
+        McpMessages::ack(&shared_conn, "m-partial-1").unwrap();
+        let remaining = McpMessages::inbox(&shared_conn, agent).unwrap();
+        assert_eq!(remaining.len(), 1, "One message should remain");
+        assert!(path_utils::wake_signal_path(agent).exists(), "Signal should remain while inbox non-empty");
+
+        cleanup_signal(agent);
+    }
+
+    // T1.1 + coder2 fix: inbox drain does NOT remove a cognitive-mode signal
+    #[test]
+    fn test_inbox_drain_does_not_remove_cognitive_signal() {
+        let agent = "test_ghost_cog_1";
+        cleanup_signal(agent);
+
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: "test-ph",
+            agent_id: agent,
+        };
+
+        // Emit a cognitive signal (inbox is empty — no mcp_messages)
+        emit_wake_signal(agent, "sender", "cognitive nudge", "cognitive", false);
+        assert!(path_utils::wake_signal_path(agent).exists(), "Cognitive signal should exist");
+
+        // Reading empty inbox → drain check runs → must NOT remove cognitive signal
+        handle_msg_inbox(&serde_json::json!({}), &ctx).unwrap();
+
+        assert!(path_utils::wake_signal_path(agent).exists(), "Cognitive signal must NOT be removed by inbox drain");
         cleanup_signal(agent);
     }
 
