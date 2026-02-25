@@ -371,6 +371,65 @@ fn run_prune_cycle(conn_mtx: &Mutex<Connection>, guardian: &GuardianConfig, agen
         let Ok(conn) = conn_mtx.lock() else { return };
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").ok();
     });
+
+    // 11. Session GC: remove stale session_agents/ files older than 48h
+    run_task("session_gc", || {
+        let dir = path_utils::session_agents_dir(project_hash);
+        let cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(48 * 3600))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        gc_session_agents(&dir, cutoff);
+    });
+}
+
+/// Delete files in `dir` whose mtime is older than `cutoff`.
+fn gc_session_agents(dir: &std::path::Path, cutoff: std::time::SystemTime) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.modified().map(|m| m < cutoff).unwrap_or(false) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::FileTimes;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn test_session_gc_deletes_old_files() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let dir_path = dir.path();
+
+        // Old file: mtime set to 72h ago (> 48h cutoff)
+        let old_file = dir_path.join("old_session");
+        std::fs::write(&old_file, b"old").unwrap();
+        let old_mtime = SystemTime::now() - Duration::from_secs(72 * 3600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&old_file)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(old_mtime))
+            .unwrap();
+
+        // Recent file: mtime = now (< 48h cutoff)
+        let new_file = dir_path.join("new_session");
+        std::fs::write(&new_file, b"new").unwrap();
+
+        let cutoff = SystemTime::now()
+            .checked_sub(Duration::from_secs(48 * 3600))
+            .unwrap();
+
+        gc_session_agents(dir_path, cutoff);
+
+        assert!(!old_file.exists(), "old file should be deleted");
+        assert!(new_file.exists(), "new file should survive");
+    }
 }
 
 /// Clean work_contexts expired > 24h (freshness_factor == 0.0).

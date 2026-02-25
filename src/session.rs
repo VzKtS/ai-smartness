@@ -155,3 +155,30 @@ impl SessionState {
         (Utc::now() - self.started_at).num_minutes()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // T-P3.3: VecDeque ring buffer — oldest item ejected when capacity exceeded
+    #[test]
+    fn test_vecdeque_ring_buffer() {
+        let mut s = SessionState::new("agent-x", "proj-x");
+        let cap = MAX_TOOL_HISTORY;
+
+        // Fill to exactly capacity
+        for i in 0..cap {
+            s.record_tool_call("tool", &format!("target-{}", i));
+        }
+        assert_eq!(s.tool_history.len(), cap);
+        assert_eq!(s.tool_history.front().unwrap().target, "target-0");
+
+        // Push one more — oldest must be ejected
+        s.record_tool_call("tool", "target-overflow");
+        assert_eq!(s.tool_history.len(), cap, "Length must stay bounded at {cap}");
+        // First element is now target-1 (target-0 was popped)
+        assert_eq!(s.tool_history.front().unwrap().target, "target-1");
+        // Last element is the newest
+        assert_eq!(s.tool_history.back().unwrap().target, "target-overflow");
+    }
+}

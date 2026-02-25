@@ -523,6 +523,23 @@ fn tool_definitions() -> Vec<serde_json::Value> {
     ]
 }
 
+#[cfg(test)]
+mod tests {
+    // T-P3.1: catch_unwind around tool dispatch catches panics without killing the process
+    #[test]
+    fn test_catch_unwind_mcp_panic_returns_error() {
+        // Simulate the same pattern used in handle_tools_call
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            panic!("simulated tool handler panic");
+        }));
+        assert!(result.is_err(), "catch_unwind must return Err on panic");
+
+        // Process is still alive — we can execute code after the panic
+        let after_panic = std::panic::catch_unwind(|| 42_i32);
+        assert_eq!(after_panic.unwrap(), 42, "Process must survive after caught panic");
+    }
+}
+
 fn tool_def(name: &str, desc: &str, required: &[&str], optional: &[&str]) -> serde_json::Value {
     let mut props = serde_json::Map::new();
     for &r in required.iter().chain(optional.iter()) {

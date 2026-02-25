@@ -965,4 +965,22 @@ mod tests {
         // Active thread untouched
         assert!(ThreadStorage::get(&conn, "k1").unwrap().is_some());
     }
+
+    // T-P3.2: SQL filter for __pin__ label returns only pinned threads, not others
+    #[test]
+    fn test_pins_sql_filter() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("pin1").labels(vec!["__pin__"]).build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("pin2").labels(vec!["__pin__", "reference"]).build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("other1").labels(vec!["reference"]).build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("other2").build()).unwrap();
+
+        let results = ThreadStorage::search_by_labels(&conn, &["__pin__".to_string()]).unwrap();
+        assert_eq!(results.len(), 2, "Only pinned threads should be returned, got {}", results.len());
+        let ids: Vec<&str> = results.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"pin1"), "pin1 missing");
+        assert!(ids.contains(&"pin2"), "pin2 missing");
+        assert!(!ids.contains(&"other1"), "other1 must not appear");
+        assert!(!ids.contains(&"other2"), "other2 must not appear");
+    }
 }
