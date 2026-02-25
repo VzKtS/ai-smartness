@@ -118,6 +118,20 @@ pub fn run(path: Option<&str>) -> Result<()> {
         }
     }
 
+    // 8. Install Claude Code hooks (.claude/settings.json)
+    if let Err(e) = ai_smartness::hook_setup::install_claude_hooks(&project_path, &hash) {
+        eprintln!("  Warning: failed to install hooks: {}", e);
+    } else {
+        println!("  Installed hooks in .claude/settings.json");
+    }
+
+    // 9. Install MCP server config (.mcp.json)
+    if let Err(e) = ai_smartness::hook_setup::install_mcp_config(&project_path, &hash) {
+        eprintln!("  Warning: failed to install MCP config: {}", e);
+    } else {
+        println!("  Installed MCP config in .mcp.json");
+    }
+
     println!("\nAI Smartness initialized successfully!");
     println!("Project: {} ({})", project_name, &hash[..8]);
     println!("\nNext steps:");
