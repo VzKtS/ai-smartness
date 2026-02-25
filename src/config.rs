@@ -79,6 +79,22 @@ pub enum LlmFailureMode {
 }
 
 // ============================================================================
+// LLM BACKEND (local llama.cpp vs Claude CLI)
+// ============================================================================
+
+/// LLM backend for Guardian inference tasks.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum LlmBackend {
+    /// In-process llama.cpp (zero API cost). Default.
+    #[default]
+    Local,
+    /// Claude CLI subprocess (API cost).
+    Claude,
+    /// Try local first, fallback to Claude CLI.
+    LocalWithFallback,
+}
+
+// ============================================================================
 // EMBEDDING SYSTEM CONFIG (for non-LLM systems: gossip, recall, matching)
 // ============================================================================
 
@@ -1044,6 +1060,12 @@ pub struct GuardianConfig {
 
     // --- Global settings ---
     pub enabled: bool,
+    /// LLM backend: Local (llama.cpp, zero cost), Claude (API), or LocalWithFallback.
+    #[serde(default)]
+    pub llm_backend: LlmBackend,
+    /// Path to local GGUF model file. None = auto-detect from data_dir/models/.
+    #[serde(default)]
+    pub local_model_path: Option<String>,
     pub claude_cli_path: Option<String>,
     pub hook_guard_env: String,
 
@@ -1082,6 +1104,8 @@ impl Default for GuardianConfig {
             capture: CaptureConfig::default(),
             decay: DecayConfig::default(),
             enabled: true,
+            llm_backend: LlmBackend::Local,
+            local_model_path: None,
             claude_cli_path: None,
             hook_guard_env: "AI_SMARTNESS_HOOK_RUNNING".to_string(),
             cache_enabled: false,

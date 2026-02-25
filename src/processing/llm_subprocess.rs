@@ -1,27 +1,36 @@
-//! LLM Subprocess — calls `claude` CLI for Guardian tasks.
+//! LLM Provider — routes to local llama.cpp or Claude CLI fallback.
 //!
 //! Used by: extraction, coherence, synthesis, reactivation decisions.
-//! Retry logic: 1 retry with shorter prompt on failure.
-//! Timeout: 30s per call.
+//! Priority: Local LLM (zero cost) → Claude CLI (API cost fallback).
 
 use crate::{AiError, AiResult};
 use std::process::Command;
 use std::time::Duration;
 
-/// Default timeout for LLM calls (30 seconds).
+/// Default timeout for Claude CLI calls (30 seconds).
 const LLM_TIMEOUT_SECS: u64 = 30;
 
-/// Maximum retries.
+/// Maximum retries for Claude CLI.
 const MAX_RETRIES: u32 = 1;
 
-/// Call claude CLI with a prompt and return the response text.
+/// Call LLM with a prompt and return the response text.
+/// Routes to local llama.cpp first, falls back to Claude CLI.
 pub fn call_claude(prompt: &str) -> AiResult<String> {
     call_claude_with_model(prompt, "haiku")
 }
 
-/// Call claude CLI with a specific model.
+/// Call LLM with a prompt. The `model` parameter is used for Claude CLI fallback only.
+/// Local inference uses the configured GGUF model regardless of `model`.
 pub fn call_claude_with_model(prompt: &str, model: &str) -> AiResult<String> {
-    tracing::info!(model = %model, prompt_len = prompt.len(), "LLM subprocess call starting");
+    // Try local LLM first (zero API cost)
+    let local = super::local_llm::LocalLlm::global();
+    if local.is_available() {
+        tracing::debug!(prompt_len = prompt.len(), "LLM call via local llama.cpp");
+        return local.generate(prompt, 512);
+    }
+
+    // Fallback: Claude CLI subprocess
+    tracing::info!(model = %model, prompt_len = prompt.len(), "Local LLM unavailable, using Claude CLI");
     let mut last_err = None;
 
     for attempt in 0..=MAX_RETRIES {
@@ -39,7 +48,7 @@ pub fn call_claude_with_model(prompt: &str, model: &str) -> AiResult<String> {
         }
     }
 
-    tracing::error!(model = %model, "LLM subprocess: all retries exhausted");
+    tracing::error!(model = %model, "LLM: all retries exhausted (local unavailable, Claude CLI failed)");
     Err(last_err.unwrap_or_else(|| AiError::Provider("All retries failed".into())))
 }
 

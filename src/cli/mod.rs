@@ -6,6 +6,7 @@ pub mod daemon;
 pub mod init;
 pub mod project;
 pub mod search;
+pub mod setup_model;
 pub mod setup_onnx;
 pub mod status;
 pub mod threads;

@@ -96,6 +96,12 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Download local LLM model for zero-cost inference
+    SetupModel {
+        /// Force re-download even if already installed
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -385,6 +391,10 @@ fn main() {
         },
         Some(Commands::SetupOnnx { force }) => {
             cli::setup_onnx::run(force)
+                .unwrap_or_else(|e| eprintln!("Error: {}", e));
+        }
+        Some(Commands::SetupModel { force }) => {
+            cli::setup_model::run(force)
                 .unwrap_or_else(|e| eprintln!("Error: {}", e));
         }
     }
