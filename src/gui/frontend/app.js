@@ -2296,7 +2296,8 @@ function drawGraph() {
         }
     }
 
-    // Draw nodes as labeled rectangles
+    // Draw nodes as circles — label shown below circle when zoom >= threshold
+    const ZOOM_LABEL_THRESHOLD = 1.2;
     for (const n of graphNodes) {
         // F0: Cull nodes off-screen
         if (n.x < viewL || n.x > viewR || n.y < viewT || n.y > viewB) continue;
@@ -2307,23 +2308,10 @@ function drawGraph() {
         // F1: Dim non-matching nodes during search
         const isDimmed = searchOn && !searchHits.has(n.id);
 
-        const label = n.title.length > 22 ? n.title.substring(0, 20) + '..' : n.title;
-        const impScale = 0.8 + (n.importance || 0.5) * 0.5;
-        const fontSize = Math.max(9, 11 * Math.sqrt(scale) * impScale);
-        ctx.font = `${fontSize}px sans-serif`;
-        const tw = ctx.measureText(label).width;
-        const padX = 8 * impScale, padY = 5 * impScale;
-        const rw = tw + padX * 2;
-        const rh = fontSize + padY * 2;
-
-        n._rw = rw / scale;
-        n._rh = rh / scale;
-
-        const rx = nx - rw / 2, ry = ny - rh / 2;
-        const cr = 4;
+        const r = n.radius * scale;
 
         ctx.beginPath();
-        ctx.roundRect(rx, ry, rw, rh, cr);
+        ctx.arc(nx, ny, r, 0, Math.PI * 2);
         ctx.fillStyle = GRAPH_COLORS[n.status] || GRAPH_COLORS.active;
         ctx.globalAlpha = isDimmed ? 0.12 : (0.3 + n.weight * 0.7);
         ctx.fill();
@@ -2335,14 +2323,20 @@ function drawGraph() {
             ctx.stroke();
         }
 
-        ctx.fillStyle = isDimmed ? GRAPH_COLORS.text_dim : GRAPH_COLORS.text;
-        ctx.globalAlpha = isDimmed ? 0.25 : 1;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(label, nx, ny);
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'alphabetic';
-        ctx.globalAlpha = 1;
+        // Label below circle — only when sufficiently zoomed in
+        if (scale >= ZOOM_LABEL_THRESHOLD) {
+            const label = n.title.length > 22 ? n.title.substring(0, 20) + '..' : n.title;
+            const fontSize = Math.max(9, 10 * (0.8 + (n.importance || 0.5) * 0.5));
+            ctx.font = `${fontSize}px sans-serif`;
+            ctx.fillStyle = isDimmed ? GRAPH_COLORS.text_dim : GRAPH_COLORS.text;
+            ctx.globalAlpha = isDimmed ? 0.25 : 1;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillText(label, nx, ny + r + 3);
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+            ctx.globalAlpha = 1;
+        }
     }
 }
 
@@ -2356,9 +2350,9 @@ function graphScreenToWorld(sx, sy) {
 function graphNodeAt(wx, wy) {
     for (let i = graphNodes.length - 1; i >= 0; i--) {
         const n = graphNodes[i];
-        const hw = (n._rw || n.radius * 2) / 2 + 4;
-        const hh = (n._rh || n.radius * 2) / 2 + 4;
-        if (Math.abs(n.x - wx) <= hw && Math.abs(n.y - wy) <= hh) return n;
+        const r = n.radius + 4;
+        const dx = n.x - wx, dy = n.y - wy;
+        if (dx * dx + dy * dy <= r * r) return n;
     }
     return null;
 }
@@ -2380,6 +2374,9 @@ function graphEdgeAt(wx, wy) {
     }
     return null;
 }
+
+let graphTooltipTimer = null;
+let graphTooltipPendingNode = null;
 
 const graphCanvas = document.getElementById('graph-canvas');
 if (graphCanvas) {
@@ -2421,28 +2418,17 @@ if (graphCanvas) {
         graphCanvas.style.cursor = (node || edge) ? 'pointer' : 'grab';
         if (needRedraw) scheduleGraphDraw();
 
-        // F6: Enriched tooltips for nodes and edges
+        // F6: Enriched tooltips — edges immediate, nodes delayed ~1s
         const tooltip = document.getElementById('graph-tooltip');
-        if (node) {
-            const bc = graphEdges.filter(e => e.source === node.id || e.target === node.id).length;
-            let age = '';
-            if (node.created_at) {
-                const d = Math.floor((Date.now() - new Date(node.created_at).getTime()) / 86400000);
-                age = `Created: ${d}d ago`;
-            }
-            if (node.last_active) {
-                const d = Math.floor((Date.now() - new Date(node.last_active).getTime()) / 86400000);
-                age += (age ? ' · ' : '') + `Active: ${d}d ago`;
-            }
-            tooltip.innerHTML =
-                `<strong style="color:${GRAPH_COLORS.text}">${esc(node.title)}</strong><br>` +
-                `<span style="color:${GRAPH_COLORS[node.status] || GRAPH_COLORS.info}">● ${node.status}</span>` +
-                ` &nbsp; Imp: <strong>${node.importance.toFixed(2)}</strong> &nbsp; W: ${node.weight.toFixed(2)} &nbsp; Bridges: ${bc}` +
-                (age ? `<br><span style="color:${GRAPH_COLORS.text_dim}">${age}</span>` : '') +
-                (node.labels.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Labels:</span> ${esc(node.labels.slice(0, 3).join(', '))}` : '') +
-                (node.topics.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '') +
-                (node.origin_type ? `<br><span style="color:${GRAPH_COLORS.text_dim}">Origin: ${esc(node.origin_type)}</span>` : '');
-        } else if (edge) {
+
+        // Cancel pending node timer if we moved to a different node or off nodes entirely
+        if (graphTooltipTimer && graphTooltipPendingNode !== node) {
+            clearTimeout(graphTooltipTimer);
+            graphTooltipTimer = null;
+        }
+
+        if (edge) {
+            graphTooltipPendingNode = null;
             const nm = {};
             graphNodes.forEach(n => { nm[n.id] = n; });
             const src = nm[edge.source], tgt = nm[edge.target];
@@ -2452,8 +2438,6 @@ if (graphCanvas) {
                 `Weight: <strong>${edge.weight.toFixed(2)}</strong> &nbsp; Confidence: ${edge.confidence.toFixed(2)}` +
                 (edge.reason ? `<br><span style="color:${GRAPH_COLORS.text_dim}">${esc(edge.reason.substring(0, 80))}</span>` : '') +
                 (edge.shared_concepts.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Shared:</span> ${esc(edge.shared_concepts.slice(0, 5).join(', '))}` : '');
-        }
-        if (node || edge) {
             const containerRect = graphCanvas.parentElement.getBoundingClientRect();
             let tipX = e.clientX - containerRect.left + 14;
             let tipY = e.clientY - containerRect.top + 14;
@@ -2462,8 +2446,46 @@ if (graphCanvas) {
             if (tipY + 120 > containerRect.height) tipY = tipY - 130;
             tooltip.style.left = tipX + 'px';
             tooltip.style.top = tipY + 'px';
+        } else if (node) {
+            // Node tooltip: 1s delay — only start timer when entering a new node
+            if (graphTooltipPendingNode !== node) {
+                tooltip.style.display = 'none';
+                graphTooltipPendingNode = node;
+                const tipClientX = e.clientX, tipClientY = e.clientY;
+                graphTooltipTimer = setTimeout(() => {
+                    graphTooltipTimer = null;
+                    if (graphHoveredNode !== node) return;
+                    const bc = graphEdges.filter(ev => ev.source === node.id || ev.target === node.id).length;
+                    let age = '';
+                    if (node.created_at) {
+                        const d = Math.floor((Date.now() - new Date(node.created_at).getTime()) / 86400000);
+                        age = `Created: ${d}d ago`;
+                    }
+                    if (node.last_active) {
+                        const d = Math.floor((Date.now() - new Date(node.last_active).getTime()) / 86400000);
+                        age += (age ? ' · ' : '') + `Active: ${d}d ago`;
+                    }
+                    tooltip.innerHTML =
+                        `<strong style="color:${GRAPH_COLORS.text}">${esc(node.title)}</strong><br>` +
+                        `<span style="color:${GRAPH_COLORS[node.status] || GRAPH_COLORS.info}">● ${node.status}</span>` +
+                        ` &nbsp; Imp: <strong>${node.importance.toFixed(2)}</strong> &nbsp; W: ${node.weight.toFixed(2)} &nbsp; Bridges: ${bc}` +
+                        (age ? `<br><span style="color:${GRAPH_COLORS.text_dim}">${age}</span>` : '') +
+                        (node.labels.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Labels:</span> ${esc(node.labels.slice(0, 3).join(', '))}` : '') +
+                        (node.topics.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '') +
+                        (node.origin_type ? `<br><span style="color:${GRAPH_COLORS.text_dim}">Origin: ${esc(node.origin_type)}</span>` : '');
+                    const containerRect = graphCanvas.parentElement.getBoundingClientRect();
+                    let tipX = tipClientX - containerRect.left + 14;
+                    let tipY = tipClientY - containerRect.top + 14;
+                    tooltip.style.display = 'block';
+                    if (tipX + 280 > containerRect.width) tipX = tipX - 300;
+                    if (tipY + 120 > containerRect.height) tipY = tipY - 130;
+                    tooltip.style.left = tipX + 'px';
+                    tooltip.style.top = tipY + 'px';
+                }, 1000);
+            }
         } else {
             tooltip.style.display = 'none';
+            graphTooltipPendingNode = null;
         }
     });
 
@@ -2481,6 +2503,8 @@ if (graphCanvas) {
         graphHoveredNode = null;
         document.getElementById('graph-tooltip').style.display = 'none';
         graphHoveredEdge = null;
+        if (graphTooltipTimer) { clearTimeout(graphTooltipTimer); graphTooltipTimer = null; }
+        graphTooltipPendingNode = null;
         scheduleGraphDraw();
     });
 
