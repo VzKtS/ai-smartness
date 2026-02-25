@@ -546,10 +546,6 @@ pub enum ThreadMatchingMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GossipConfig {
     pub embedding: EmbeddingSystemConfig,
-    // Phase 0: Embedding similarity (zero-LLM, ONNX cosine)
-    /// Enable Phase 0 embedding-based bridge discovery (cosine similarity).
-    #[serde(default = "default_true")]
-    pub embedding_gossip_enabled: bool,  // default: true
     // Concept gossip v2
     #[serde(default = "default_concept_overlap_min_shared")]
     pub concept_overlap_min_shared: usize,       // default: 3
@@ -601,7 +597,6 @@ impl Default for GossipConfig {
                 onnx_threshold: 0.75,
                 tfidf_threshold: 0.55,
             },
-            embedding_gossip_enabled: true,
             concept_overlap_min_shared: 2,
             concept_min_bridge_weight: 0.20,
             merge_evaluation_threshold: 0.60,
