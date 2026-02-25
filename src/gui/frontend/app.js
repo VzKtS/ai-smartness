@@ -1878,9 +1878,9 @@ function getThemeColor(varName) {
 
 // Refresh graph colors from CSS variables — called on theme/mode change, NEVER in render loop
 function refreshGraphColors() {
-    GRAPH_COLORS.active = getThemeColor('--accent') || '#00cc85';
-    GRAPH_COLORS.suspended = getThemeColor('--info') || '#0078b8';
-    GRAPH_COLORS.archived = getThemeColor('--primary') || '#0c1614';
+    GRAPH_COLORS.active = getThemeColor('--success') || '#00cc85';
+    GRAPH_COLORS.suspended = getThemeColor('--warning') || '#e8a735';
+    GRAPH_COLORS.archived = getThemeColor('--text-disabled') || '#3a4e46';
     GRAPH_COLORS.edge_default = (getThemeColor('--info') || '#0078b8') + '80';
     GRAPH_COLORS.edge_highlight = (getThemeColor('--accent') || '#00cc85') + 'F2';
     GRAPH_COLORS.text = getThemeColor('--text') || '#e2ece8';
@@ -1890,6 +1890,7 @@ function refreshGraphColors() {
     RELATION_COLORS['ChildOf'] = getThemeColor('--info') || '#40b0e8';
     RELATION_COLORS['Sibling'] = getThemeColor('--success') || '#40d0a0';
     RELATION_COLORS['Extends'] = getThemeColor('--warning') || '#e8a735';
+    RELATION_COLORS['Depends'] = getThemeColor('--warning') || '#d07040';
     RELATION_COLORS['Contradicts'] = getThemeColor('--danger') || '#ef4444';
     RELATION_COLORS['Replaces'] = getThemeColor('--accent') || '#6090c8';
     if (graphNodes.length > 0) {

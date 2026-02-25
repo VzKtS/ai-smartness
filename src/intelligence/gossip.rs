@@ -135,7 +135,7 @@ impl Gossip {
                     .find(|t| t.id == *thread_a)
                     .and_then(|ta| {
                         all_threads.iter().find(|t| t.id == *thread_b).map(|tb| {
-                            Self::determine_relation(ta, tb, weight, shared_concepts)
+                            Self::determine_relation(ta, tb, weight)
                         })
                     })
                     .unwrap_or(BridgeType::Sibling);
@@ -259,12 +259,11 @@ impl Gossip {
 
                 let shared = Self::shared_topics(source, target);
                 if shared.len() >= config.topic_overlap_min_shared {
-                    let relation = Self::determine_relation(source, target, 0.5, &shared);
                     let bridge = ThinkBridge {
                         id: id_gen::bridge_id(),
                         source_id: source.id.clone(),
                         target_id: target.id.clone(),
-                        relation_type: relation,
+                        relation_type: BridgeType::Sibling,
                         reason: format!("gossip:topic_overlap({})", shared.len()),
                         shared_concepts: shared,
                         weight: 0.5,
@@ -306,12 +305,7 @@ impl Gossip {
     /// Cascade (most specific → fallback): ChildOf → Extends (structural) →
     /// Contradicts (split siblings) → Sibling (same parent) → Replaces
     /// (active/inactive) → Depends (concept superset) → Extends (heuristic) → Sibling.
-    fn determine_relation(
-        source: &Thread,
-        target: &Thread,
-        weight: f64,
-        shared_concepts: &[String],
-    ) -> BridgeType {
+    fn determine_relation(source: &Thread, target: &Thread, weight: f64) -> BridgeType {
         // 1. Structural: parent-child
         if source.parent_id.as_deref() == Some(&*target.id) {
             return BridgeType::ChildOf;
@@ -335,7 +329,7 @@ impl Gossip {
         }
 
         // 4. Replaces: active thread supersedes inactive one on the same topic
-        if weight >= 0.35 {
+        if weight >= 0.40 {
             if source.status == ThreadStatus::Active && target.status != ThreadStatus::Active {
                 return BridgeType::Replaces;
             }
@@ -345,7 +339,7 @@ impl Gossip {
         }
 
         // 5. Depends: source is a strict concept superset of target + temporal
-        if weight >= 0.30
+        if weight >= 0.50
             && source.created_at > target.created_at
             && source.concepts.len() > target.concepts.len()
             && Self::is_concept_superset(&source.concepts, &target.concepts)
@@ -353,20 +347,12 @@ impl Gossip {
             return BridgeType::Depends;
         }
 
-        // 6. Extends semantic: concept growth + shared concepts + temporal
-        if source.concepts.len() > target.concepts.len() + 1
-            && !shared_concepts.is_empty()
-            && source.created_at > target.created_at
-        {
+        // 6. Extends: strong overlap + temporal (heuristic)
+        if weight >= 0.80 && source.created_at > target.created_at {
             return BridgeType::Extends;
         }
 
-        // 7. Extends heuristic: strong overlap + temporal
-        if weight >= 0.38 && source.created_at > target.created_at {
-            return BridgeType::Extends;
-        }
-
-        // 8. Fallback
+        // 7. Fallback
         BridgeType::Sibling
     }
 

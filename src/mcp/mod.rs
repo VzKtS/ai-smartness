@@ -94,18 +94,12 @@ fn resolve_agent_late(project_hash: &str, agents: &[String]) -> Option<String> {
         }
     }
 
-    // No silent fallback. Unassigned sessions must be explicitly assigned.
-    // This prevents "session theft" where the alphabetically-first agent (e.g. arc)
-    // gets hijacked by every unassigned session.
-    let agent_count = agents.len();
-    if agent_count > 0 {
-        tracing::warn!(
-            agent_count,
-            "No agent assigned to this session. {} agents registered but none matched. \
-             Use ai_agent_select or set AI_SMARTNESS_AGENT_ID.",
-            agent_count
-        );
+    // 7. Fallback: first registered agent for this project
+    if let Some(first) = agents.first() {
+        tracing::info!(agent = %first, source = "first_registered", "Agent resolved (fallback)");
+        return Some(first.clone());
     }
+
     None
 }
 
@@ -314,17 +308,16 @@ pub fn run(project_hash: Option<&str>, agent_id: Option<&str>) {
 mod tests {
     use super::*;
 
-    // T-M30.1: Multiple agents, no session file → None (no fallback to first())
+    // T-M30.1: Multiple agents, no session file → falls back to first registered
     #[test]
-    fn test_resolve_no_session_no_fallback() {
+    fn test_resolve_no_session_fallback_first() {
         let agents = vec![
             "agent_alpha".to_string(),
             "agent_beta".to_string(),
             "agent_gamma".to_string(),
         ];
-        // Use a project hash that will never have a session file on disk
         let result = resolve_agent_late("nonexistent-ph-m301", &agents);
-        assert_eq!(result, None, "Must NOT fall back to first agent");
+        assert_eq!(result, Some("agent_alpha".to_string()), "Must fall back to first agent");
     }
 
     // T-M30.2: Session file points to valid agent → returns it

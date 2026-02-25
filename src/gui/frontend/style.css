@@ -15,7 +15,6 @@
     --success: #00cc85;
     --info: #0078b8;
     --warning: #e8a735;
-    --warning-bg: #2e1e08;
     --danger: #ef4444;
     --danger-bg: #2a1010;
     --danger-bg-hover: #381818;
@@ -39,7 +38,6 @@
     --success: #00cc85;
     --info: #0090e0;
     --warning: #e8a735;
-    --warning-bg: #2e1e08;
     --danger: #ef4444;
     --danger-bg: #2a1010;
     --danger-bg-hover: #381818;
@@ -63,7 +61,6 @@
     --success: #00cc85;
     --info: #0078b8;
     --warning: #e8a735;
-    --warning-bg: #2e1e08;
     --danger: #ef4444;
     --danger-bg: #2a1010;
     --danger-bg-hover: #381818;
@@ -87,7 +84,6 @@
     --success: #00cc85;
     --info: #0078b8;
     --warning: #e8a735;
-    --warning-bg: #2e1e08;
     --danger: #ef4444;
     --danger-bg: #2a1010;
     --danger-bg-hover: #381818;
@@ -111,7 +107,6 @@
     --success: #00cc85;
     --info: #0078b8;
     --warning: #e8a735;
-    --warning-bg: #2e1e08;
     --danger: #ef4444;
     --danger-bg: #2a1010;
     --danger-bg-hover: #381818;
@@ -124,7 +119,6 @@
     --surface: #ffffff;
     --success: #00a86e;
     --warning: #c48a1a;
-    --warning-bg: #fef3cd;
     --danger: #d03030;
     --danger-bg: #fde8e8;
     --danger-bg-hover: #f8d0d0;
@@ -341,7 +335,7 @@ tbody tr:hover { background: var(--surface); }
     font-weight: 600;
 }
 .badge-active { background: var(--accent-bg); color: var(--accent); }
-.badge-suspended { background: var(--warning-bg); color: var(--warning); }
+.badge-suspended { background: var(--danger-bg); color: var(--warning); }
 .badge-archived { background: var(--primary); color: var(--text-dim); }
 
 /* ─── Settings ─── */
