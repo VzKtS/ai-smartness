@@ -20,6 +20,12 @@ pub enum HookAction {
 /// Run hook action. CRITICAL: Always exits 0, even on panic.
 /// Exception: PreTool may exit 2 to block a tool call.
 pub fn run(action: HookAction) {
+    // Set ORT_DYLIB_PATH before any ONNX usage (EmbeddingManager::global()).
+    // Without this, the `ort` crate panics when libonnxruntime.so is not in the
+    // system search path, causing exit code 2 which makes Claude Code ignore hooks.
+    // The daemon sets this in daemon/mod.rs but hooks run as separate processes.
+    ensure_ort_dylib_path();
+
     let guard_env_name = std::env::var("AI_SMARTNESS_GUARD_ENV")
         .unwrap_or_else(|_| "AI_SMARTNESS_HOOK_RUNNING".to_string());
 
@@ -229,5 +235,28 @@ fn passthrough_stdin() {
     std::io::stdin().read_to_string(&mut input).ok();
     if !input.is_empty() {
         print!("{}", input);
+    }
+}
+
+/// Set ORT_DYLIB_PATH so the `ort` crate can find libonnxruntime.so.
+/// Must be called before any code path that touches EmbeddingManager.
+fn ensure_ort_dylib_path() {
+    if std::env::var("ORT_DYLIB_PATH").is_ok() {
+        return;
+    }
+    let lib_name = if cfg!(target_os = "macos") {
+        "libonnxruntime.dylib"
+    } else {
+        "libonnxruntime.so"
+    };
+    let ort_path = ai_smartness::storage::path_utils::data_dir()
+        .join("lib")
+        .join(lib_name);
+    if ort_path.exists() {
+        // SAFETY: single-threaded at this point (before catch_unwind / threads).
+        #[allow(unused_unsafe)]
+        unsafe {
+            std::env::set_var("ORT_DYLIB_PATH", &ort_path);
+        }
     }
 }

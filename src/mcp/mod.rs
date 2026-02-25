@@ -186,6 +186,11 @@ fn resolve_from_parent_session(project_hash: &str, agents: &[String]) -> Option<
 
 /// Run MCP JSON-RPC server on stdin/stdout.
 pub fn run(project_hash: Option<&str>, agent_id: Option<&str>) {
+    // Set ORT_DYLIB_PATH before any ONNX usage (EmbeddingManager::global()).
+    // MCP tools like ai_recall call EngramRetriever which triggers ONNX init.
+    // Without this, the `ort` crate panics when libonnxruntime.so is not found.
+    ensure_ort_dylib_path();
+
     let project_hash = project_hash
         .map(|s| s.to_string())
         .or_else(|| std::env::var("AI_SMARTNESS_PROJECT_HASH").ok())
@@ -308,6 +313,29 @@ pub fn run(project_hash: Option<&str>, agent_id: Option<&str>) {
         Err(e) => {
             eprintln!("[ai-mcp] Failed to initialize: {}", e);
             std::process::exit(1);
+        }
+    }
+}
+
+/// Set ORT_DYLIB_PATH so the `ort` crate can find libonnxruntime.so.
+/// Must be called before any code path that touches EmbeddingManager.
+fn ensure_ort_dylib_path() {
+    if std::env::var("ORT_DYLIB_PATH").is_ok() {
+        return;
+    }
+    let lib_name = if cfg!(target_os = "macos") {
+        "libonnxruntime.dylib"
+    } else {
+        "libonnxruntime.so"
+    };
+    let ort_path = ai_smartness::storage::path_utils::data_dir()
+        .join("lib")
+        .join(lib_name);
+    if ort_path.exists() {
+        // SAFETY: single-threaded at this point (before server loop starts).
+        #[allow(unused_unsafe)]
+        unsafe {
+            std::env::set_var("ORT_DYLIB_PATH", &ort_path);
         }
     }
 }
