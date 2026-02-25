@@ -48,6 +48,7 @@ exports.readSessionAgent = readSessionAgent;
 exports.listSessionAgents = listSessionAgents;
 exports.listSessionAgentsByPid = listSessionAgentsByPid;
 exports.readAgentCliPid = readAgentCliPid;
+exports.findMostRecentActiveAgent = findMostRecentActiveAgent;
 const crypto = __importStar(require("crypto"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
@@ -215,5 +216,32 @@ function readAgentCliPid(projHash, agentId) {
     catch {
         return null;
     }
+}
+/**
+ * Find the most recently active agent (by beat.json) that has a live MCP.
+ * Used when monitoredPids is empty and grace period has expired.
+ * Returns the agent with the freshest last_beat_at where pid is not null.
+ */
+function findMostRecentActiveAgent(projHash) {
+    const agentsDir = path.join(projectDir(projHash), 'agents');
+    try {
+        if (!fs.existsSync(agentsDir)) { return null; }
+        let best = null;
+        let bestTime = '';
+        for (const name of fs.readdirSync(agentsDir)) {
+            const beatPath = path.join(agentsDir, name, 'beat.json');
+            try {
+                if (!fs.existsSync(beatPath)) { continue; }
+                const beat = JSON.parse(fs.readFileSync(beatPath, 'utf8'));
+                if (beat.pid == null) { continue; } // MCP not running
+                const beatTime = beat.last_beat_at || '';
+                if (beatTime > bestTime) {
+                    bestTime = beatTime;
+                    best = name;
+                }
+            } catch { continue; }
+        }
+        return best;
+    } catch { return null; }
 }
 //# sourceMappingURL=paths.js.map

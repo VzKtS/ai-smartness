@@ -46,6 +46,7 @@ const stdinInjection = __importStar(require("./stdinInjection"));
 const agentController_1 = require("./agentController");
 // ─── Constants ───
 const STARTUP_GRACE_MS = 3000;
+const GRACE_TIMEOUT_MS = 10_000; // Grace period expires after 10s — switch to conservative mode
 const CLEANUP_INTERVAL_MS = 60000;
 // ─── State ───
 let outputChannel;
@@ -89,6 +90,21 @@ function activate(context) {
             const mode = cfg.get('communicationMode', 'cognitive');
             for (const ctrl of controllers.values()) {
                 ctrl.setMode(mode);
+            }
+        }
+    }));
+    // Late workspace resolution: empty window → folder opened after activation
+    context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(e => {
+        if (!currentProjectHash && e.added.length > 0) {
+            currentProjectHash = paths.resolveProjectHash(e.added[0].uri.fsPath);
+            if (currentProjectHash) {
+                log(`Project hash resolved (late): ${currentProjectHash}`);
+                const dStatus = cli.daemonStatus();
+                if (dStatus.status !== 'running') {
+                    log('Daemon not running, starting...');
+                    const ok = cli.daemonStart();
+                    log(ok ? 'Daemon started' : 'Failed to start daemon');
+                }
             }
         }
     }));
@@ -241,22 +257,8 @@ function detectAllAgents() {
     }
     if (currentProjectHash) {
         const monitoredPids = stdinInjection.getMonitoredPids();
-        if (monitoredPids.size === 0) {
-            // Grace period: no Claude processes discovered yet (startup).
-            // Include all agents — current behavior. Once processes appear,
-            // filtering kicks in and syncControllers removes foreign controllers.
-            const sessionAgents = paths.listSessionAgents(currentProjectHash);
-            for (const a of sessionAgents) {
-                agents.add(a);
-            }
-            const globalAgent = paths.readSessionAgent(currentProjectHash);
-            if (globalAgent) {
-                agents.add(globalAgent);
-            }
-        }
-        else {
-            // Normal: only include agents whose cli_pid matches our processes.
-            // Chain: session_agents/{mcp_pid} → agentId → beat.json → cli_pid
+        if (monitoredPids.size > 0) {
+            // === PID filtering (inchangé) ===
             const pidToAgent = paths.listSessionAgentsByPid(currentProjectHash);
             for (const [, agentId] of pidToAgent) {
                 const cliPid = paths.readAgentCliPid(currentProjectHash, agentId);
@@ -264,13 +266,30 @@ function detectAllAgents() {
                     agents.add(agentId);
                 }
             }
-            // Global session file — same cli_pid check
             const globalAgent = paths.readSessionAgent(currentProjectHash);
             if (globalAgent) {
                 const cliPid = paths.readAgentCliPid(currentProjectHash, globalAgent);
                 if (cliPid !== null && monitoredPids.has(cliPid)) {
                     agents.add(globalAgent);
                 }
+            }
+        } else if (Date.now() - activationTime < GRACE_TIMEOUT_MS) {
+            // === Grace period initiale (startup) ===
+            // Montre tous les agents — transitoire, le PID filtering prendra le relais
+            const sessionAgents = paths.listSessionAgents(currentProjectHash);
+            for (const a of sessionAgents) { agents.add(a); }
+            const globalAgent = paths.readSessionAgent(currentProjectHash);
+            if (globalAgent) { agents.add(globalAgent); }
+        } else {
+            // === Grace period expirée — mode conservateur ===
+            // monitoredPids vide après 10s = _getActiveHandles() ne fonctionne pas
+            // Montrer uniquement l'agent MCP le plus récent pour cette fenêtre
+            const globalAgent = paths.readSessionAgent(currentProjectHash);
+            if (globalAgent) { agents.add(globalAgent); }
+            // Fallback: agent avec le beat.json le plus récent et pid actif
+            if (agents.size === 0) {
+                const best = paths.findMostRecentActiveAgent(currentProjectHash);
+                if (best) { agents.add(best); }
             }
         }
     }
