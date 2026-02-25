@@ -1252,35 +1252,56 @@ pub fn open_debug_window(app: tauri::AppHandle, project_hash: String) -> Result<
 
 // ─── Debug Logs ──────────────────────────────────────────────
 
+/// Shared tail-based log reader. Seeks to byte_offset, reads up to 500 new lines.
+fn tail_log_file(log_path: &std::path::Path, byte_offset: u64) -> Result<serde_json::Value, String> {
+    use std::io::{BufRead, Seek, SeekFrom};
+
+    if !log_path.exists() {
+        return Ok(serde_json::json!({ "lines": [], "byte_offset": 0, "file_size": 0, "file": log_path.to_string_lossy() }));
+    }
+
+    let file = std::fs::File::open(log_path).map_err(|e| e.to_string())?;
+    let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+    // Nothing new since last poll
+    if byte_offset >= file_size {
+        return Ok(serde_json::json!({ "lines": [], "byte_offset": file_size, "file_size": file_size, "file": log_path.to_string_lossy() }));
+    }
+
+    let mut reader = std::io::BufReader::new(file);
+    reader.seek(SeekFrom::Start(byte_offset)).map_err(|e| e.to_string())?;
+
+    let mut lines = Vec::new();
+    const MAX_LINES: usize = 500;
+    let mut buf = String::new();
+
+    while lines.len() < MAX_LINES {
+        buf.clear();
+        match reader.read_line(&mut buf) {
+            Ok(0) => break, // EOF
+            Ok(_) => lines.push(buf.trim_end_matches('\n').trim_end_matches('\r').to_string()),
+            Err(_) => break,
+        }
+    }
+
+    let new_offset = reader.stream_position().unwrap_or(file_size);
+
+    Ok(serde_json::json!({
+        "lines": lines,
+        "byte_offset": new_offset,
+        "file_size": file_size,
+        "file": log_path.to_string_lossy(),
+    }))
+}
+
 #[tauri::command]
 pub fn get_debug_logs(
     project_hash: String,
-    offset: usize,
+    byte_offset: u64,
 ) -> Result<serde_json::Value, String> {
-    tracing::debug!(project = %&project_hash[..8.min(project_hash.len())], offset, "GUI: get_debug_logs");
+    tracing::debug!(project = %&project_hash[..8.min(project_hash.len())], byte_offset, "GUI: get_debug_logs");
     let log_path = path_utils::project_dir(&project_hash).join("daemon.log");
-
-    if !log_path.exists() {
-        return Ok(serde_json::json!({ "lines": [], "offset": 0, "file": log_path.to_string_lossy() }));
-    }
-
-    let content = std::fs::read_to_string(&log_path).map_err(|e| e.to_string())?;
-    let all_lines: Vec<&str> = content.lines().collect();
-    let total = all_lines.len();
-
-    // Return only new lines since offset
-    let new_lines: Vec<&str> = if offset < total {
-        all_lines[offset..].to_vec()
-    } else {
-        vec![]
-    };
-
-    Ok(serde_json::json!({
-        "lines": new_lines,
-        "offset": total,
-        "total": total,
-        "file": log_path.to_string_lossy(),
-    }))
+    tail_log_file(&log_path, byte_offset)
 }
 
 // ─── Daemon Settings ─────────────────────────────────────────
@@ -1304,30 +1325,10 @@ pub fn save_daemon_settings(settings: serde_json::Value) -> Result<serde_json::V
 // ─── Global Debug Logs ───────────────────────────────────────
 
 #[tauri::command]
-pub fn get_global_debug_logs(offset: usize) -> Result<serde_json::Value, String> {
-    tracing::debug!(offset, "GUI: get_global_debug_logs");
+pub fn get_global_debug_logs(byte_offset: u64) -> Result<serde_json::Value, String> {
+    tracing::debug!(byte_offset, "GUI: get_global_debug_logs");
     let log_path = path_utils::data_dir().join("daemon.log");
-
-    if !log_path.exists() {
-        return Ok(serde_json::json!({ "lines": [], "offset": 0, "file": log_path.to_string_lossy() }));
-    }
-
-    let content = std::fs::read_to_string(&log_path).map_err(|e| e.to_string())?;
-    let all_lines: Vec<&str> = content.lines().collect();
-    let total = all_lines.len();
-
-    let new_lines: Vec<&str> = if offset < total {
-        all_lines[offset..].to_vec()
-    } else {
-        vec![]
-    };
-
-    Ok(serde_json::json!({
-        "lines": new_lines,
-        "offset": total,
-        "total": total,
-        "file": log_path.to_string_lossy(),
-    }))
+    tail_log_file(&log_path, byte_offset)
 }
 
 // ─── Resource Monitoring ─────────────────────────────────────
@@ -1374,6 +1375,27 @@ pub fn get_system_resources() -> Result<serde_json::Value, String> {
 }
 
 fn dir_size_mb(path: &std::path::Path) -> f64 {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static CACHE: Mutex<Option<(Instant, f64)>> = Mutex::new(None);
+
+    if let Ok(guard) = CACHE.lock() {
+        if let Some((ts, size)) = guard.as_ref() {
+            if ts.elapsed().as_secs() < 60 {
+                return *size;
+            }
+        }
+    }
+
+    let result = dir_size_mb_inner(path);
+
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((Instant::now(), result));
+    }
+    result
+}
+
+fn dir_size_mb_inner(path: &std::path::Path) -> f64 {
     let mut total: u64 = 0;
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -1382,7 +1404,7 @@ fn dir_size_mb(path: &std::path::Path) -> f64 {
                 if m.is_file() {
                     total += m.len();
                 } else if m.is_dir() {
-                    total += (dir_size_mb(&entry.path()) * 1024.0 * 1024.0) as u64;
+                    total += (dir_size_mb_inner(&entry.path()) * 1024.0 * 1024.0) as u64;
                 }
             }
         }
@@ -1677,13 +1699,31 @@ fn expand_tilde(path: &str) -> String {
 }
 
 fn check_daemon() -> (bool, Option<u32>) {
-    match daemon_ipc_client::daemon_status() {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static CACHE: Mutex<Option<(Instant, (bool, Option<u32>))>> = Mutex::new(None);
+
+    // Return cached result if fresh (< 2 seconds)
+    if let Ok(guard) = CACHE.lock() {
+        if let Some((ts, result)) = guard.as_ref() {
+            if ts.elapsed().as_secs() < 2 {
+                return *result;
+            }
+        }
+    }
+
+    let result = match daemon_ipc_client::daemon_status() {
         Ok(resp) => {
             let pid = resp.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32);
             (true, pid)
         }
         Err(_) => (false, None),
+    };
+
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((Instant::now(), result));
     }
+    result
 }
 
 fn merge_json(base: &mut serde_json::Value, overlay: &serde_json::Value) {

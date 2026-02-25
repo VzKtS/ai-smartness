@@ -4,8 +4,8 @@
 const { invoke } = window.__TAURI__.core;
 
 // ─── State ───────────────────────────────────────────────────
-let projectOffset = 0;
-let globalOffset = 0;
+let projectByteOffset = 0;
+let globalByteOffset = 0;
 let paused = false;
 let autoScroll = true;
 let totalLines = 0;
@@ -13,6 +13,10 @@ let projectHash = '';
 let logSource = 'global'; // 'global' or 'project'
 const activeLevels = new Set(['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE']);
 let textFilter = '';
+
+// DOM line cap — prevents memory exhaustion
+const MAX_LINES = 5000;
+const PRUNE_BATCH = 1000;
 
 // Per-level counters
 const levelCounts = { ERROR: 0, WARN: 0, INFO: 0, DEBUG: 0, TRACE: 0 };
@@ -57,14 +61,14 @@ document.querySelectorAll('.level-btn').forEach(btn => {
         } else {
             activeLevels.add(level);
         }
-        refilterAll();
+        scheduleRefilter();
     });
 });
 
 // ─── Text filter ─────────────────────────────────────────────
 textFilterInput.addEventListener('input', (e) => {
     textFilter = e.target.value.toLowerCase();
-    refilterAll();
+    scheduleRefilter();
 });
 
 // ─── Control buttons ─────────────────────────────────────────
@@ -84,7 +88,7 @@ document.getElementById('btn-clear').addEventListener('click', () => {
 });
 
 document.getElementById('btn-export').addEventListener('click', () => {
-    const visible = container.querySelectorAll('.log-line:not([style*="display: none"])');
+    const visible = container.querySelectorAll('.log-line:not(.log-hidden)');
     const text = Array.from(visible).map(el => el.dataset.raw).join('\n');
     navigator.clipboard.writeText(text).then(() => {
         const btn = document.getElementById('btn-export');
@@ -154,7 +158,7 @@ function appendLine(raw) {
     div.innerHTML = formatLine(raw);
 
     if (!shouldShow(raw, level)) {
-        div.style.display = 'none';
+        div.classList.add('log-hidden');
     }
 
     container.appendChild(div);
@@ -164,15 +168,36 @@ function appendLine(raw) {
     levelCounts[level] = (levelCounts[level] || 0) + 1;
 }
 
+// Prune oldest DOM nodes when cap exceeded
+function pruneOldLines() {
+    if (totalLines <= MAX_LINES) return;
+    const children = container.children;
+    const removeCount = Math.min(PRUNE_BATCH, children.length);
+    for (let i = 0; i < removeCount; i++) {
+        children[0].remove();
+    }
+    totalLines -= removeCount;
+}
+
+// Debounced refilter — avoids layout thrashing on rapid filter changes
+let refilterTimer = null;
+function scheduleRefilter() {
+    clearTimeout(refilterTimer);
+    refilterTimer = setTimeout(refilterAll, 300);
+}
+
 function refilterAll() {
-    container.querySelectorAll('.log-line').forEach(div => {
-        const level = div.dataset.level;
-        const raw = div.dataset.raw || '';
-        div.style.display = shouldShow(raw, level) ? '' : 'none';
-        // Re-render with highlight if text filter changed
-        if (textFilter !== undefined) {
-            div.innerHTML = formatLine(raw);
-        }
+    requestAnimationFrame(() => {
+        container.querySelectorAll('.log-line').forEach(div => {
+            const level = div.dataset.level;
+            const raw = div.dataset.raw || '';
+            div.classList.toggle('log-hidden', !shouldShow(raw, level));
+            // Re-render with highlight if text filter changed
+            if (textFilter !== undefined) {
+                div.innerHTML = formatLine(raw);
+            }
+        });
+        updateFooter();
     });
 }
 
@@ -184,7 +209,7 @@ function updateLevelCounters() {
 }
 
 function updateFooter() {
-    const visible = container.querySelectorAll('.log-line:not([style*="display: none"])').length;
+    const visible = container.querySelectorAll('.log-line:not(.log-hidden)').length;
     lineCountEl.textContent = `${visible} / ${totalLines} lines`;
 }
 
@@ -195,10 +220,10 @@ async function pollLogs() {
     try {
         let data;
         if (logSource === 'global') {
-            data = await invoke('get_global_debug_logs', { offset: globalOffset });
+            data = await invoke('get_global_debug_logs', { byteOffset: globalByteOffset });
         } else {
             if (!projectHash) return;
-            data = await invoke('get_debug_logs', { projectHash, offset: projectOffset });
+            data = await invoke('get_debug_logs', { projectHash, byteOffset: projectByteOffset });
         }
 
         if (data.file && logFileEl.textContent === '-') {
@@ -210,12 +235,13 @@ async function pollLogs() {
                 appendLine(line);
             }
             if (logSource === 'global') {
-                globalOffset = data.offset;
+                globalByteOffset = data.byte_offset;
             } else {
-                projectOffset = data.offset;
+                projectByteOffset = data.byte_offset;
             }
             updateLevelCounters();
             updateFooter();
+            pruneOldLines();
 
             if (autoScroll) {
                 container.scrollTop = container.scrollHeight;
@@ -245,8 +271,8 @@ async function pollQueueStats() {
     }
 }
 
-// Poll logs every 500ms, queue stats every 3s
-setInterval(pollLogs, 500);
+// Poll logs every 2s (was 500ms — caused OOM on large logs), queue stats every 3s
+setInterval(pollLogs, 2000);
 setInterval(pollQueueStats, 3000);
 // Initial fetch
 pollLogs();

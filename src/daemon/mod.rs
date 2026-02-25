@@ -71,37 +71,6 @@ pub fn run() {
     // Cleanup legacy per-project PID files
     cleanup_legacy_pid_files();
 
-    // Startup validation: integrity check + missed backups
-    startup_validation();
-
-    // Eagerly initialize the embedding singleton BEFORE spawning workers.
-    // OnceLock init loads the ONNX model (~5-10s); if workers hit it first,
-    // all block simultaneously and the capture queue fills up.
-    {
-        let emb = ai_smartness::processing::embeddings::EmbeddingManager::global();
-        tracing::info!(use_onnx = emb.use_onnx, "EmbeddingManager initialized (eager)");
-    }
-
-    // Eagerly initialize local LLM with configured model size.
-    // Loads Qwen2.5 GGUF model (~2-5GB) — same OnceLock pattern as EmbeddingManager.
-    {
-        let guardian_cfg = {
-            let cfg_path = data_dir.join("config.json");
-            std::fs::read_to_string(&cfg_path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<ai_smartness::config::GuardianConfig>(&s).ok())
-                .unwrap_or_default()
-        };
-        let llm = ai_smartness::processing::local_llm::LocalLlm::init_with_size(
-            &guardian_cfg.local_model_size,
-        );
-        tracing::info!(
-            available = llm.is_available(),
-            model = %llm.model_path().display(),
-            "LocalLlm initialized (eager)"
-        );
-    }
-
     // Connection pool
     let pool = Arc::new(ConnectionPool::new(
         config.pool_max_idle_secs,
@@ -122,7 +91,8 @@ pub fn run() {
     let socket_path = data_dir.join("processor.sock");
     std::fs::create_dir_all(socket_path.parent().unwrap_or(&socket_path)).ok();
 
-    // Start IPC listener thread (multi-threaded: spawns per-connection threads)
+    // Start IPC listener thread FIRST — GUI can connect immediately.
+    // Heavy init (validation, ONNX, LocalLLM) runs in background below.
     let ipc_handle = {
         let pool = pool.clone();
         let queue = capture_queue.clone();
@@ -134,6 +104,38 @@ pub fn run() {
             }
         })
     };
+
+    // Heavy initialization in background thread — does not block IPC or GUI.
+    // Workers that need ONNX/LocalLLM will block on OnceLock until init completes.
+    {
+        let data_dir = data_dir.clone();
+        std::thread::spawn(move || {
+            // 1. Startup validation: integrity check + missed backups
+            startup_validation();
+
+            // 2. Eagerly initialize the embedding singleton.
+            // OnceLock init loads the ONNX model; workers block on first access until ready.
+            let emb = ai_smartness::processing::embeddings::EmbeddingManager::global();
+            tracing::info!(use_onnx = emb.use_onnx, "EmbeddingManager initialized (eager)");
+
+            // 3. Eagerly initialize local LLM with configured model size.
+            let guardian_cfg = {
+                let cfg_path = data_dir.join("config.json");
+                std::fs::read_to_string(&cfg_path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<ai_smartness::config::GuardianConfig>(&s).ok())
+                    .unwrap_or_default()
+            };
+            let llm = ai_smartness::processing::local_llm::LocalLlm::init_with_size(
+                &guardian_cfg.local_model_size,
+            );
+            tracing::info!(
+                available = llm.is_available(),
+                model = %llm.model_path().display(),
+                "LocalLlm initialized (eager)"
+            );
+        });
+    }
 
     // Start prune loop thread
     let prune_handle = {

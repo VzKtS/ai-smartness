@@ -198,12 +198,22 @@ let agentId = 'default';
 let currentSettings = null;
 let overviewAgents = [];  // per-agent metrics from get_project_overview
 
+// ─── Polling intervals (started on project selection) ────────
+let dashboardInterval = null;
+let resourcesInterval = null;
+
+function startPolling() {
+    if (dashboardInterval) clearInterval(dashboardInterval);
+    if (resourcesInterval) clearInterval(resourcesInterval);
+    loadDashboard();
+    loadResources();
+    dashboardInterval = setInterval(loadDashboard, 30000);   // 30s — metrics change slowly
+    resourcesInterval = setInterval(loadResources, 60000);   // 60s — CPU/RAM (was 15s)
+}
+
 // ─── Init ────────────────────────────────────────────────────
-loadProjects();
-loadDashboard();
-setInterval(loadDashboard, 30000);  // 30s — metrics change slowly
-loadResources();
-setInterval(loadResources, 15000);  // 15s — CPU/RAM change moderately
+loadProjects().then(() => { if (projectHash) startPolling(); });
+loadResources();  // initial resource check even without project
 // Apply saved language
 if (currentLang !== 'en') {
     applyTranslations(currentLang);
@@ -273,8 +283,7 @@ modeSel?.addEventListener('change', (e) => {
 // ─── Project selector ────────────────────────────────────────
 document.getElementById('project-select').addEventListener('change', (e) => {
     projectHash = e.target.value;
-    loadDashboard();
-    loadResources();
+    startPolling();
     // Reload whichever tab is currently active
     const activeTab = document.querySelector('.tab:not(.tab-debug).active');
     if (activeTab) {

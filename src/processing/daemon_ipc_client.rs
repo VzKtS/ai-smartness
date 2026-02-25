@@ -184,6 +184,6 @@ fn call_daemon(method: &str, params: serde_json::Value) -> AiResult<serde_json::
         tx.send(do_ipc_call(sock_path, request_json)).ok();
     });
 
-    rx.recv_timeout(Duration::from_secs(5))
-        .map_err(|_| AiError::Provider("Daemon IPC timeout after 5s".into()))?
+    rx.recv_timeout(Duration::from_secs(2))
+        .map_err(|_| AiError::Provider("Daemon IPC timeout after 2s".into()))?
 }
