@@ -360,16 +360,33 @@ impl Gossip {
             for j in (i + 1)..with_emb.len() {
                 let (tb, emb_b) = with_emb[j];
 
-                // Skip if bridge already exists (check both directions)
-                let already_bridged = existing_a.iter().any(|b| {
-                    b.source_id == tb.id || b.target_id == tb.id
-                });
-                if already_bridged {
+                let sim = emb_mgr.similarity(emb_a, emb_b);
+                if sim < threshold {
                     continue;
                 }
 
-                let sim = emb_mgr.similarity(emb_a, emb_b);
-                if sim < threshold {
+                // Check if bridge already exists — reinforce if gossip-created
+                let existing_bridge = existing_a.iter().find(|b| {
+                    b.source_id == tb.id || b.target_id == tb.id
+                });
+                if let Some(existing) = existing_bridge {
+                    if existing.created_by.starts_with("gossip") {
+                        let new_weight = sim.clamp(0.0, 1.0);
+                        // Reinforce: resets last_reinforced, preventing decay death
+                        if new_weight >= existing.weight {
+                            let _ = BridgeStorage::reinforce_weight(conn, &existing.id, new_weight);
+                            tracing::debug!(
+                                bridge = %&existing.id[..8.min(existing.id.len())],
+                                old_weight = format!("{:.3}", existing.weight).as_str(),
+                                new_weight = format!("{:.3}", new_weight).as_str(),
+                                "Gossip v2 P0: reinforced existing bridge"
+                            );
+                        } else {
+                            // Even if weight didn't increase, touch last_reinforced
+                            // to prevent decay from killing stable bridges
+                            let _ = BridgeStorage::update_last_reinforced(conn, &existing.id, time_utils::now());
+                        }
+                    }
                     continue;
                 }
 
