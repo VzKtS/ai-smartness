@@ -785,6 +785,18 @@ fn sync_mcp_permissions(enabled: bool) {
             }
         }
 
+        // Always purge legacy MCP wildcards (stale Python-era server names)
+        if let Some(arr) = settings
+            .pointer_mut("/permissions/allowedTools")
+            .and_then(|a| a.as_array_mut())
+        {
+            arr.retain(|t| {
+                t.as_str()
+                    .map(|s| !ai_smartness::hook_setup::LEGACY_WILDCARDS.contains(&s))
+                    .unwrap_or(true)
+            });
+        }
+
         if let Ok(out) = serde_json::to_string_pretty(&settings) {
             let _ = std::fs::write(&settings_path, out);
         }
@@ -838,6 +850,18 @@ fn sync_local_permissions(local_path: &std::path::Path, enabled: bool, wildcards
         .and_then(|a| a.as_array_mut())
     {
         arr.retain(|v| v.as_str().map(|s| !wildcards.contains(&s)).unwrap_or(true));
+    }
+
+    // Always purge legacy MCP wildcards (stale Python-era server names)
+    if let Some(arr) = local
+        .pointer_mut("/permissions/allow")
+        .and_then(|a| a.as_array_mut())
+    {
+        arr.retain(|v| {
+            v.as_str()
+                .map(|s| !ai_smartness::hook_setup::LEGACY_WILDCARDS.contains(&s))
+                .unwrap_or(true)
+        });
     }
 
     if let Ok(out) = serde_json::to_string_pretty(&local) {

@@ -7,6 +7,10 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+/// Stale MCP server name patterns from older ai-smartness versions (Python era).
+/// These are purged from allowedTools / permissions.allow on every hook install.
+pub const LEGACY_WILDCARDS: &[&str] = &["mcp__mcp-smartness__*"];
+
 /// Install Claude Code hooks into `{project_path}/.claude/settings.json`.
 ///
 /// - Creates `.claude/` directory if absent.
@@ -100,6 +104,8 @@ pub fn install_claude_hooks(project_path: &Path, project_hash: &str) -> Result<(
     if !tools.iter().any(|t| t.as_str() == Some(wildcard)) {
         tools.push(serde_json::json!(wildcard));
     }
+    // Remove stale legacy entries
+    tools.retain(|t| t.as_str().map(|s| !LEGACY_WILDCARDS.contains(&s)).unwrap_or(true));
 
     // Write back
     let formatted = serde_json::to_string_pretty(&settings)
@@ -156,6 +162,8 @@ fn install_local_permissions(claude_dir: &Path) -> Result<()> {
             arr.push(serde_json::json!(wc));
         }
     }
+    // Remove stale legacy entries
+    arr.retain(|v| v.as_str().map(|s| !LEGACY_WILDCARDS.contains(&s)).unwrap_or(true));
 
     let formatted = serde_json::to_string_pretty(&local)
         .context("Failed to serialize settings.local.json")?;
@@ -309,4 +317,46 @@ fn resolve_bin_path() -> String {
     std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "ai-smartness".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_install_hooks_removes_legacy_wildcard() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let project_path = dir.path();
+        let claude_dir = project_path.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        // Pre-populate settings.json with both legacy and current wildcards
+        let initial = serde_json::json!({
+            "permissions": {
+                "allowedTools": [
+                    "mcp__mcp-smartness__*",
+                    "mcp__ai-smartness__*"
+                ]
+            }
+        });
+        let settings_path = claude_dir.join("settings.json");
+        std::fs::write(&settings_path, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
+
+        install_claude_hooks(project_path, "testhash").expect("install_claude_hooks failed");
+
+        let result: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&settings_path).unwrap()
+        ).unwrap();
+        let tools = result["permissions"]["allowedTools"].as_array().unwrap();
+        let tool_strs: Vec<&str> = tools.iter().filter_map(|v| v.as_str()).collect();
+
+        assert!(
+            !tool_strs.contains(&"mcp__mcp-smartness__*"),
+            "legacy wildcard should be removed, got: {:?}", tool_strs
+        );
+        assert!(
+            tool_strs.contains(&"mcp__ai-smartness__*"),
+            "current wildcard should remain, got: {:?}", tool_strs
+        );
+    }
 }
