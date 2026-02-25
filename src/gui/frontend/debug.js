@@ -235,14 +235,19 @@ async function pollLogs() {
             logFileEl.textContent = data.file;
         }
 
-        if (data.lines && data.lines.length > 0) {
-            for (const line of data.lines) {
-                appendLine(line);
-            }
+        // Always update byte offset (even when no new lines) so tail mode
+        // transitions from MAX_SAFE_INTEGER to actual file_size on first poll.
+        if (data.byte_offset !== undefined) {
             if (logSource === 'global') {
                 globalByteOffset = data.byte_offset;
             } else {
                 projectByteOffset = data.byte_offset;
+            }
+        }
+
+        if (data.lines && data.lines.length > 0) {
+            for (const line of data.lines) {
+                appendLine(line);
             }
             updateLevelCounters();
             updateFooter();

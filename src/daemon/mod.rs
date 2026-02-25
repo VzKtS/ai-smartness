@@ -107,7 +107,7 @@ pub fn run() {
 
     // Heavy initialization in background thread — does not block IPC or GUI.
     // Workers that need ONNX/LocalLLM will block on OnceLock until init completes.
-    {
+    let init_handle = {
         let data_dir = data_dir.clone();
         std::thread::spawn(move || {
             // 1. Startup validation: integrity check + missed backups
@@ -134,8 +134,8 @@ pub fn run() {
                 model = %llm.model_path().display(),
                 "LocalLlm initialized (eager)"
             );
-        });
-    }
+        })
+    };
 
     // Start prune loop thread
     let prune_handle = {
@@ -188,6 +188,7 @@ pub fn run() {
     let _ = ipc_handle.join();
     let _ = prune_handle.join();
     let _ = controller_handle.join();
+    let _ = init_handle.join();
 
     tracing::info!("Global daemon shutdown complete");
 }
