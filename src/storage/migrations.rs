@@ -2,7 +2,7 @@ use crate::{AiError, AiResult};
 use rusqlite::Connection;
 
 /// Schema version actuelle
-pub const CURRENT_SCHEMA_VERSION: u32 = 6;
+pub const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 /// Retourne la version de schema actuelle (0 si table absente)
 pub fn get_schema_version(conn: &Connection) -> AiResult<u32> {
