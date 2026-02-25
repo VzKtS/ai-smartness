@@ -1869,6 +1869,8 @@ const RELATION_COLORS = {
     'Depends': '#d07040',
     'Contradicts': '#ef4444',
     'Replaces': '#6090c8',
+    'Supports': '#22c55e',
+    'Evolves': '#a78bfa',
 };
 
 // Read CSS variable value from computed style (cached — call only on theme change)
@@ -1893,6 +1895,8 @@ function refreshGraphColors() {
     RELATION_COLORS['Depends'] = getThemeColor('--warning') || '#d07040';
     RELATION_COLORS['Contradicts'] = getThemeColor('--danger') || '#ef4444';
     RELATION_COLORS['Replaces'] = getThemeColor('--accent') || '#6090c8';
+    RELATION_COLORS['Supports'] = getThemeColor('--success') || '#22c55e';
+    RELATION_COLORS['Evolves'] = getThemeColor('--accent') || '#a78bfa';
     if (graphNodes.length > 0) {
         drawGraph();
         renderGraphLegend();
