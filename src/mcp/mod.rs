@@ -81,23 +81,31 @@ fn resolve_agent_late(project_hash: &str, agents: &[String]) -> Option<String> {
 
     // 6. Global session file
     let session_path = ai_smartness::storage::path_utils::agent_session_path(project_hash);
+    let mut session_file_nonempty = false;
     if let Ok(contents) = std::fs::read_to_string(&session_path) {
         let trimmed = contents.trim().to_string();
         if !trimmed.is_empty() {
+            session_file_nonempty = true;
             // Verify agent actually exists in registry
             if agents.contains(&trimmed) {
                 tracing::info!(agent = %trimmed, source = "session_file", "Agent resolved");
                 return Some(trimmed);
             }
-            // Session file references unknown agent — might have been removed
-            tracing::warn!(agent = %trimmed, "Session file references unregistered agent, skipping");
+            // Session file references unknown agent — cross-project contamination guard.
+            // Do NOT fall back to a random agent: the session file indicates a specific
+            // agent was expected; returning a different one silently would be worse.
+            tracing::warn!(agent = %trimmed, "Session file references unregistered agent, blocking fallback");
         }
     }
 
-    // 7. Fallback: first registered agent for this project
-    if let Some(first) = agents.first() {
-        tracing::info!(agent = %first, source = "first_registered", "Agent resolved (fallback)");
-        return Some(first.clone());
+    // 7. Fallback: first registered agent for this project.
+    // Skipped when the session file was non-empty: it named a specific (now-missing)
+    // agent, so silently picking another would violate cross-project isolation.
+    if !session_file_nonempty {
+        if let Some(first) = agents.first() {
+            tracing::info!(agent = %first, source = "first_registered", "Agent resolved (fallback)");
+            return Some(first.clone());
+        }
     }
 
     None
