@@ -1,5 +1,7 @@
 use ai_smartness::AiResult;
+use ai_smartness::agent::TaskStatus;
 use ai_smartness::registry::heartbeat::Heartbeat;
+use ai_smartness::registry::tasks::AgentTaskStorage;
 use ai_smartness::storage::beat::BeatState;
 use ai_smartness::storage::cognitive_inbox::CognitiveInbox;
 use ai_smartness::storage::credentials;
@@ -7,6 +9,7 @@ use ai_smartness::storage::database::{self, ConnectionRole};
 use ai_smartness::storage::migrations;
 use ai_smartness::storage::path_utils;
 use ai_smartness::storage::quota_probe;
+use ai_smartness::storage::shared_storage::SharedStorage;
 use rusqlite::Connection;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -328,9 +331,44 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
         beat.save(&data_dir);
 
         // 1a. Update registry DB last_seen + status=active (prevents mark_stale)
-        if let Some(ref conn) = registry_conn {
-            if let Err(e) = Heartbeat::update(conn, &agent_id, project_hash, None) {
+        // Also sync pending tasks into beat.json (H1 — A1 constraint: no DB in inject hot path)
+        if let Some(ref reg_conn) = registry_conn {
+            if let Err(e) = Heartbeat::update(reg_conn, &agent_id, project_hash, None) {
                 tracing::warn!(agent = %agent_id, "Heartbeat registry update failed: {}", e);
+            }
+            // H1: cache pending tasks in beat.json
+            if let Ok(tasks) = AgentTaskStorage::list_tasks_for_agent(reg_conn, &agent_id, project_hash) {
+                let active: Vec<serde_json::Value> = tasks.iter()
+                    .filter(|t| t.status != TaskStatus::Completed)
+                    .map(|t| serde_json::json!({
+                        "id": t.id,
+                        "title": t.title,
+                        "status": t.status.as_str(),
+                        "from": t.assigned_by,
+                    }))
+                    .collect();
+                let mut beat2 = BeatState::load(&data_dir);
+                beat2.pending_tasks = active;
+                beat2.save(&data_dir);
+            }
+        }
+
+        // H2: cache shared thread subscriptions into beat.json (A1 constraint)
+        let shared_db = path_utils::shared_db_path(project_hash);
+        if shared_db.exists() {
+            if let Ok(shared_conn) = database::open_connection(&shared_db, ConnectionRole::Daemon) {
+                if let Ok(threads) = SharedStorage::list_subscribed_threads(&shared_conn, &agent_id) {
+                    let cached: Vec<serde_json::Value> = threads.iter().take(10).map(|s| {
+                        serde_json::json!({
+                            "id": s.shared_id,
+                            "title": s.title,
+                            "from": s.owner_agent,
+                        })
+                    }).collect();
+                    let mut beat3 = BeatState::load(&data_dir);
+                    beat3.shared_threads_cache = cached;
+                    beat3.save(&data_dir);
+                }
             }
         }
 

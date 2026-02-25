@@ -459,6 +459,16 @@ fn build_lightweight_context(conn: &Connection, agent_data_dir: &Path, session_i
         ctx["session_id"] = serde_json::Value::String(sid.to_string());
     }
 
+    // H1: Inject pending tasks from beat cache (no DB hit — pre-cached by heartbeat)
+    if !beat.pending_tasks.is_empty() {
+        ctx["pending_tasks"] = serde_json::Value::Array(beat.pending_tasks.clone());
+    }
+
+    // H2: Inject shared thread subscriptions from beat cache (no DB hit)
+    if !beat.shared_threads_cache.is_empty() {
+        ctx["shared_threads"] = serde_json::Value::Array(beat.shared_threads_cache.clone());
+    }
+
     Some(format!(
         "As you answer the user's questions, you can use the following context:\n{}",
         serde_json::to_string_pretty(&ctx).ok()?
@@ -1217,5 +1227,68 @@ mod tests {
         let mut inj: Vec<&HealthFinding> = hc;
         if 7u64 % 10 == 0 { inj.extend(&med); }
         assert_eq!(inj.len(), 2, "High+Critical always injected");
+    }
+
+    // T2-H1: pending_tasks absent from ctx when beat has no tasks
+    #[test]
+    fn test_lightweight_context_no_tasks_no_key() {
+        let ph = "test_ph_t2a";
+        let ag = "ag_t2a";
+        cleanup_project(ph);
+
+        let conn = setup_agent_db();
+        let data_dir = ai_smartness::storage::path_utils::agent_data_dir(ph, ag);
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Beat state with no pending_tasks (default)
+        let beat = BeatState::default();
+        beat.save(&data_dir);
+
+        let result = build_lightweight_context(&conn, &data_dir, None).unwrap();
+        let ctx: serde_json::Value = serde_json::from_str(
+            result.trim_start_matches("As you answer the user's questions, you can use the following context:\n")
+        ).unwrap();
+
+        assert!(ctx.get("pending_tasks").is_none(), "pending_tasks should not appear when empty");
+        assert!(ctx.get("shared_threads").is_none(), "shared_threads should not appear when empty");
+
+        cleanup_project(ph);
+    }
+
+    // T2-H1+H2: pending_tasks and shared_threads appear when beat cache is populated
+    #[test]
+    fn test_lightweight_context_includes_cached_tasks_and_threads() {
+        let ph = "test_ph_t2b";
+        let ag = "ag_t2b";
+        cleanup_project(ph);
+
+        let conn = setup_agent_db();
+        let data_dir = ai_smartness::storage::path_utils::agent_data_dir(ph, ag);
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Pre-populate beat with cached data (as heartbeat would)
+        let mut beat = BeatState::default();
+        beat.pending_tasks = vec![
+            serde_json::json!({"id": "task-1", "title": "Implement feature", "status": "pending", "from": "cor"})
+        ];
+        beat.shared_threads_cache = vec![
+            serde_json::json!({"id": "s1", "title": "Arc plan", "from": "arc"})
+        ];
+        beat.save(&data_dir);
+
+        let result = build_lightweight_context(&conn, &data_dir, None).unwrap();
+        let ctx: serde_json::Value = serde_json::from_str(
+            result.trim_start_matches("As you answer the user's questions, you can use the following context:\n")
+        ).unwrap();
+
+        let tasks = ctx.get("pending_tasks").expect("pending_tasks should be present");
+        assert_eq!(tasks.as_array().unwrap().len(), 1);
+        assert_eq!(tasks[0]["id"], "task-1");
+
+        let threads = ctx.get("shared_threads").expect("shared_threads should be present");
+        assert_eq!(threads.as_array().unwrap().len(), 1);
+        assert_eq!(threads[0]["from"], "arc");
+
+        cleanup_project(ph);
     }
 }

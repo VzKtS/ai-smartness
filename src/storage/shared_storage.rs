@@ -230,6 +230,27 @@ impl SharedStorage {
         Ok(c)
     }
 
+    /// Return the full `SharedThread` rows for all threads an agent is subscribed to.
+    /// Used by heartbeat to pre-cache subscription data into beat.json (no DB hit in inject).
+    pub fn list_subscribed_threads(conn: &Connection, agent_id: &str) -> AiResult<Vec<SharedThread>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT st.* FROM shared_threads st \
+                 JOIN subscriptions s ON s.shared_id = st.shared_id \
+                 WHERE s.subscriber_agent = ?1 \
+                 ORDER BY st.published_at DESC",
+            )
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+
+        let threads = stmt
+            .query_map(params![agent_id], shared_from_row)
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(threads)
+    }
+
     pub fn update_sync(conn: &Connection, shared_id: &str, agent_id: &str) -> AiResult<()> {
         let now = time_utils::to_sqlite(&time_utils::now());
         conn.execute(
@@ -369,5 +390,33 @@ mod tests {
             "Should have exactly 10 subscriptions, got {}",
             subs.len()
         );
+    }
+
+    // T2-H2: list_subscribed_threads returns joined SharedThread rows
+    #[test]
+    fn test_list_subscribed_threads_returns_joined_data() {
+        let conn = setup_shared_db();
+        // Two threads: agent-a owns s1, agent-b owns s2
+        insert_shared_owned(&conn, "s1", "[\"arch\"]", "network", "agent-a");
+        insert_shared_owned(&conn, "s2", "[\"code\"]", "network", "agent-b");
+
+        // agent-x subscribes to s1 only
+        let sub = Subscription {
+            shared_id: "s1".to_string(),
+            subscriber_agent: "agent-x".to_string(),
+            subscribed_at: time_utils::now(),
+            last_synced: None,
+        };
+        SharedStorage::subscribe(&conn, &sub).unwrap();
+
+        // list_subscribed_threads for agent-x → only s1
+        let threads = SharedStorage::list_subscribed_threads(&conn, "agent-x").unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].shared_id, "s1");
+        assert_eq!(threads[0].owner_agent, "agent-a");
+
+        // agent-y has no subscriptions → empty
+        let none = SharedStorage::list_subscribed_threads(&conn, "agent-y").unwrap();
+        assert!(none.is_empty());
     }
 }

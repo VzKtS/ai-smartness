@@ -107,6 +107,12 @@ pub struct BeatState {
     pub quota_updated_at: Option<String>,
     #[serde(default)]
     pub quota_alert: Option<String>,
+    /// Cached pending tasks from registry (refreshed by heartbeat every tick).
+    #[serde(default)]
+    pub pending_tasks: Vec<serde_json::Value>,
+    /// Cached shared-thread subscriptions (refreshed by heartbeat every tick).
+    #[serde(default)]
+    pub shared_threads_cache: Vec<serde_json::Value>,
 }
 
 fn default_quota() -> usize { 50 }
@@ -154,6 +160,8 @@ impl Default for BeatState {
             quota_reset_7d: None,
             quota_updated_at: None,
             quota_alert: None,
+            pending_tasks: Vec::new(),
+            shared_threads_cache: Vec::new(),
         }
     }
 }
@@ -364,6 +372,25 @@ mod tests {
         let loaded = BeatState::load(dir.path());
         assert_eq!(loaded.quota, 100);
         assert_eq!(loaded.beat, 42);
+    }
+
+    // T2-H1: BeatState new cache fields default to empty and round-trip correctly
+    #[test]
+    fn test_beat_state_cache_fields_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = BeatState::default();
+        assert!(state.pending_tasks.is_empty(), "pending_tasks should default empty");
+        assert!(state.shared_threads_cache.is_empty(), "shared_threads_cache should default empty");
+
+        state.pending_tasks = vec![serde_json::json!({"id": "t1", "title": "Test task", "status": "pending", "from": "cor"})];
+        state.shared_threads_cache = vec![serde_json::json!({"id": "s1", "title": "Plan", "from": "arc"})];
+        state.save(dir.path());
+
+        let loaded = BeatState::load(dir.path());
+        assert_eq!(loaded.pending_tasks.len(), 1);
+        assert_eq!(loaded.pending_tasks[0]["id"], "t1");
+        assert_eq!(loaded.shared_threads_cache.len(), 1);
+        assert_eq!(loaded.shared_threads_cache[0]["from"], "arc");
     }
 
     #[test]
