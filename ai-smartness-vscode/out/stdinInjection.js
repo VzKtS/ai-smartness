@@ -261,32 +261,39 @@ async function tryInject(agentId, text) {
  * PID-targeted: reads beat.json to find the correct Claude process for this agent.
  * Falls back to first idle Claude process if PID not available.
  * Never blocks, never retries — the controller handles retry logic.
+ *
+ * options.skipIdleCheck: if true, bypass idle detection (used for urgent/interrupt signals).
  */
-function tryInjectSync(agentId, text, projHash) {
+function tryInjectSync(agentId, text, projHash, options) {
     if (isDebounced(agentId)) {
         return false;
     }
+    const skip = options?.skipIdleCheck === true;
     const payload = buildPayload(text);
     // Strategy 1: PID-targeted (if projHash available)
+    let pidTargeted = false;
     if (projHash) {
         const targetPid = readAgentPid(projHash, agentId);
         if (targetPid) {
+            pidTargeted = true;
             const proc = findProcessByPid(targetPid);
-            if (proc?.stdin?.writable && isIdle(targetPid)) {
+            if (proc?.stdin?.writable && (skip || isIdle(targetPid))) {
                 try {
                     proc.stdin.write(payload);
                     lastInjectionTime.set(agentId, Date.now());
                     return true;
                 }
-                catch { /* fall through to strategy 2 */ }
+                catch {
+                    return false;
+                }
             }
         }
     }
-    // Strategy 2: Fallback — only if there's exactly ONE monitored Claude process
+    // Strategy 2: Fallback — only if PID targeting was unavailable and exactly ONE monitored process
     // (single-agent compat). With multiple processes, PID targeting is required
     // to avoid injecting into the wrong panel.
-    if (monitoredProcesses.size <= 1) {
-        const proc = findIdleClaudeProcess();
+    if (!pidTargeted && monitoredProcesses.size <= 1) {
+        const proc = skip ? findClaudeProcess() : findIdleClaudeProcess();
         if (proc?.stdin?.writable) {
             try {
                 proc.stdin.write(payload);

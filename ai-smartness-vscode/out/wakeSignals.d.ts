@@ -3,6 +3,7 @@ export interface WakeSignal {
     from: string;
     message: string;
     mode?: 'cognitive' | 'inbox';
+    interrupt?: boolean;
     timestamp: string;
     acknowledged: boolean;
     acknowledged_at?: string;
