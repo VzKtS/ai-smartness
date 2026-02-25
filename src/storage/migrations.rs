@@ -262,6 +262,30 @@ pub fn migrate_shared_db(conn: &Connection) -> AiResult<()> {
         set_schema_version(conn, 3)?;
     }
 
+    // V4: rebuild subscriptions with UNIQUE(shared_id, subscriber_agent) + dedup existing rows
+    if version < 4 {
+        conn.execute_batch("
+            BEGIN;
+            ALTER TABLE subscriptions RENAME TO subscriptions_old;
+            CREATE TABLE subscriptions (
+                id TEXT PRIMARY KEY,
+                shared_id TEXT NOT NULL REFERENCES shared_threads(shared_id) ON DELETE CASCADE,
+                subscriber_agent TEXT NOT NULL,
+                subscribed_at TEXT NOT NULL,
+                last_synced TEXT,
+                UNIQUE(shared_id, subscriber_agent)
+            );
+            INSERT OR IGNORE INTO subscriptions
+                SELECT DISTINCT id, shared_id, subscriber_agent,
+                       MAX(subscribed_at), last_synced
+                FROM subscriptions_old
+                GROUP BY shared_id, subscriber_agent;
+            DROP TABLE subscriptions_old;
+            COMMIT;
+        ").map_err(|e| AiError::Storage(format!("Shared DB V4 migration failed: {}", e)))?;
+        set_schema_version(conn, 4)?;
+    }
+
     Ok(())
 }
 

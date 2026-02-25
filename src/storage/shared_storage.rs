@@ -149,8 +149,20 @@ impl SharedStorage {
         Ok(subs)
     }
 
-    pub fn discover(conn: &Connection, topics: &[String]) -> AiResult<Vec<SharedThread>> {
+    pub fn discover(conn: &Connection, topics: &[String], agent_id: Option<&str>) -> AiResult<Vec<SharedThread>> {
         if topics.is_empty() {
+            // Empty-topics path: list all published, optionally filtered by owner
+            if let Some(id) = agent_id {
+                let mut stmt = conn
+                    .prepare("SELECT * FROM shared_threads WHERE owner_agent = ?1 ORDER BY published_at DESC")
+                    .map_err(|e| AiError::Storage(e.to_string()))?;
+                let threads = stmt
+                    .query_map(params![id], shared_from_row)
+                    .map_err(|e| AiError::Storage(e.to_string()))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                return Ok(threads);
+            }
             return Self::list_published(conn);
         }
 
@@ -162,9 +174,20 @@ impl SharedStorage {
             conditions.push(format!("LOWER(topics) LIKE ?{idx}"));
         }
 
+        // agent_id filter applies in both paths
+        let agent_clause = if let Some(id) = agent_id {
+            let idx = params_list.len() + 1;
+            let clause = format!(" AND owner_agent = ?{idx}");
+            params_list.push(id.to_string());
+            clause
+        } else {
+            String::new()
+        };
+
         let sql = format!(
-            "SELECT * FROM shared_threads WHERE ({}) AND visibility = 'network'",
-            conditions.join(" OR ")
+            "SELECT * FROM shared_threads WHERE ({}) AND visibility = 'network'{}",
+            conditions.join(" OR "),
+            agent_clause
         );
 
         let mut stmt = conn
@@ -239,11 +262,15 @@ mod tests {
     use crate::time_utils;
 
     fn insert_shared(conn: &Connection, id: &str, topics: &str, visibility: &str) {
+        insert_shared_owned(conn, id, topics, visibility, "agent-a");
+    }
+
+    fn insert_shared_owned(conn: &Connection, id: &str, topics: &str, visibility: &str, owner: &str) {
         let now = time_utils::to_sqlite(&time_utils::now());
         conn.execute(
             "INSERT INTO shared_threads (shared_id, source_thread_id, owner_agent, title, topics, visibility, published_at, updated_at)
-             VALUES (?1, ?2, 'agent-a', 'test', ?3, ?4, ?5, ?5)",
-            params![id, format!("src-{id}"), topics, visibility, now],
+             VALUES (?1, ?2, ?3, 'test', ?4, ?5, ?6, ?6)",
+            params![id, format!("src-{id}"), owner, topics, visibility, now],
         ).unwrap();
     }
 
@@ -254,7 +281,7 @@ mod tests {
         insert_shared(&conn, "s2", "[\"python\"]", "network");
         insert_shared(&conn, "s3", "[\"rust\"]", "private");
 
-        let results = SharedStorage::discover(&conn, &["rust".into(), "python".into()]).unwrap();
+        let results = SharedStorage::discover(&conn, &["rust".into(), "python".into()], None).unwrap();
         // s1 and s2 match topics + network, s3 is private so excluded
         assert_eq!(results.len(), 2);
         let ids: Vec<&str> = results.iter().map(|r| r.shared_id.as_str()).collect();
@@ -290,6 +317,23 @@ mod tests {
             result.unwrap_err().to_string().contains("does not exist"),
             "Error should mention non-existent shared thread"
         );
+    }
+
+    // T-B4: discover filters by owner_agent when agent_id = Some
+    #[test]
+    fn test_discover_filters_by_agent() {
+        let conn = setup_shared_db();
+        insert_shared_owned(&conn, "s1", "[\"rust\"]", "network", "agent-a");
+        insert_shared_owned(&conn, "s2", "[\"rust\"]", "network", "agent-b");
+
+        // Filter by agent-a → only s1
+        let results = SharedStorage::discover(&conn, &[], Some("agent-a")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].shared_id, "s1");
+
+        // No filter → both
+        let results_all = SharedStorage::discover(&conn, &[], None).unwrap();
+        assert_eq!(results_all.len(), 2);
     }
 
     #[test]

@@ -10,9 +10,9 @@ pub fn handle_discover(
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
     let topics = optional_array(params, "topics").unwrap_or_default();
-    let _agent_filter = optional_str(params, "agent_id");
+    let agent_filter = optional_str(params, "agent_id");
 
-    let shared = SharedStorage::discover(ctx.shared_conn, &topics)?;
+    let shared = SharedStorage::discover(ctx.shared_conn, &topics, agent_filter.as_deref())?;
 
     let results: Vec<serde_json::Value> = shared
         .iter()
@@ -64,7 +64,7 @@ pub fn handle_recommend(
     let limit = optional_usize(params, "limit").unwrap_or(5);
 
     // Recommend shared threads the agent hasn't subscribed to yet
-    let all_shared = SharedStorage::discover(ctx.shared_conn, &[])?;
+    let all_shared = SharedStorage::discover(ctx.shared_conn, &[], None)?;
     let my_subs = SharedStorage::list_subscriptions(ctx.shared_conn, ctx.agent_id)?;
     let sub_ids: std::collections::HashSet<String> =
         my_subs.iter().map(|s| s.shared_id.clone()).collect();
@@ -221,6 +221,35 @@ mod tests {
         handle_subscribe(&serde_json::json!({"shared_id": "s1"}), &ctx).unwrap();
         let result = handle_sync(&serde_json::json!({"shared_id": "s1"}), &ctx).unwrap();
         assert_eq!(result["synced"], "s1");
+    }
+
+    // T-B6: multi-agent can subscribe to same shared thread; re-subscription is idempotent
+    #[test]
+    fn test_multi_agent_subscribe_same_shared_thread() {
+        let agent = setup_agent_db();
+        let reg = setup_registry_db();
+        let shared = setup_shared_db();
+        insert_shared(&shared, "s1", "[\"rust\"]");
+        let ctx = make_ctx(&agent, &reg, &shared);
+
+        // Agent A subscribes
+        let result_a = handle_subscribe(&serde_json::json!({"shared_id": "s1"}), &ctx).unwrap();
+        assert_eq!(result_a["subscribed"], "s1");
+
+        // Agent B subscribes to the same shared thread
+        let ctx_b = ToolContext {
+            agent_conn: &agent,
+            registry_conn: &reg,
+            shared_conn: &shared,
+            project_hash: "test-proj",
+            agent_id: "agent-b",
+        };
+        let result_b = handle_subscribe(&serde_json::json!({"shared_id": "s1"}), &ctx_b).unwrap();
+        assert_eq!(result_b["subscribed"], "s1");
+
+        // Re-subscribe agent A → idempotent, no error
+        let result_a2 = handle_subscribe(&serde_json::json!({"shared_id": "s1"}), &ctx);
+        assert!(result_a2.is_ok(), "Re-subscription must be idempotent: {:?}", result_a2.err());
     }
 
     #[test]
