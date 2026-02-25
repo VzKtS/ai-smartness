@@ -236,6 +236,29 @@ pub fn add_project(path: String, name: Option<String>) -> Result<serde_json::Val
         Err(e) => tracing::warn!(error = %e, "GUI: failed to install MCP config"),
     }
 
+    // Write CLAUDE.md with agent-switching instructions if it doesn't exist
+    let claude_md_path = project_path.join("CLAUDE.md");
+    if !claude_md_path.exists() {
+        let claude_md = "# ai-smartness — Agent Assignment\n\
+            \n\
+            This project uses [ai-smartness](https://github.com/VzKtS/ai-smartness) for multi-agent memory.\n\
+            \n\
+            ## Assign an agent to this session\n\
+            \n\
+            At the start of each new session, call the `ai_agent_select` MCP tool:\n\
+            \n\
+            ```\n\
+            ai_agent_select(agent_id=\"<agent_id>\", session_id=\"<session_id from context>\")\n\
+            ```\n\
+            \n\
+            Available agents: call `agent_list` to see them.\n\
+            The session_id is injected in your context by the hook (look for session_id in system reminders).\n";
+        match std::fs::write(&claude_md_path, claude_md) {
+            Ok(()) => tracing::info!(path = %claude_md_path.display(), "GUI: CLAUDE.md created"),
+            Err(e) => tracing::warn!(error = %e, "GUI: failed to write CLAUDE.md"),
+        }
+    }
+
     // Write default config.json if it doesn't exist
     let config_path = path_utils::data_dir().join("config.json");
     if !config_path.exists() {
