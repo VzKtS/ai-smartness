@@ -132,7 +132,11 @@ fn extract_via_llm(
     let prompt = build_extraction_prompt(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context);
 
     match super::llm_subprocess::call_claude(&prompt) {
-        Ok(response) => parse_extraction_response(&response),
+        Ok(response) => {
+            tracing::info!(response_len = response.len(), "LLM extraction response received");
+            tracing::debug!(raw_response = %response, "LLM raw output");
+            parse_extraction_response(&response)
+        }
         Err(e) => {
             tracing::warn!("LLM extraction failed: {}", e);
             Err(e)
@@ -262,17 +266,64 @@ If action is "verbatim" or "extract":
     )
 }
 
-fn parse_extraction_response(response: &str) -> AiResult<ExtractionResult> {
-    // Try to find JSON in response
-    let json_str = if let Some(start) = response.find('{') {
-        if let Some(end) = response.rfind('}') {
-            &response[start..=end]
-        } else {
-            response
+/// Extract the first complete JSON object from a string by tracking brace depth.
+/// Handles strings with escaped characters correctly.
+/// Returns None if no complete JSON object is found.
+fn extract_first_json_object(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    let start = s.find('{')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for i in start..bytes.len() {
+        let ch = bytes[i];
+
+        if escape_next {
+            escape_next = false;
+            continue;
         }
-    } else {
-        response
-    };
+
+        if ch == b'\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+
+        if ch == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+
+        if in_string {
+            continue;
+        }
+
+        match ch {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[start..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn parse_extraction_response(response: &str) -> AiResult<ExtractionResult> {
+    // Extract the first complete JSON object by tracking brace depth.
+    // Qwen sometimes appends trailing text or extra JSON after the main object,
+    // e.g. `{"action":"skip"}{"explanation":"..."}` or `{"action":"skip"} done`.
+    // The old `find('{')..rfind('}')` captured everything → "trailing characters" error.
+    let json_str = extract_first_json_object(response).ok_or_else(|| {
+        crate::AiError::InvalidInput(format!(
+            "No JSON object found in LLM response (len={})",
+            response.len()
+        ))
+    })?;
 
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         crate::AiError::InvalidInput(format!("Failed to parse extraction JSON: {}", e))
@@ -374,6 +425,88 @@ mod tests {
     fn test_parse_json_with_surrounding_text() {
         // LLM sometimes wraps JSON in markdown or text
         let response = r#"Here is the result: {"action":"skip"} done"#;
+        let result = parse_extraction_response(response).unwrap();
+        assert!(matches!(result, ExtractionResult::Skip));
+    }
+
+    // --- extract_first_json_object ---
+
+    #[test]
+    fn test_extract_first_json_plain() {
+        let s = r#"{"action":"skip"}"#;
+        assert_eq!(extract_first_json_object(s), Some(r#"{"action":"skip"}"#));
+    }
+
+    #[test]
+    fn test_extract_first_json_trailing_text() {
+        // Qwen bug: trailing text after JSON
+        let s = r#"{"action":"skip"} done"#;
+        assert_eq!(extract_first_json_object(s), Some(r#"{"action":"skip"}"#));
+    }
+
+    #[test]
+    fn test_extract_first_json_multiple_objects() {
+        // Qwen bug: two JSON objects concatenated
+        let s = r#"{"action":"skip"}{"explanation":"not needed"}"#;
+        assert_eq!(extract_first_json_object(s), Some(r#"{"action":"skip"}"#));
+    }
+
+    #[test]
+    fn test_extract_first_json_with_prefix() {
+        let s = r#"Here is the result: {"action":"skip"}"#;
+        assert_eq!(extract_first_json_object(s), Some(r#"{"action":"skip"}"#));
+    }
+
+    #[test]
+    fn test_extract_first_json_nested_braces() {
+        let s = r#"{"a":{"b":"c"},"d":"e"}"#;
+        assert_eq!(extract_first_json_object(s), Some(r#"{"a":{"b":"c"},"d":"e"}"#));
+    }
+
+    #[test]
+    fn test_extract_first_json_braces_in_strings() {
+        // Braces inside JSON string values should not confuse depth tracking
+        let s = r#"{"title":"fn() { return }"}"#;
+        assert_eq!(extract_first_json_object(s), Some(r#"{"title":"fn() { return }"}"#));
+    }
+
+    #[test]
+    fn test_extract_first_json_escaped_quotes() {
+        let s = r#"{"title":"say \"hello\""}"#;
+        assert_eq!(extract_first_json_object(s), Some(r#"{"title":"say \"hello\""}"#));
+    }
+
+    #[test]
+    fn test_extract_first_json_no_json() {
+        assert_eq!(extract_first_json_object("no json here"), None);
+    }
+
+    #[test]
+    fn test_extract_first_json_incomplete() {
+        assert_eq!(extract_first_json_object("{\"action\":\"skip\""), None);
+    }
+
+    #[test]
+    fn test_parse_skip_with_trailing_json() {
+        // Exact Qwen failure case: trailing characters at column 19
+        let response = r#"{"action":"skip"}{"reason":"not useful"}"#;
+        let result = parse_extraction_response(response).unwrap();
+        assert!(matches!(result, ExtractionResult::Skip));
+    }
+
+    #[test]
+    fn test_parse_extract_with_trailing_text() {
+        let response = r#"{"action":"extract","title":"Test","subjects":["a"],"summary":"b","confidence":0.8,"labels":[],"concepts":[],"importance":0.5} I hope this helps!"#;
+        let result = parse_extraction_response(response).unwrap();
+        match result {
+            ExtractionResult::Extracted(e) => assert_eq!(e.title, "Test"),
+            ExtractionResult::Skip => panic!("Expected Extracted"),
+        }
+    }
+
+    #[test]
+    fn test_parse_markdown_wrapped_json() {
+        let response = "```json\n{\"action\":\"skip\"}\n```";
         let result = parse_extraction_response(response).unwrap();
         assert!(matches!(result, ExtractionResult::Skip));
     }

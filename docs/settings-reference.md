@@ -87,14 +87,14 @@ Multi-agent communication and team collaboration settings.
 
 ## Guardian LLM
 
-The Guardian is the cognitive engine — it uses LLM calls (Claude CLI) to extract meaning from captured tool outputs and manage memory threads.
+The Guardian is the cognitive engine — it uses a local LLM (Qwen2.5-Instruct 3B/7B via llama-cpp-2) for zero-cost inference to extract meaning from captured tool outputs and agent responses, and manage memory threads.
 
 ### Global Settings
 
 | Setting | Default | Range | Description |
 |---------|---------|-------|-------------|
 | **Guardian Enabled** | `on` | on/off | Master switch. When off, no LLM calls are made — hooks pass through without memory processing. All captured content is silently dropped. |
-| **Claude CLI Path** | auto-detect | path | Path to the Claude CLI executable. Leave empty unless Claude is installed in a non-standard location. |
+| **LLM Backend** | `local` | local/claude | LLM backend for cognitive tasks. `local` uses Qwen via llama-cpp-2 (zero cost), `claude` uses Claude CLI (API cost). |
 | **Hook Guard Env** | `AI_SMARTNESS_HOOK_RUNNING` | string | Environment variable name used to prevent hook recursion. The daemon sets this when processing captures. **Don't change** unless you have a naming conflict. |
 | **Cache Enabled** | `off` | on/off | Cache extraction and synthesis results to avoid redundant LLM calls for identical inputs. Saves API costs, uses more RAM. |
 | **Cache TTL** | `300` (5 min) | ≥ 0s | Time-to-live for cached entries before expiration. |
@@ -522,7 +522,7 @@ Per-agent thread quota — controls the maximum number of active memory threads.
 
 ### MCP Permissions
 
-At installation (`project add`), AI Smartness automatically configures `.claude/settings.json` to allow all AI Smartness MCP tools without manual approval.
+At installation (`init` / `project add`), AI Smartness automatically configures `.claude/settings.json` to allow all AI Smartness MCP tools without manual approval.
 
 | Setting | Value | Description |
 |---------|-------|-------------|
@@ -541,6 +541,16 @@ A unified PreToolUse hook dispatches to specialized handlers based on tool name:
 | _Other_ | Passthrough | No action, tool proceeds normally |
 
 Installed as a single hook command: `ai-smartness hook pretool <project_hash>`.
+
+### Stop Hook (Response Capture)
+
+The Stop hook fires when Claude finishes responding. It captures the agent's `last_assistant_message` and sends it to the daemon for memory extraction via the pool pipeline.
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| **Min Response Length** | `150` chars | Responses shorter than this are filtered as noise (short acknowledgments, yes/no answers). |
+
+Installed as: `ai-smartness hook stop <project_hash>`.
 
 ---
 
@@ -699,19 +709,35 @@ Controls which tool outputs are sent to the daemon for LLM extraction and memory
 | `capture.tools.read` | `true` | Capture file contents when the agent reads files. |
 | `capture.tools.edit` | `true` | Capture edit diffs when the agent modifies files. |
 | `capture.tools.write` | `true` | Capture file creation content. |
-| `capture.tools.bash` | `true` | Capture command output (stdout/stderr). |
-| `capture.tools.grep` | `true` | Capture search results. |
-| `capture.tools.glob` | `true` | Capture file listing results. |
-| `capture.tools.web_fetch` | `true` | Capture web page fetches. |
-| `capture.tools.web_search` | `true` | Capture web search results. |
+| `capture.tools.bash` | `false` | Capture command output (stdout/stderr). Noisy — disabled by default. |
+| `capture.tools.grep` | `false` | Capture search results. Noisy — disabled by default. |
+| `capture.tools.glob` | `false` | Capture file listing results. Noisy — disabled by default. |
+| `capture.tools.web_fetch` | `false` | Capture web page fetches. Noisy — disabled by default. |
+| `capture.tools.web_search` | `false` | Capture web search results. Noisy — disabled by default. |
 | `capture.tools.task` | `true` | Capture sub-agent task results. |
 | `capture.tools.notebook_edit` | `true` | Capture Jupyter notebook edits. |
 
-Disabled tools are silently skipped. Unknown tools are always captured.
+Disabled tools are silently skipped. Unknown tools are always captured. Noisy tools (Bash, Grep, Glob, WebFetch, WebSearch) are disabled by default — they produce high-volume, low-semantic-value output that saturates the extraction pipeline.
 
 **GUI:** Settings → Capture sub-tab.
 
 **Config file:** `guardian_config.json` in the project directory.
+
+---
+
+## Capture Pool
+
+The capture pool decouples fast hook writes (~1ms) from slow LLM extraction (~90s). Tool outputs and agent responses are written to `.jsonl` pool files, which a dedicated consumer thread processes asynchronously.
+
+**Pipeline:** `.jsonl` (active writes) → `.pending` (sealed, ready for extraction) → `.done` (processed) → deleted by cleanup.
+
+| Setting | Default | Range | Description |
+|---------|---------|-------|-------------|
+| `capture.pool.max_file_size` | `1048576` (1 MB) | ≥ 1024 | Maximum size of a single `.jsonl` pool file before sealing. |
+| `capture.pool.max_age_secs` | `300` (5 min) | ≥ 10 | Maximum age of a pool file before automatic sealing. |
+| `capture.pool.cleanup_interval_secs` | `3600` (1 hour) | ≥ 60 | Time after which `.done` files are deleted. |
+
+**Consumer thread:** Scans for `.pending` files every 10 seconds, processes entries through the full LLM extraction pipeline (extraction → coherence → thread matching → storage).
 
 ---
 

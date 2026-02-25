@@ -56,7 +56,7 @@ pub fn process_pending_files(
                     );
                 }
                 total_processed += count;
-                tracing::debug!(
+                tracing::info!(
                     file = %path.display(),
                     captures = count,
                     "Pool file processed"
