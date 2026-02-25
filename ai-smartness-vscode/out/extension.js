@@ -92,24 +92,6 @@ function activate(context) {
             }
         }
     }));
-    // Late workspace resolution: handles the case where the extension activates on an
-    // empty window and the user opens a folder afterwards (workspaceFolders was null
-    // at activation time → currentProjectHash was null → "AI:No Agent" permanent).
-    context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(e => {
-        if (!currentProjectHash && e.added.length > 0) {
-            currentProjectHash = paths.resolveProjectHash(e.added[0].uri.fsPath);
-            if (currentProjectHash) {
-                log(`Project hash resolved (late): ${currentProjectHash}`);
-                // Start daemon if not running
-                const dStatus = cli.daemonStatus();
-                if (dStatus.status !== 'running') {
-                    log('Daemon not running, starting...');
-                    const ok = cli.daemonStart();
-                    log(ok ? 'Daemon started' : 'Failed to start daemon');
-                }
-            }
-        }
-    }));
     // Daemon auto-start
     if (currentProjectHash) {
         const dStatus = cli.daemonStatus();
