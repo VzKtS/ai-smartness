@@ -372,6 +372,13 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
             }
         }
 
+        // H3: cache git branch/dirty state (A2 — no subprocess in inject hot path)
+        {
+            let mut beat4 = BeatState::load(&data_dir);
+            update_git_info(&mut beat4, None);
+            beat4.save(&data_dir);
+        }
+
         // 1b. Maintain session_agents/{mcp_pid} for extension agent detection
         let sa_dir = path_utils::session_agents_dir(project_hash);
         std::fs::create_dir_all(&sa_dir).ok();
@@ -406,6 +413,27 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
     }
 
     tracing::info!("Heartbeat thread stopped");
+}
+
+/// H3: Update git branch and dirty state in beat.json.
+/// `dir` overrides the working directory (used in tests; None uses process CWD).
+fn update_git_info(beat: &mut BeatState, dir: Option<&Path>) {
+    let mut branch_cmd = std::process::Command::new("git");
+    branch_cmd.args(["rev-parse", "--abbrev-ref", "HEAD"]);
+    if let Some(d) = dir { branch_cmd.current_dir(d); }
+    if let Ok(out) = branch_cmd.output() {
+        if out.status.success() {
+            let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !branch.is_empty() {
+                beat.git_branch = Some(branch);
+            }
+        }
+    }
+
+    let mut dirty_cmd = std::process::Command::new("git");
+    dirty_cmd.args(["status", "--porcelain"]);
+    if let Some(d) = dir { dirty_cmd.current_dir(d); }
+    beat.git_dirty = dirty_cmd.output().map(|o| !o.stdout.is_empty()).unwrap_or(false);
 }
 
 fn check_scheduled_wakes(agent_id: &str, data_dir: &Path) {
@@ -564,6 +592,9 @@ fn tool_definitions() -> Vec<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use ai_smartness::storage::beat::BeatState;
+
     // T-P3.1: catch_unwind around tool dispatch catches panics without killing the process
     #[test]
     fn test_catch_unwind_mcp_panic_returns_error() {
@@ -576,6 +607,44 @@ mod tests {
         // Process is still alive — we can execute code after the panic
         let after_panic = std::panic::catch_unwind(|| 42_i32);
         assert_eq!(after_panic.unwrap(), 42, "Process must survive after caught panic");
+    }
+
+    // T3.2-H3: update_git_info sets git_branch in an existing git repository
+    #[test]
+    fn test_git_branch_info_returns_branch() {
+        let mut beat = BeatState::default();
+        // Run with None (inherits CWD — the ai-smartness project root IS a git repo)
+        update_git_info(&mut beat, None);
+        assert!(
+            beat.git_branch.as_deref().map(|b| !b.is_empty()).unwrap_or(false),
+            "git_branch must be Some(non-empty) in a git repository"
+        );
+    }
+
+    // T3.2-H3: update_git_info detects dirty working tree
+    #[test]
+    fn test_git_branch_info_detects_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        // Init a fresh git repo
+        std::process::Command::new("git").args(["init"]).current_dir(dir.path()).output().unwrap();
+        std::process::Command::new("git").args(["config", "user.email", "t@t.com"]).current_dir(dir.path()).output().unwrap();
+        std::process::Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir.path()).output().unwrap();
+        // Commit a file → clean state
+        std::fs::write(dir.path().join("a.txt"), "content").unwrap();
+        std::process::Command::new("git").args(["add", "."]).current_dir(dir.path()).output().unwrap();
+        std::process::Command::new("git").args(["commit", "-m", "init"]).current_dir(dir.path()).output().unwrap();
+
+        // Clean state: dirty must be false
+        let mut beat_clean = BeatState::default();
+        update_git_info(&mut beat_clean, Some(dir.path()));
+        assert!(!beat_clean.git_dirty, "Should not be dirty after clean commit");
+        assert!(beat_clean.git_branch.is_some(), "Branch should be set in temp repo");
+
+        // Add untracked file → dirty must be true
+        std::fs::write(dir.path().join("untracked.txt"), "new").unwrap();
+        let mut beat_dirty = BeatState::default();
+        update_git_info(&mut beat_dirty, Some(dir.path()));
+        assert!(beat_dirty.git_dirty, "Should be dirty with untracked file");
     }
 }
 

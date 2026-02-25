@@ -469,6 +469,11 @@ fn build_lightweight_context(conn: &Connection, agent_data_dir: &Path, session_i
         ctx["shared_threads"] = serde_json::Value::Array(beat.shared_threads_cache.clone());
     }
 
+    // H3: Inject git branch/dirty state from beat cache (no subprocess)
+    if let Some(ref branch) = beat.git_branch {
+        ctx["git"] = serde_json::json!({"branch": branch, "dirty": beat.git_dirty});
+    }
+
     Some(format!(
         "As you answer the user's questions, you can use the following context:\n{}",
         serde_json::to_string_pretty(&ctx).ok()?

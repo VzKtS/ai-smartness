@@ -673,4 +673,84 @@ mod tests {
         assert!(result.is_ok(), "Should succeed using ack_latest fallback");
         assert_eq!(result.unwrap()["acked"], "m1");
     }
+
+    fn register_agent_for_broadcast(conn: &Connection, id: &str, ph: &str) {
+        let now = chrono::Utc::now();
+        let agent = ai_smartness::agent::Agent {
+            id: id.to_string(),
+            project_hash: ph.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            role: "programmer".to_string(),
+            capabilities: vec![],
+            status: ai_smartness::agent::AgentStatus::Active,
+            last_seen: now,
+            registered_at: now,
+            supervisor_id: None,
+            coordination_mode: ai_smartness::agent::CoordinationMode::Autonomous,
+            team: None,
+            specializations: vec![],
+            thread_mode: ai_smartness::agent::ThreadMode::Normal,
+            current_activity: String::new(),
+            report_to: None,
+            custom_role: None,
+            workspace_path: String::new(),
+            full_permissions: false,
+            expected_model: None,
+        };
+        ai_smartness::registry::registry::AgentRegistry::register(conn, &agent).unwrap();
+    }
+
+    // T3.1: broadcast emits interrupt=true wake signal to all agents
+    #[test]
+    fn test_broadcast_wakes_all_agents() {
+        const PH: &str = "test-ph-bcast";
+        const SENDER: &str = "bcast-sender-1";
+        const REC_A: &str = "bcast-recv-a-1";
+        const REC_B: &str = "bcast-recv-b-1";
+
+        for agent in [SENDER, REC_A, REC_B] { cleanup_signal(agent); }
+
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+
+        let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+        registry_conn.execute(
+            "INSERT INTO projects (hash, path, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![PH, "/tmp/bcast-test", "bcast-test", now],
+        ).unwrap();
+        register_agent_for_broadcast(&registry_conn, SENDER, PH);
+        register_agent_for_broadcast(&registry_conn, REC_A, PH);
+        register_agent_for_broadcast(&registry_conn, REC_B, PH);
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: PH,
+            agent_id: SENDER,
+        };
+
+        handle_msg_broadcast(
+            &serde_json::json!({"subject": "Team update", "payload": "All hands"}),
+            &ctx,
+        ).unwrap();
+
+        // Sender must NOT receive a wake signal for its own broadcast
+        assert!(!path_utils::wake_signal_path(SENDER).exists(), "Sender should not wake itself");
+
+        // Every receiver must have a wake signal with interrupt=true
+        for rec in [REC_A, REC_B] {
+            let signal_path = path_utils::wake_signal_path(rec);
+            assert!(signal_path.exists(), "Receiver {} must have wake signal", rec);
+            let sig: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(&signal_path).unwrap()
+            ).unwrap();
+            assert_eq!(sig["interrupt"], true, "Broadcast wake signal must use interrupt=true (T3.1)");
+            assert_eq!(sig["mode"].as_str().unwrap(), "inbox");
+        }
+
+        for agent in [SENDER, REC_A, REC_B] { cleanup_signal(agent); }
+    }
 }

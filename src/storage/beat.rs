@@ -113,6 +113,12 @@ pub struct BeatState {
     /// Cached shared-thread subscriptions (refreshed by heartbeat every tick).
     #[serde(default)]
     pub shared_threads_cache: Vec<serde_json::Value>,
+    /// Git branch name cached by heartbeat (None outside git repos).
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    /// True when git working tree has uncommitted changes.
+    #[serde(default)]
+    pub git_dirty: bool,
 }
 
 fn default_quota() -> usize { 50 }
@@ -162,6 +168,8 @@ impl Default for BeatState {
             quota_alert: None,
             pending_tasks: Vec::new(),
             shared_threads_cache: Vec::new(),
+            git_branch: None,
+            git_dirty: false,
         }
     }
 }
