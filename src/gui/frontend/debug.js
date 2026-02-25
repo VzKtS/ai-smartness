@@ -4,8 +4,10 @@
 const { invoke } = window.__TAURI__.core;
 
 // ─── State ───────────────────────────────────────────────────
-let projectByteOffset = 0;
-let globalByteOffset = 0;
+// Start at max so first poll skips history and jumps to end of file (tail mode).
+// Backend returns file_size when offset >= file_size → subsequent polls get only new lines.
+let projectByteOffset = Number.MAX_SAFE_INTEGER;
+let globalByteOffset = Number.MAX_SAFE_INTEGER;
 let paused = false;
 let autoScroll = true;
 let totalLines = 0;
@@ -42,6 +44,9 @@ if (logSourceSelect) {
         container.innerHTML = '';
         totalLines = 0;
         logFileEl.textContent = '-';
+        // Reset offsets to tail mode (skip history)
+        projectByteOffset = Number.MAX_SAFE_INTEGER;
+        globalByteOffset = Number.MAX_SAFE_INTEGER;
         // Reset counters
         for (const k of Object.keys(levelCounts)) levelCounts[k] = 0;
         updateLevelCounters();
