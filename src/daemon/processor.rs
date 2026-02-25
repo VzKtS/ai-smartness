@@ -180,7 +180,7 @@ pub fn process_capture(
             .map(|t| t.labels)
             .unwrap_or_default();
         *pending = Some(PendingContext {
-            content: truncate_safe(&cleaned, 1500).to_string(),
+            content: truncate_safe(&cleaned, 4000).to_string(),
             thread_id: tid.clone(),
             labels,
             timestamp: Instant::now(),
@@ -219,7 +219,7 @@ pub fn process_prompt(
 fn check_prompt_relevance(
     prompt: &str,
     agent_context: Option<&str>,
-    guardian: &GuardianConfig,
+    _guardian: &GuardianConfig,
 ) -> ai_smartness::AiResult<bool> {
     let context_block = match agent_context {
         Some(ctx) if !ctx.is_empty() => format!(
@@ -245,8 +245,7 @@ Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", 
         prompt, context_block
     );
 
-    let model = guardian.extraction.llm.model.as_cli_flag();
-    let response = ai_smartness::processing::llm_subprocess::call_claude_with_model(&gate_prompt, model)?;
+    let response = ai_smartness::processing::llm_subprocess::call_claude(&gate_prompt)?;
 
     // Parse JSON response
     if let Some(start) = response.find('{') {

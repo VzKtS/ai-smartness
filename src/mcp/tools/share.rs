@@ -4,7 +4,7 @@ use ai_smartness::AiResult;
 use ai_smartness::storage::shared_storage::SharedStorage;
 use ai_smartness::storage::threads::ThreadStorage;
 
-use super::{optional_bool, optional_str, required_str, ToolContext};
+use super::{optional_str, required_str, ToolContext};
 
 pub fn handle_share(
     params: &serde_json::Value,

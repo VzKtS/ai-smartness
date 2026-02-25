@@ -3,7 +3,6 @@ pub mod compact;
 pub mod health;
 pub mod inject;
 pub mod pretool;
-pub mod providers;
 pub mod setup;
 pub mod virtual_paths;
 

@@ -744,13 +744,6 @@ fn sync_mcp_permissions(enabled: bool) {
             Err(_) => continue,
         };
 
-        let tools = settings
-            .as_object_mut()
-            .and_then(|o| o.get_mut("permissions"))
-            .and_then(|p| p.as_object_mut())
-            .and_then(|p| p.get_mut("allowedTools"))
-            .and_then(|a| a.as_array_mut());
-
         if enabled {
             // Add wildcards if missing
             let tools = settings

@@ -1,46 +1,43 @@
 //! CLI subcommand: setup-model — download local LLM model for zero-cost inference.
 //!
-//! Downloads a GGUF model from HuggingFace into {data_dir}/models/
+//! Downloads a Qwen2.5-Instruct GGUF model from HuggingFace into {data_dir}/models/
 //! so the daemon can use local llama.cpp inference instead of Claude CLI.
+//!
+//! Models: 3B (default, ~2.1GB) or 7B (~4.7GB).
 
+use ai_smartness::config::LocalModelSize;
 use anyhow::{bail, Context, Result};
-use std::path::PathBuf;
 
-/// Default model filename.
-const MODEL_FILENAME: &str = "qwen2.5-0.5b-instruct-q5_k_m.gguf";
+pub fn run(force: bool, size_7b: bool) -> Result<()> {
+    let size = if size_7b { LocalModelSize::SevenB } else { LocalModelSize::ThreeB };
 
-/// HuggingFace download URL.
-const MODEL_URL: &str = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf";
-
-pub fn run(force: bool) -> Result<()> {
     let data_dir = ai_smartness::storage::path_utils::data_dir();
     let model_dir = data_dir.join("models");
     std::fs::create_dir_all(&model_dir).context("Failed to create models directory")?;
 
-    let model_path = model_dir.join(MODEL_FILENAME);
+    let model_path = model_dir.join(size.filename());
 
     if model_path.exists() && !force {
-        let size = std::fs::metadata(&model_path)
+        let file_size = std::fs::metadata(&model_path)
             .map(|m| m.len() / 1_000_000)
             .unwrap_or(0);
-        println!("Model already installed at {} ({}MB)", model_path.display(), size);
+        println!("Model already installed at {} ({}MB)", model_path.display(), file_size);
         println!("Use --force to re-download.");
         return Ok(());
     }
 
-    println!("Downloading Qwen2.5-0.5B-Instruct (Q5_K_M quantization)...");
-    println!("  URL: {}", MODEL_URL);
+    println!("Downloading {}...", size.display_name());
+    println!("  URL: {}", size.download_url());
     println!("  Destination: {}", model_path.display());
-    println!("  Size: ~400MB");
     println!();
 
-    download_file(MODEL_URL, &model_path)?;
+    download_file(size.download_url(), &model_path)?;
 
     if model_path.exists() {
-        let size = std::fs::metadata(&model_path)
+        let file_size = std::fs::metadata(&model_path)
             .map(|m| m.len() / 1_000_000)
             .unwrap_or(0);
-        println!("\nModel installed: {} ({}MB)", model_path.display(), size);
+        println!("\nModel installed: {} ({}MB)", model_path.display(), file_size);
         println!("\nRestart the daemon to use local LLM inference:");
         println!("  ai-smartness daemon stop && ai-smartness daemon start");
     } else {
@@ -51,7 +48,7 @@ pub fn run(force: bool) -> Result<()> {
 }
 
 /// Download a URL to a local file using curl.
-fn download_file(url: &str, dest: &PathBuf) -> Result<()> {
+fn download_file(url: &str, dest: &std::path::PathBuf) -> Result<()> {
     let status = std::process::Command::new("curl")
         .args(["-fSL", "--progress-bar", "-o"])
         .arg(dest.as_os_str())

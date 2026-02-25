@@ -96,8 +96,7 @@ New content:
         current_labels, ctx_truncated, cnt_truncated
     );
 
-    let model = config.llm.model.as_cli_flag();
-    let response = super::llm_subprocess::call_claude_with_model(&prompt, model)?;
+    let response = super::llm_subprocess::call_claude(&prompt)?;
 
     // Parse JSON from response
     let json_str = if let Some(start) = response.find('{') {

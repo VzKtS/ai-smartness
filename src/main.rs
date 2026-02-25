@@ -101,6 +101,9 @@ enum Commands {
         /// Force re-download even if already installed
         #[arg(long)]
         force: bool,
+        /// Download the 7B model (~4.7GB) instead of 3B default (~2.1GB)
+        #[arg(long = "7b")]
+        size_7b: bool,
     },
 }
 
@@ -393,8 +396,8 @@ fn main() {
             cli::setup_onnx::run(force)
                 .unwrap_or_else(|e| eprintln!("Error: {}", e));
         }
-        Some(Commands::SetupModel { force }) => {
-            cli::setup_model::run(force)
+        Some(Commands::SetupModel { force, size_7b }) => {
+            cli::setup_model::run(force, size_7b)
                 .unwrap_or_else(|e| eprintln!("Error: {}", e));
         }
     }

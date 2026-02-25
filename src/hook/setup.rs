@@ -1,2 +1,2 @@
 //! Re-export from library crate for binary-only usage.
-pub use ai_smartness::hook_setup::install_claude_hooks;
+// Note: install_claude_hooks is imported directly via ai_smartness::hook_setup by callers.

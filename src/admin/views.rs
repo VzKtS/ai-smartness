@@ -34,21 +34,12 @@ pub struct GuardianSettingsView {
     pub gossip: GossipSettingsView,
     pub recall: RecallSettingsView,
     pub thread_matching: ThreadMatchingSettingsView,
-    pub cache_enabled: bool,
-    pub pattern_learning: bool,
-    pub usage_tracking: bool,
-    pub fallback_on_failure: bool,
-    pub active_alerts: Vec<serde_json::Value>,
-    pub alert_thresholds: serde_json::Value,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct GuardianTaskView {
     pub name: String,
-    pub model: String,
-    pub timeout_secs: u64,
     pub enabled: bool,
-    pub failure_mode: String,
     pub call_count: u64,
     pub success_rate: f64,
 }

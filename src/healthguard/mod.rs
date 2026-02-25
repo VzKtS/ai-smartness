@@ -20,7 +20,6 @@ pub mod checks;
 pub mod formatter;
 pub mod merge_detector;
 
-use crate::AiResult;
 use rusqlite::Connection;
 use std::path::Path;
 

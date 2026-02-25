@@ -3,9 +3,11 @@
 //! Replaces the Claude CLI subprocess for Guardian tasks (extraction,
 //! coherence, reactivation, merge evaluation, etc.).
 //!
-//! Model: GGUF format, auto-downloaded to {data_dir}/models/ on first use.
+//! Model: Qwen2.5-Instruct GGUF, auto-downloaded to {data_dir}/models/ on first use.
+//! Sizes: 3B (default, ~2.1GB) or 7B (~4.7GB), selectable via config.
 //! Singleton pattern (OnceLock) — same as EmbeddingManager.
 
+use crate::config::LocalModelSize;
 use crate::{AiError, AiResult};
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -17,14 +19,8 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
-/// Default model filename stored in data_dir/models/.
-const DEFAULT_MODEL_FILENAME: &str = "qwen2.5-0.5b-instruct-q5_k_m.gguf";
-
-/// HuggingFace download URL for the default model.
-const DEFAULT_MODEL_URL: &str = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q5_k_m.gguf";
-
-/// Default context size (tokens). 2048 is enough for our extraction prompts.
-const DEFAULT_CTX_SIZE: u32 = 2048;
+/// Context size (tokens). 8192 is plenty for extraction prompts + 4K content + response.
+const DEFAULT_CTX_SIZE: u32 = 8192;
 
 /// Default max output tokens for generation.
 const DEFAULT_MAX_TOKENS: u32 = 512;
@@ -57,13 +53,19 @@ unsafe impl Sync for LlmInner {}
 impl LocalLlm {
     /// Global singleton (initialized once on first access).
     pub fn global() -> &'static Self {
-        GLOBAL.get_or_init(Self::new)
+        GLOBAL.get_or_init(|| Self::new(None))
+    }
+
+    /// Initialize with explicit model size. Called by daemon with config.
+    pub fn init_with_size(size: &LocalModelSize) -> &'static Self {
+        GLOBAL.get_or_init(|| Self::new(Some(size.clone())))
     }
 
     /// Initialize: find or download GGUF model, load into memory.
-    pub fn new() -> Self {
+    pub fn new(model_size: Option<LocalModelSize>) -> Self {
+        let size = model_size.unwrap_or_default();
         let model_dir = crate::storage::path_utils::data_dir().join("models");
-        let model_path = model_dir.join(DEFAULT_MODEL_FILENAME);
+        let model_path = model_dir.join(size.filename());
 
         let unavailable = |model_path: PathBuf| Self { inner: None, model_path };
 
@@ -79,7 +81,7 @@ impl LocalLlm {
         // Try to find model file
         if !model_path.exists() {
             tracing::info!("Local LLM model not found at {}, attempting download...", model_path.display());
-            if let Err(e) = Self::download_model(&model_dir, &model_path) {
+            if let Err(e) = Self::download_model(&model_dir, &model_path, size.download_url()) {
                 tracing::warn!("Failed to download model: {}, local LLM unavailable", e);
                 return unavailable(model_path);
             }
@@ -92,6 +94,7 @@ impl LocalLlm {
                 tracing::info!(
                     model = %model_path.display(),
                     params = model.n_params(),
+                    size = %size.display_name(),
                     "Local LLM loaded successfully"
                 );
                 Self {
@@ -203,18 +206,18 @@ impl LocalLlm {
         Ok(output)
     }
 
-    /// Download the default model from HuggingFace.
-    fn download_model(model_dir: &PathBuf, dest: &PathBuf) -> AiResult<()> {
+    /// Download a model from HuggingFace.
+    fn download_model(model_dir: &PathBuf, dest: &PathBuf, url: &str) -> AiResult<()> {
         std::fs::create_dir_all(model_dir).map_err(|e| {
             AiError::Storage(format!("Failed to create models dir: {}", e))
         })?;
 
-        tracing::info!(url = DEFAULT_MODEL_URL, "Downloading local LLM model...");
+        tracing::info!(url = url, "Downloading local LLM model...");
 
         let status = std::process::Command::new("curl")
             .args(["-fSL", "--progress-bar", "-o"])
             .arg(dest.as_os_str())
-            .arg(DEFAULT_MODEL_URL)
+            .arg(url)
             .status()
             .map_err(|e| AiError::Provider(format!("curl failed: {}", e)))?;
 

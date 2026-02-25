@@ -82,6 +82,26 @@ pub fn run() {
         tracing::info!(use_onnx = emb.use_onnx, "EmbeddingManager initialized (eager)");
     }
 
+    // Eagerly initialize local LLM with configured model size.
+    // Loads Qwen2.5 GGUF model (~2-5GB) — same OnceLock pattern as EmbeddingManager.
+    {
+        let guardian_cfg = {
+            let cfg_path = data_dir.join("config.json");
+            std::fs::read_to_string(&cfg_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<ai_smartness::config::GuardianConfig>(&s).ok())
+                .unwrap_or_default()
+        };
+        let llm = ai_smartness::processing::local_llm::LocalLlm::init_with_size(
+            &guardian_cfg.local_model_size,
+        );
+        tracing::info!(
+            available = llm.is_available(),
+            model = %llm.model_path().display(),
+            "LocalLlm initialized (eager)"
+        );
+    }
+
     // Connection pool
     let pool = Arc::new(ConnectionPool::new(
         config.pool_max_idle_secs,

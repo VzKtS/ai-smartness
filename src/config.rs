@@ -9,73 +9,17 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
-
-// ============================================================================
-// CLAUDE MODEL
-// ============================================================================
-
-/// Supported Claude model tiers (version-agnostic).
-/// The actual model ID is resolved at runtime by claude CLI.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-#[derive(Default)]
-pub enum ClaudeModel {
-    #[default]
-    Haiku,      // Fast, cheap — ideal for high-frequency tasks
-    Sonnet,     // Balanced quality/cost — good for moderate tasks
-    Opus,       // Maximum quality — for critical decisions
-}
-
-impl ClaudeModel {
-    pub fn as_cli_flag(&self) -> &str {
-        match self {
-            Self::Haiku => "haiku",
-            Self::Sonnet => "sonnet",
-            Self::Opus => "opus",
-        }
-    }
-}
-
-
-fn parse_model(s: &str) -> ClaudeModel {
-    match s.to_lowercase().as_str() {
-        "haiku" => ClaudeModel::Haiku,
-        "sonnet" => ClaudeModel::Sonnet,
-        "opus" => ClaudeModel::Opus,
-        _ => ClaudeModel::Haiku,
-    }
-}
 
 // ============================================================================
 // PER-TASK LLM CONFIGURATION
 // ============================================================================
 
 /// Configuration for a single LLM task.
-/// Each of the 6 Guardian tasks has its own instance.
+/// Controls whether this Guardian task is active.
+/// Inference is handled by the local LLM (llama.cpp) or Claude CLI fallback.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskLlmConfig {
-    pub model: ClaudeModel,
-    pub timeout_secs: u64,
-    pub max_retries: u32,       // 0 = no retry, 1 = one retry on failure
-    pub enabled: bool,          // false = skip this task completely
-    /// Behavior when LLM fails (timeout, CLI absent, network down).
-    /// LLM-FIRST: always prefer an LLM (even haiku) over a heuristic.
-    pub failure_mode: LlmFailureMode,
-}
-
-/// Behavior on LLM failure.
-/// Design: LLM-first — even haiku produces better results than regex.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub enum LlmFailureMode {
-    /// Default: retry with lightest model (haiku), then skip.
-    #[default]
-    RetryWithHaiku,
-    /// Skip silently. No thread created.
-    Skip,
-    /// Legacy: use FallbackPatterns regex.
-    /// NOT RECOMMENDED — produces threads with poor titles and imprecise topics.
-    HeuristicRegex,
+    pub enabled: bool,
 }
 
 // ============================================================================
@@ -83,7 +27,7 @@ pub enum LlmFailureMode {
 // ============================================================================
 
 /// LLM backend for Guardian inference tasks.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub enum LlmBackend {
     /// In-process llama.cpp (zero API cost). Default.
     #[default]
@@ -92,6 +36,39 @@ pub enum LlmBackend {
     Claude,
     /// Try local first, fallback to Claude CLI.
     LocalWithFallback,
+}
+
+/// Local GGUF model size (Qwen2.5-Instruct family).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub enum LocalModelSize {
+    /// Qwen2.5-3B-Instruct Q4_K_M (~2.1 GB). Default — best balance.
+    #[default]
+    ThreeB,
+    /// Qwen2.5-7B-Instruct Q4_K_M (~4.7 GB). Higher quality, slower.
+    SevenB,
+}
+
+impl LocalModelSize {
+    pub fn filename(&self) -> &'static str {
+        match self {
+            Self::ThreeB => "qwen2.5-3b-instruct-q4_k_m.gguf",
+            Self::SevenB => "qwen2.5-7b-instruct-q4_k_m.gguf",
+        }
+    }
+
+    pub fn download_url(&self) -> &'static str {
+        match self {
+            Self::ThreeB => "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+            Self::SevenB => "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::ThreeB => "Qwen2.5-3B-Instruct (Q4_K_M, ~2.1 GB)",
+            Self::SevenB => "Qwen2.5-7B-Instruct (Q4_K_M, ~4.7 GB)",
+        }
+    }
 }
 
 // ============================================================================
@@ -154,113 +131,6 @@ fn parse_embedding_config(obj: &serde_json::Map<String, serde_json::Value>, cfg:
 }
 
 // ============================================================================
-// GUARDIAN ALERT SYSTEM (real-time notification with deep-link)
-// ============================================================================
-
-/// Alert emitted when a system fails or is in degraded mode.
-/// Injected into next prompt AND displayed in admin panel.
-///
-/// Flow:
-/// 1. Guardian record_call(task, success=false) → increment failure count
-/// 2. If failures >= warning_threshold → write GuardianAlert to guardian_alerts.json
-/// 3. Inject hook: read guardian_alerts.json, inject warning with config_path
-/// 4. Admin panel: poll guardian_alerts.json, display toast notification
-/// 5. VSCode extension: receive IPC event, display notification with "Configure" button
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GuardianAlert {
-    pub id: String,
-    /// Failing system: "extraction", "coherence", "gossip", "recall",
-    /// "reactivation", "thread_matching", "embeddings".
-    pub system: String,
-    pub level: AlertLevel,
-    pub message: String,
-    /// Config path for admin panel deep-link.
-    /// Format: "guardian.{system}.{field}"
-    pub config_path: String,
-    pub consecutive_failures: u32,
-    pub timestamp: String,
-    pub recommended_action: String,
-    pub acknowledged: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum AlertLevel {
-    /// 3+ failures — non-blocking informative notification.
-    Warning,
-    /// 5+ failures — urgent notification with admin panel deep-link.
-    Critical,
-    /// System in fallback mode — persistent informative notification.
-    Degraded,
-}
-
-/// Alert trigger thresholds. Configurable in config.json "guardian.alerts".
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AlertThresholds {
-    pub warning_after: u32,              // default: 3
-    pub critical_after: u32,             // default: 5
-    pub per_system_cooldown_secs: u64,   // default: 300 (5 min)
-}
-
-impl Default for AlertThresholds {
-    fn default() -> Self {
-        Self {
-            warning_after: 3,
-            critical_after: 5,
-            per_system_cooldown_secs: 300,
-        }
-    }
-}
-
-/// Guardian alert manager.
-/// Reads/writes guardian_alerts.json in ai_path.
-pub struct GuardianAlertManager;
-
-impl GuardianAlertManager {
-    /// Record a failure for a system. Emits alert if threshold reached.
-    pub fn record_failure(
-        _ai_path: &Path,
-        _system: &str,
-        _thresholds: &AlertThresholds,
-    ) -> Option<GuardianAlert> {
-        todo!()
-    }
-
-    /// Record a success — reset failure counter for this system.
-    pub fn record_success(_ai_path: &Path, _system: &str) {
-        todo!()
-    }
-
-    /// Get all unacknowledged alerts.
-    pub fn get_active_alerts(_ai_path: &Path) -> Vec<GuardianAlert> {
-        todo!()
-    }
-
-    /// Acknowledge (dismiss) an alert.
-    pub fn acknowledge(_ai_path: &Path, _alert_id: &str) {
-        todo!()
-    }
-
-    /// Format alerts for prompt injection.
-    pub fn format_for_injection(alerts: &[GuardianAlert]) -> String {
-        let mut lines = Vec::new();
-        for alert in alerts {
-            let icon = match alert.level {
-                AlertLevel::Warning => "WARNING",
-                AlertLevel::Critical => "CRITICAL",
-                AlertLevel::Degraded => "DEGRADED",
-            };
-            lines.push(format!(
-                "[{}] Guardian {}: {} ({}x failures). Configure: {}",
-                icon, alert.system, alert.message,
-                alert.consecutive_failures, alert.config_path
-            ));
-            lines.push(format!("  Action: {}", alert.recommended_action));
-        }
-        lines.join("\n")
-    }
-}
-
-// ============================================================================
 // EXTRACTION CONFIG
 // ============================================================================
 
@@ -296,13 +166,7 @@ pub struct ExtractionConfig {
 impl Default for ExtractionConfig {
     fn default() -> Self {
         Self {
-            llm: TaskLlmConfig {
-                model: ClaudeModel::Haiku,
-                timeout_secs: 30,
-                max_retries: 1,
-                enabled: true,
-                failure_mode: LlmFailureMode::RetryWithHaiku,
-            },
+            llm: TaskLlmConfig { enabled: true },
             max_content_chars: 15000,
             min_capture_length: 80,
             topic_noise_words: vec![
@@ -343,13 +207,7 @@ pub struct CoherenceConfig {
 impl Default for CoherenceConfig {
     fn default() -> Self {
         Self {
-            llm: TaskLlmConfig {
-                model: ClaudeModel::Haiku,
-                timeout_secs: 15,
-                max_retries: 0,
-                enabled: true,
-                failure_mode: LlmFailureMode::RetryWithHaiku,
-            },
+            llm: TaskLlmConfig { enabled: true },
             max_context_chars: 1500,
             child_threshold: 0.6,
             orphan_threshold: 0.4,
@@ -381,13 +239,7 @@ pub struct ReactivationConfig {
 impl Default for ReactivationConfig {
     fn default() -> Self {
         Self {
-            llm: TaskLlmConfig {
-                model: ClaudeModel::Haiku,
-                timeout_secs: 30,
-                max_retries: 0,
-                enabled: true,
-                failure_mode: LlmFailureMode::RetryWithHaiku,
-            },
+            llm: TaskLlmConfig { enabled: true },
             auto_threshold: 0.35,
             borderline_threshold: 0.15,
             max_context_chars: 500,
@@ -419,13 +271,7 @@ pub struct SynthesisConfig {
 impl Default for SynthesisConfig {
     fn default() -> Self {
         Self {
-            llm: TaskLlmConfig {
-                model: ClaudeModel::Haiku,
-                timeout_secs: 60,
-                max_retries: 0,
-                enabled: true,
-                failure_mode: LlmFailureMode::RetryWithHaiku,
-            },
+            llm: TaskLlmConfig { enabled: true },
             max_messages: 10,
             max_message_chars: 500,
             max_output_chars: 1000,
@@ -456,13 +302,7 @@ pub struct LabelSuggestionConfig {
 impl Default for LabelSuggestionConfig {
     fn default() -> Self {
         Self {
-            llm: TaskLlmConfig {
-                model: ClaudeModel::Haiku,
-                timeout_secs: 30,
-                max_retries: 0,
-                enabled: true,
-                failure_mode: LlmFailureMode::RetryWithHaiku,
-            },
+            llm: TaskLlmConfig { enabled: true },
             auto_suggest_on_extraction: true,
             label_vocabulary: vec![
                 "bug-fix", "feature", "refactor", "architecture",
@@ -516,13 +356,7 @@ impl Default for ImportanceScoreMap {
 impl Default for ImportanceRatingConfig {
     fn default() -> Self {
         Self {
-            llm: TaskLlmConfig {
-                model: ClaudeModel::Haiku,
-                timeout_secs: 15,
-                max_retries: 0,
-                enabled: true,
-                failure_mode: LlmFailureMode::RetryWithHaiku,
-            },
+            llm: TaskLlmConfig { enabled: true },
             piggyback_on_extraction: true,
             fallback_score: 0.5,
             score_map: ImportanceScoreMap::default(),
@@ -878,53 +712,13 @@ impl Default for GuardCodeConfig {
             blocked_patterns: vec![],
             warn_on_block: true,
             action_on_block: BlockAction::Reject,
-            sanitize_llm: TaskLlmConfig {
-                model: ClaudeModel::Haiku,
-                timeout_secs: 30,
-                max_retries: 1,
-                enabled: true,
-                failure_mode: LlmFailureMode::Skip,
-            },
+            sanitize_llm: TaskLlmConfig { enabled: true },
             sanitize_max_retries: 2,
             messages: GuardCodeMessages::default(),
         }
     }
 }
 
-// ============================================================================
-// FALLBACK PATTERNS (legacy heuristic regex)
-// ============================================================================
-
-/// User-editable regex patterns for heuristic fallback.
-/// Used when LLM subprocess is unavailable.
-/// NOT RECOMMENDED — results are lower quality.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FallbackPatterns {
-    pub title_pattern: String,
-    pub topic_patterns: Vec<String>,
-    pub noise_patterns: Vec<String>,
-    /// Keyword overlap ratio threshold for coherence fallback.
-    pub coherence_keyword_threshold: f64,    // default: 0.3
-}
-
-impl Default for FallbackPatterns {
-    fn default() -> Self {
-        Self {
-            title_pattern: r"^[#\s]*(.{10,80})[.\n]".to_string(),
-            topic_patterns: vec![
-                r"\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b".to_string(),  // CamelCase
-                r"#(\w+)".to_string(),                               // Hashtags
-                r"`([a-z_]+)`".to_string(),                          // Code identifiers
-            ],
-            noise_patterns: vec![
-                r"^\s*\{".to_string(),                // JSON blob
-                r"Traceback \(most recent".to_string(), // Python stacktrace
-                r"at\s+\S+:\d+:\d+".to_string(),       // JS stacktrace
-            ],
-            coherence_keyword_threshold: 0.3,
-        }
-    }
-}
 
 // ============================================================================
 // DECAY & LIFECYCLE CONFIG
@@ -995,23 +789,6 @@ impl Default for DecayConfig {
 }
 
 // ============================================================================
-// LLM HEALTH STATE
-// ============================================================================
-
-/// LLM health state — tracked by Guardian for HealthGuard alerts.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
-pub struct LlmHealthState {
-    pub consecutive_failures: u32,
-    pub last_success: Option<String>,
-    pub last_failure_reason: Option<String>,
-    pub in_fallback_mode: bool,
-    pub task_failures: HashMap<String, u32>,
-    pub task_successes: HashMap<String, u32>,
-}
-
-
-// ============================================================================
 // GLOBAL GUARDIAN CONFIG
 // ============================================================================
 
@@ -1063,25 +840,10 @@ pub struct GuardianConfig {
     /// LLM backend: Local (llama.cpp, zero cost), Claude (API), or LocalWithFallback.
     #[serde(default)]
     pub llm_backend: LlmBackend,
-    /// Path to local GGUF model file. None = auto-detect from data_dir/models/.
+    /// Local model size: ThreeB (default, ~2.1GB) or SevenB (~4.7GB).
     #[serde(default)]
-    pub local_model_path: Option<String>,
-    pub claude_cli_path: Option<String>,
+    pub local_model_size: LocalModelSize,
     pub hook_guard_env: String,
-
-    pub cache_enabled: bool,
-    pub cache_ttl_secs: u64,
-    pub cache_max_entries: usize,
-
-    pub pattern_learning_enabled: bool,
-    pub pattern_decay_days: f64,
-    pub usage_tracking_enabled: bool,
-
-    /// DEPRECATED — replaced by LlmFailureMode in each TaskLlmConfig.
-    pub fallback_on_failure: bool,
-    pub fallback_patterns: FallbackPatterns,
-
-    pub alert_thresholds: AlertThresholds,
 }
 
 impl Default for GuardianConfig {
@@ -1105,18 +867,8 @@ impl Default for GuardianConfig {
             decay: DecayConfig::default(),
             enabled: true,
             llm_backend: LlmBackend::Local,
-            local_model_path: None,
-            claude_cli_path: None,
+            local_model_size: LocalModelSize::ThreeB,
             hook_guard_env: "AI_SMARTNESS_HOOK_RUNNING".to_string(),
-            cache_enabled: false,
-            cache_ttl_secs: 300,
-            cache_max_entries: 100,
-            pattern_learning_enabled: true,
-            pattern_decay_days: 30.0,
-            usage_tracking_enabled: true,
-            fallback_on_failure: false,
-            fallback_patterns: FallbackPatterns::default(),
-            alert_thresholds: AlertThresholds::default(),
         }
     }
 }
@@ -1318,22 +1070,6 @@ impl GuardianConfig {
             if let Some(v) = s.get("enabled").and_then(|v| v.as_bool()) {
                 gc.enabled = v;
             }
-            if let Some(v) = s.get("claude_cli_path").and_then(|v| v.as_str()) {
-                gc.claude_cli_path = Some(v.to_string());
-            }
-            if let Some(v) = s.get("cache_enabled").and_then(|v| v.as_bool()) {
-                gc.cache_enabled = v;
-            }
-            if let Some(v) = s.get("pattern_learning").and_then(|v| v.as_bool()) {
-                gc.pattern_learning_enabled = v;
-            }
-            if let Some(v) = s.get("usage_tracking").and_then(|v| v.as_bool()) {
-                gc.usage_tracking_enabled = v;
-            }
-            if let Some(v) = s.get("fallback_on_failure").and_then(|v| v.as_bool()) {
-                gc.fallback_on_failure = v;
-            }
-
             // --- Embedding-based system configs ---
 
             // Gossip v2 config
@@ -1461,43 +1197,8 @@ impl GuardianConfig {
                 if let Some(v) = d.get("archive_after_hours").and_then(|v| v.as_f64()) { gc.decay.archive_after_hours = v; }
             }
 
-            // Alert thresholds
-            if let Some(a) = s.get("alerts").and_then(|v| v.as_object()) {
-                if let Some(v) = a.get("warning_after").and_then(|v| v.as_u64()) {
-                    gc.alert_thresholds.warning_after = v as u32;
-                }
-                if let Some(v) = a.get("critical_after").and_then(|v| v.as_u64()) {
-                    gc.alert_thresholds.critical_after = v as u32;
-                }
-                if let Some(v) = a.get("per_system_cooldown_secs").and_then(|v| v.as_u64()) {
-                    gc.alert_thresholds.per_system_cooldown_secs = v;
-                }
-            }
-
-            // Per-task model shortcuts (simple format: "extraction": "sonnet")
-            for (key, target) in [
-                ("extraction", &mut gc.extraction.llm.model),
-                ("coherence", &mut gc.coherence.llm.model),
-                ("reactivation", &mut gc.reactivation.llm.model),
-                ("synthesis", &mut gc.synthesis.llm.model),
-                ("label_suggestion", &mut gc.label_suggestion.llm.model),
-            ] {
-                if let Some(v) = s.get(key).and_then(|v| v.as_str()) {
-                    *target = parse_model(v);
-                }
-                // Nested format: "extraction": {"model": "sonnet", "timeout": 45}
-                if let Some(sub) = s.get(key).and_then(|v| v.as_object()) {
-                    if let Some(m) = sub.get("model").and_then(|v| v.as_str()) {
-                        *target = parse_model(m);
-                    }
-                }
-            }
-
             // Per-task detailed overrides
             if let Some(ext) = s.get("extraction").and_then(|v| v.as_object()) {
-                if let Some(v) = ext.get("timeout").and_then(|v| v.as_u64()) {
-                    gc.extraction.llm.timeout_secs = v;
-                }
                 if let Some(v) = ext.get("max_content_chars").and_then(|v| v.as_u64()) {
                     gc.extraction.max_content_chars = v as usize;
                 }
@@ -1516,11 +1217,6 @@ impl GuardianConfig {
                         }
                     }
                 }
-            }
-
-            // Legacy compat: "extraction_model" → extraction.model
-            if let Some(v) = s.get("extraction_model").and_then(|v| v.as_str()) {
-                gc.extraction.llm.model = parse_model(v);
             }
         }
 
@@ -1751,12 +1447,14 @@ mod tests {
     fn test_guardian_config_default_values() {
         let gc = GuardianConfig::default();
         assert!(gc.enabled);
-        assert_eq!(gc.extraction.llm.model, ClaudeModel::Haiku);
+        assert!(gc.extraction.llm.enabled);
         assert_eq!(gc.extraction.max_content_chars, 15000);
         assert_eq!(gc.coherence.child_threshold, 0.6);
         assert_eq!(gc.decay.thread_suspend_threshold, 0.1);
         assert_eq!(gc.engram.strong_inject_min_votes, 5);
         assert!(gc.guardcode.enabled);
+        assert_eq!(gc.llm_backend, LlmBackend::Local);
+        assert_eq!(gc.local_model_size, LocalModelSize::ThreeB);
     }
 
     #[test]
@@ -1788,5 +1486,121 @@ mod tests {
         for (i, val) in v.iter().enumerate() {
             assert!(*val > 0.0, "Validator weight V{} should be > 0, got {}", i + 1, val);
         }
+    }
+
+    // ========================================================================
+    // LocalModelSize tests
+    // ========================================================================
+
+    #[test]
+    fn test_local_model_size_default_is_three_b() {
+        assert_eq!(LocalModelSize::default(), LocalModelSize::ThreeB);
+    }
+
+    #[test]
+    fn test_local_model_size_filenames() {
+        assert_eq!(LocalModelSize::ThreeB.filename(), "qwen2.5-3b-instruct-q4_k_m.gguf");
+        assert_eq!(LocalModelSize::SevenB.filename(), "qwen2.5-7b-instruct-q4_k_m.gguf");
+        // Both must end in .gguf
+        assert!(LocalModelSize::ThreeB.filename().ends_with(".gguf"));
+        assert!(LocalModelSize::SevenB.filename().ends_with(".gguf"));
+    }
+
+    #[test]
+    fn test_local_model_size_download_urls() {
+        let url_3b = LocalModelSize::ThreeB.download_url();
+        let url_7b = LocalModelSize::SevenB.download_url();
+        // URLs must point to HuggingFace
+        assert!(url_3b.starts_with("https://huggingface.co/"));
+        assert!(url_7b.starts_with("https://huggingface.co/"));
+        // URLs must end with the correct filename
+        assert!(url_3b.ends_with(LocalModelSize::ThreeB.filename()));
+        assert!(url_7b.ends_with(LocalModelSize::SevenB.filename()));
+        // URLs must be different
+        assert_ne!(url_3b, url_7b);
+    }
+
+    #[test]
+    fn test_local_model_size_display_names() {
+        let name_3b = LocalModelSize::ThreeB.display_name();
+        let name_7b = LocalModelSize::SevenB.display_name();
+        assert!(name_3b.contains("3B"), "3B display name should mention 3B");
+        assert!(name_7b.contains("7B"), "7B display name should mention 7B");
+        assert!(name_3b.contains("Q4_K_M"), "display name should mention quantization");
+        assert!(name_7b.contains("Q4_K_M"), "display name should mention quantization");
+    }
+
+    #[test]
+    fn test_local_model_size_serde_roundtrip() {
+        let sizes = [LocalModelSize::ThreeB, LocalModelSize::SevenB];
+        for size in &sizes {
+            let json = serde_json::to_string(size).expect("serialize");
+            let back: LocalModelSize = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(&back, size, "serde roundtrip failed for {:?}", size);
+        }
+    }
+
+    // ========================================================================
+    // LlmBackend tests
+    // ========================================================================
+
+    #[test]
+    fn test_llm_backend_default_is_local() {
+        assert_eq!(LlmBackend::default(), LlmBackend::Local);
+    }
+
+    #[test]
+    fn test_llm_backend_serde_roundtrip() {
+        let backends = [LlmBackend::Local, LlmBackend::Claude, LlmBackend::LocalWithFallback];
+        for backend in &backends {
+            let json = serde_json::to_string(backend).expect("serialize");
+            let back: LlmBackend = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(&back, backend, "serde roundtrip failed for {:?}", backend);
+        }
+    }
+
+    #[test]
+    fn test_llm_backend_equality() {
+        assert_eq!(LlmBackend::Local, LlmBackend::Local);
+        assert_ne!(LlmBackend::Local, LlmBackend::Claude);
+        assert_ne!(LlmBackend::Claude, LlmBackend::LocalWithFallback);
+    }
+
+    // ========================================================================
+    // GuardianConfig — local LLM fields
+    // ========================================================================
+
+    #[test]
+    fn test_guardian_config_default_llm_backend() {
+        let gc = GuardianConfig::default();
+        assert_eq!(gc.llm_backend, LlmBackend::Local);
+        assert_eq!(gc.local_model_size, LocalModelSize::ThreeB);
+    }
+
+    #[test]
+    fn test_guardian_config_serde_with_local_model_fields() {
+        let mut gc = GuardianConfig::default();
+        gc.llm_backend = LlmBackend::LocalWithFallback;
+        gc.local_model_size = LocalModelSize::SevenB;
+
+        let json = serde_json::to_string(&gc).expect("serialize");
+        let back: GuardianConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.llm_backend, LlmBackend::LocalWithFallback);
+        assert_eq!(back.local_model_size, LocalModelSize::SevenB);
+    }
+
+    #[test]
+    fn test_guardian_config_serde_missing_local_fields_uses_defaults() {
+        // Serialize default config, strip llm_backend + local_model_size, deserialize
+        // → serde(default) should fill in the defaults for missing fields
+        let gc = GuardianConfig::default();
+        let json = serde_json::to_string(&gc).expect("serialize");
+        let mut v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        v.as_object_mut().unwrap().remove("llm_backend");
+        v.as_object_mut().unwrap().remove("local_model_size");
+        let json_without = serde_json::to_string(&v).expect("reserialize");
+        let gc2: GuardianConfig = serde_json::from_str(&json_without).expect("deserialize");
+        assert_eq!(gc2.llm_backend, LlmBackend::Local);
+        assert_eq!(gc2.local_model_size, LocalModelSize::ThreeB);
     }
 }

@@ -107,12 +107,11 @@ fn extract_via_llm(
     agent_context: Option<&str>,
 ) -> AiResult<Extraction> {
     let prompt = build_extraction_prompt(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context);
-    let model = extraction_cfg.llm.model.as_cli_flag();
 
-    match super::llm_subprocess::call_claude_with_model(&prompt, model) {
+    match super::llm_subprocess::call_claude(&prompt) {
         Ok(response) => parse_extraction_response(&response),
         Err(e) => {
-            tracing::warn!(model = %model, "LLM extraction failed: {}", e);
+            tracing::warn!("LLM extraction failed: {}", e);
             Err(e)
         }
     }
