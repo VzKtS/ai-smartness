@@ -506,12 +506,8 @@ fn build_pins_context(conn: &Connection, agent_data_dir: &Path) -> Option<String
     let mut ctx = String::from("Pinned content:\n");
     let mut count = 0;
 
-    // Source 1: threads with __pin__ tag
-    if let Ok(all) = ThreadStorage::list_active(conn) {
-        let pins: Vec<_> = all
-            .iter()
-            .filter(|t| t.tags.contains(&"__pin__".to_string()))
-            .collect();
+    // Source 1: threads with __pin__ tag (SQL-filtered, no full table scan)
+    if let Ok(pins) = ThreadStorage::search_by_labels(conn, &["__pin__".to_string()]) {
         for pin in pins.iter().take(5) {
             ctx.push_str(&format!("- {}", pin.title));
             if let Some(ref summary) = pin.summary {

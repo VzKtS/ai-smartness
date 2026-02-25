@@ -202,7 +202,23 @@ impl McpServer {
                 agent_id: &self.agent_id,
             };
             tracing::debug!(tool = %tool_name, "MCP tools/call dispatching");
-            tools::route_tool(tool_name, &arguments, &ctx)
+            let tool_name_owned = tool_name.to_string();
+            let arguments_owned = arguments.clone();
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tools::route_tool(&tool_name_owned, &arguments_owned, &ctx)
+            })) {
+                Ok(result) => result,
+                Err(_) => {
+                    tracing::error!(tool = %tool_name_owned, "Tool handler panicked");
+                    return JsonRpcResponse::success(
+                        id,
+                        serde_json::json!({
+                            "content": [{"type": "text", "text": format!("Internal error: tool '{}' panicked", tool_name_owned)}],
+                            "isError": true
+                        }),
+                    );
+                }
+            }
         };
         // Phase 1 done — ctx is dropped, no outstanding borrows on self.
 

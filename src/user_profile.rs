@@ -4,6 +4,7 @@
 //! Auto-detected from user messages in inject hook.
 //! Editable from GUI Settings > Profile tab.
 
+use std::collections::VecDeque;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ pub struct UserProfile {
     pub updated_at: String,
     pub identity: Identity,
     pub preferences: Preferences,
-    pub context_rules: Vec<String>,
+    pub context_rules: VecDeque<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +59,7 @@ impl Default for UserProfile {
                 emoji_usage: false,
                 technical_level: "intermediate".to_string(),
             },
-            context_rules: Vec::new(),
+            context_rules: VecDeque::new(),
         }
     }
 }
@@ -99,9 +100,9 @@ impl UserProfile {
         if self.context_rules.contains(&rule) {
             return false;
         }
-        self.context_rules.push(rule);
+        self.context_rules.push_back(rule);
         if self.context_rules.len() > MAX_CONTEXT_RULES {
-            self.context_rules.remove(0);
+            self.context_rules.pop_front();
         }
         true
     }

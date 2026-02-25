@@ -3,6 +3,7 @@
 //! Persisted as `{agent_data_dir}/session_state.json`.
 //! Updated by inject hook (on each prompt) and capture hook (on each tool use).
 
+use std::collections::VecDeque;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -20,13 +21,13 @@ pub struct SessionState {
     pub current_work: CurrentWork,
     /// Recently modified files (last 20)
     #[serde(default)]
-    pub files_modified: Vec<FileModification>,
+    pub files_modified: VecDeque<FileModification>,
     /// Pending tasks (max 10)
     #[serde(default)]
     pub pending_tasks: Vec<String>,
     /// Recent tool calls (last 50)
     #[serde(default)]
-    pub tool_history: Vec<ToolCall>,
+    pub tool_history: VecDeque<ToolCall>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -74,9 +75,9 @@ impl SessionState {
             last_activity: now,
             prompt_count: 0,
             current_work: CurrentWork::default(),
-            files_modified: Vec::new(),
+            files_modified: VecDeque::new(),
             pending_tasks: Vec::new(),
-            tool_history: Vec::new(),
+            tool_history: VecDeque::new(),
         }
     }
 
@@ -121,14 +122,14 @@ impl SessionState {
     /// Record a tool call (capture hook calls this).
     pub fn record_tool_call(&mut self, tool_name: &str, target: &str) {
         self.last_activity = Utc::now();
-        self.tool_history.push(ToolCall {
+        self.tool_history.push_back(ToolCall {
             tool: tool_name.to_string(),
             target: target[..target.len().min(100)].to_string(),
             at: Utc::now().format("%H:%M:%S").to_string(),
         });
         // Keep last N
         if self.tool_history.len() > MAX_TOOL_HISTORY {
-            self.tool_history.remove(0);
+            self.tool_history.pop_front();
         }
         // Track last agent action
         self.current_work.last_agent_action =
@@ -137,7 +138,7 @@ impl SessionState {
 
     /// Record a file modification (capture hook calls this for Edit/Write/Read).
     pub fn record_file_modification(&mut self, path: &str, action: &str, summary: &str) {
-        self.files_modified.push(FileModification {
+        self.files_modified.push_back(FileModification {
             path: path.to_string(),
             action: action.to_string(),
             timestamp: Utc::now().to_rfc3339(),
@@ -145,7 +146,7 @@ impl SessionState {
         });
         // Keep last N
         if self.files_modified.len() > MAX_FILES_MODIFIED {
-            self.files_modified.remove(0);
+            self.files_modified.pop_front();
         }
     }
 

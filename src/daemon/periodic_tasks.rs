@@ -369,7 +369,7 @@ fn run_prune_cycle(conn_mtx: &Mutex<Connection>, guardian: &GuardianConfig, agen
     // 10. SQLite checkpoint (WAL mode)
     run_task("wal_checkpoint", || {
         let Ok(conn) = conn_mtx.lock() else { return };
-        conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);").ok();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").ok();
     });
 }
 
