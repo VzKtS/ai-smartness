@@ -1050,7 +1050,7 @@ pub fn add_agent(
 }
 
 #[tauri::command]
-pub fn update_agent(
+pub async fn update_agent(
     project_hash: String,
     agent_id: String,
     name: Option<String>,
@@ -1076,7 +1076,6 @@ pub fn update_agent(
     let reg_path = path_utils::registry_db_path();
     let reg_conn = open_connection(&reg_path, ConnectionRole::Cli)
         .map_err(|e| e.to_string())?;
-    migrations::migrate_registry_db(&reg_conn).map_err(|e| e.to_string())?;
 
     // Determine coordination_mode from is_supervisor + supervisor_id
     let coordination_mode = match is_supervisor {
@@ -1135,19 +1134,28 @@ pub fn update_agent(
     let mut threads_suspended = 0u64;
     if let Some(ref mode_str) = thread_mode {
         tracing::info!(agent = %agent_id, thread_mode = %mode_str, "GUI: notifying daemon of thread_mode change");
-        match daemon_ipc_client::send_method("set_thread_mode", serde_json::json!({
-            "project_hash": project_hash,
-            "agent_id": agent_id,
-            "thread_mode": mode_str,
-        })) {
-            Ok(resp) => {
+        let ph = project_hash.clone();
+        let aid = agent_id.clone();
+        let ms = mode_str.clone();
+        let ipc_result = tauri::async_runtime::spawn_blocking(move || {
+            daemon_ipc_client::send_method("set_thread_mode", serde_json::json!({
+                "project_hash": ph,
+                "agent_id": aid,
+                "thread_mode": ms,
+            }))
+        }).await;
+        match ipc_result {
+            Ok(Ok(resp)) => {
                 threads_suspended = resp.get("threads_suspended")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
                 tracing::info!(agent = %agent_id, threads_suspended, "GUI: daemon updated thread_mode");
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(agent = %agent_id, error = %e, "GUI: daemon not available for thread_mode update (will apply on next capture)");
+            }
+            Err(_) => {
+                tracing::warn!(agent = %agent_id, "GUI: spawn_blocking panicked during daemon IPC");
             }
         }
     }

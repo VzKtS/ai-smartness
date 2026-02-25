@@ -115,20 +115,9 @@ pub fn send_method(method: &str, params: serde_json::Value) -> AiResult<serde_js
     call_daemon(method, params)
 }
 
-/// Generic IPC call to the daemon (cross-platform via interprocess).
-fn call_daemon(method: &str, params: serde_json::Value) -> AiResult<serde_json::Value> {
+/// Inner IPC call — connect, write, read, parse. Runs in a dedicated thread.
+fn do_ipc_call(sock_path: std::path::PathBuf, request_json: String) -> AiResult<serde_json::Value> {
     use interprocess::local_socket::{prelude::*, GenericFilePath};
-
-    let sock_path = socket_path();
-
-    // On Unix, check if socket file exists; on Windows named pipes don't create files
-    #[cfg(unix)]
-    if !sock_path.exists() {
-        return Err(AiError::Provider(format!(
-            "Daemon socket not found: {}. Is the daemon running?",
-            sock_path.display()
-        )));
-    }
 
     let name = sock_path
         .to_fs_name::<GenericFilePath>()
@@ -136,15 +125,6 @@ fn call_daemon(method: &str, params: serde_json::Value) -> AiResult<serde_json::
 
     let mut stream = interprocess::local_socket::Stream::connect(name)
         .map_err(|e| AiError::Provider(format!("Failed to connect to daemon: {}", e)))?;
-
-    let request = IpcRequest {
-        jsonrpc: "2.0",
-        method,
-        params,
-        id: 1,
-    };
-
-    let request_json = serde_json::to_string(&request).map_err(AiError::Serialization)?;
 
     // Send request
     stream
@@ -174,4 +154,36 @@ fn call_daemon(method: &str, params: serde_json::Value) -> AiResult<serde_json::
     Ok(response
         .result
         .unwrap_or(serde_json::Value::Object(Default::default())))
+}
+
+/// Generic IPC call to the daemon — guarded by a 5s timeout via thread + channel.
+fn call_daemon(method: &str, params: serde_json::Value) -> AiResult<serde_json::Value> {
+    use std::time::Duration;
+
+    let sock_path = socket_path();
+
+    // On Unix, check if socket file exists; on Windows named pipes don't create files
+    #[cfg(unix)]
+    if !sock_path.exists() {
+        return Err(AiError::Provider(format!(
+            "Daemon socket not found: {}. Is the daemon running?",
+            sock_path.display()
+        )));
+    }
+
+    let request = IpcRequest {
+        jsonrpc: "2.0",
+        method,
+        params,
+        id: 1,
+    };
+    let request_json = serde_json::to_string(&request).map_err(AiError::Serialization)?;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tx.send(do_ipc_call(sock_path, request_json)).ok();
+    });
+
+    rx.recv_timeout(Duration::from_secs(5))
+        .map_err(|_| AiError::Provider("Daemon IPC timeout after 5s".into()))?
 }
