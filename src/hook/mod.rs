@@ -3,6 +3,7 @@ pub mod compact;
 pub mod health;
 pub mod inject;
 pub mod pretool;
+pub mod response;
 pub mod setup;
 pub mod virtual_paths;
 
@@ -14,6 +15,7 @@ pub enum HookAction {
     Capture { project_hash: String, agent_id: Option<String> },
     Health { project_hash: String, agent_id: Option<String> },
     PreTool { project_hash: String, agent_id: Option<String> },
+    Stop { project_hash: String, agent_id: Option<String> },
 }
 
 /// Run hook action. CRITICAL: Always exits 0, even on panic.
@@ -50,6 +52,7 @@ pub fn run(action: HookAction) {
             HookAction::Capture { project_hash, .. } => (project_hash.clone(), "capture"),
             HookAction::Health { project_hash, .. } => (project_hash.clone(), "health"),
             HookAction::PreTool { project_hash, .. } => (project_hash.clone(), "pretool"),
+            HookAction::Stop { project_hash, .. } => (project_hash.clone(), "stop"),
         };
         ai_smartness::tracing_init::init_file_tracing(&project_hash_for_tracing);
 
@@ -189,6 +192,11 @@ pub fn run(action: HookAction) {
                 let agent = resolve_agent(agent_id, project_hash);
                 tracing::info!(agent = %agent, "Dispatching pretool");
                 pretool::run(project_hash, &agent, &input);
+            }
+            HookAction::Stop { project_hash, agent_id } => {
+                let agent = resolve_agent(agent_id, project_hash);
+                tracing::info!(agent = %agent, "Dispatching stop (response capture)");
+                response::run(project_hash, &agent, &input);
             }
         }
 

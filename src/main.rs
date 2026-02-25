@@ -188,6 +188,13 @@ enum HookAction {
         /// Agent ID (auto-detected if not specified)
         agent_id: Option<String>,
     },
+    /// Stop hook — capture agent response
+    Stop {
+        /// Project hash
+        project_hash: String,
+        /// Agent ID (auto-detected if not specified)
+        agent_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -274,6 +281,9 @@ fn main() {
                 }
                 HookAction::Pretool { project_hash, agent_id } => {
                     hook::HookAction::PreTool { project_hash, agent_id }
+                }
+                HookAction::Stop { project_hash, agent_id } => {
+                    hook::HookAction::Stop { project_hash, agent_id }
                 }
             };
             hook::run(hook_action);

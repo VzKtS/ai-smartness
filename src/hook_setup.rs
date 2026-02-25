@@ -15,7 +15,7 @@ pub const LEGACY_WILDCARDS: &[&str] = &["mcp__mcp-smartness__*"];
 ///
 /// - Creates `.claude/` directory if absent.
 /// - Merges into existing `settings.json` (preserves other keys).
-/// - Overwrites only `hooks.UserPromptSubmit` and `hooks.PostToolUse`.
+/// - Overwrites `hooks.UserPromptSubmit`, `hooks.PostToolUse`, `hooks.PreToolUse`, and `hooks.Stop`.
 pub fn install_claude_hooks(project_path: &Path, project_hash: &str) -> Result<()> {
     let claude_dir = project_path.join(".claude");
     if !claude_dir.exists() {
@@ -44,6 +44,7 @@ pub fn install_claude_hooks(project_path: &Path, project_hash: &str) -> Result<(
     let inject_cmd = format!("{} hook inject {}", bin_path, project_hash);
     let capture_cmd = format!("{} hook capture {}", bin_path, project_hash);
     let pretool_cmd = format!("{} hook pretool {}", bin_path, project_hash);
+    let stop_cmd = format!("{} hook stop {}", bin_path, project_hash);
 
     // Build hook entries — Claude Code expects nested { hooks: [...] } format
     let inject_hook = serde_json::json!([{
@@ -65,6 +66,12 @@ pub fn install_claude_hooks(project_path: &Path, project_hash: &str) -> Result<(
             "command": pretool_cmd
         }]
     }]);
+    let stop_hook = serde_json::json!([{
+        "hooks": [{
+            "type": "command",
+            "command": stop_cmd
+        }]
+    }]);
 
     // Merge into settings.hooks
     let hooks = settings
@@ -81,6 +88,7 @@ pub fn install_claude_hooks(project_path: &Path, project_hash: &str) -> Result<(
     hooks_obj.insert("UserPromptSubmit".to_string(), inject_hook);
     hooks_obj.insert("PostToolUse".to_string(), capture_hook);
     hooks_obj.insert("PreToolUse".to_string(), pretool_hook);
+    hooks_obj.insert("Stop".to_string(), stop_hook);
 
     // Merge allowedTools — wildcards so agents don't need manual approval for MCP tools
     let permissions = settings
