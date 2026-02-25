@@ -362,6 +362,7 @@ mod tests {
                 work_context: None,
                 injection_stats: None,
                 embedding: None,
+                extraction_mode: crate::processing::extractor::ExtractionMode::default(),
                 created_at: chrono::Utc::now(),
                 last_active: chrono::Utc::now(),
             };

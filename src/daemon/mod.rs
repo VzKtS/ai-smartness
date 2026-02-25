@@ -3,6 +3,8 @@ pub mod connection_pool;
 pub mod controller;
 pub mod ipc_server;
 pub mod periodic_tasks;
+pub mod pool_processor;
+pub mod pool_writer;
 pub mod processor;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -147,6 +149,15 @@ pub fn run() {
         })
     };
 
+    // Start pool consumer thread (processes .pending files at LLM speed)
+    let pool_consumer_handle = {
+        let pool = pool.clone();
+        let running = running.clone();
+        std::thread::spawn(move || {
+            periodic_tasks::run_pool_consumer_loop(pool, running);
+        })
+    };
+
     // Start controller loop thread (CLI-first fallback injection)
     let controller_handle = {
         let running = running.clone();
@@ -187,6 +198,7 @@ pub fn run() {
     // Wait for threads
     let _ = ipc_handle.join();
     let _ = prune_handle.join();
+    let _ = pool_consumer_handle.join();
     let _ = controller_handle.join();
     let _ = init_handle.join();
 

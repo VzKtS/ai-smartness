@@ -2,6 +2,7 @@ use crate::time_utils;
 use crate::thread::{
     InjectionStats, OriginType, Thread, ThreadMessage, ThreadStatus, WorkContext,
 };
+use crate::processing::extractor::ExtractionMode;
 use crate::{AiError, AiResult};
 use rusqlite::{params, Connection, Row};
 
@@ -25,6 +26,7 @@ fn thread_from_row(row: &Row) -> rusqlite::Result<Thread> {
     let injection_stats_json: Option<String> = row.get("injection_stats")?;
     let embedding_blob: Option<Vec<u8>> = row.get("embedding")?;
     let split_locked_until_str: Option<String> = row.get("split_locked_until")?;
+    let extraction_mode_str: String = row.get("extraction_mode").unwrap_or_else(|_| "extract".to_string());
 
     Ok(Thread {
         id: row.get("id")?,
@@ -64,6 +66,10 @@ fn thread_from_row(row: &Row) -> rusqlite::Result<Thread> {
         created_at: time_utils::from_sqlite(&created_str).unwrap_or_else(|_| chrono::Utc::now()),
         last_active: time_utils::from_sqlite(&last_active_str)
             .unwrap_or_else(|_| chrono::Utc::now()),
+        extraction_mode: match extraction_mode_str.as_str() {
+            "verbatim" => ExtractionMode::Verbatim,
+            _ => ExtractionMode::Extract,
+        },
     })
 }
 
@@ -101,14 +107,14 @@ impl ThreadStorage {
                 activation_count, split_locked, split_locked_until,
                 topics, tags, labels, concepts, drift_history,
                 work_context, ratings, injection_stats, embedding,
-                created_at, last_active
+                created_at, last_active, extraction_mode
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11,
                 ?12, ?13, ?14,
                 ?15, ?16, ?17, ?18, ?19,
                 ?20, ?21, ?22, ?23,
-                ?24, ?25
+                ?24, ?25, ?26
             )",
             params![
                 thread.id,
@@ -144,6 +150,10 @@ impl ThreadStorage {
                 embedding_blob,
                 time_utils::to_sqlite(&thread.created_at),
                 time_utils::to_sqlite(&thread.last_active),
+                match thread.extraction_mode {
+                    ExtractionMode::Verbatim => "verbatim",
+                    ExtractionMode::Extract => "extract",
+                },
             ],
         )
         .map_err(|e| AiError::Storage(format!("Insert thread failed: {}", e)))?;
@@ -181,7 +191,7 @@ impl ThreadStorage {
                 topics = ?15, tags = ?16, labels = ?17, concepts = ?18,
                 drift_history = ?19,
                 work_context = ?20, ratings = ?21, injection_stats = ?22,
-                embedding = ?23, last_active = ?24
+                embedding = ?23, last_active = ?24, extraction_mode = ?25
             WHERE id = ?1",
             params![
                 thread.id,
@@ -216,6 +226,10 @@ impl ThreadStorage {
                     .and_then(|is| serde_json::to_string(is).ok()),
                 embedding_blob,
                 time_utils::to_sqlite(&thread.last_active),
+                match thread.extraction_mode {
+                    ExtractionMode::Verbatim => "verbatim",
+                    ExtractionMode::Extract => "extract",
+                },
             ],
         )
         .map_err(|e| AiError::Storage(format!("Update thread failed: {}", e)))?;
@@ -721,6 +735,7 @@ impl<T> OptionalExt<T> for Result<T, rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processing::extractor::ExtractionMode;
     use crate::test_helpers::{setup_agent_db, ThreadBuilder, ThreadMessageBuilder};
 
     #[test]
@@ -982,5 +997,49 @@ mod tests {
         assert!(ids.contains(&"pin2"), "pin2 missing");
         assert!(!ids.contains(&"other1"), "other1 must not appear");
         assert!(!ids.contains(&"other2"), "other2 must not appear");
+    }
+
+    #[test]
+    fn test_thread_extraction_mode_insert_and_get() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("em-test")
+            .title("Extraction mode test")
+            .extraction_mode(ExtractionMode::Verbatim)
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        let got = ThreadStorage::get(&conn, "em-test").unwrap().unwrap();
+        assert_eq!(got.extraction_mode, ExtractionMode::Verbatim);
+    }
+
+    #[test]
+    fn test_thread_extraction_mode_default_is_extract() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("em-default")
+            .title("Default mode")
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        let got = ThreadStorage::get(&conn, "em-default").unwrap().unwrap();
+        assert_eq!(got.extraction_mode, ExtractionMode::Extract);
+    }
+
+    #[test]
+    fn test_thread_extraction_mode_update() {
+        let conn = setup_agent_db();
+        let mut thread = ThreadBuilder::new()
+            .id("em-update")
+            .title("Update mode")
+            .extraction_mode(ExtractionMode::Extract)
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        thread.extraction_mode = ExtractionMode::Verbatim;
+        ThreadStorage::update(&conn, &thread).unwrap();
+
+        let got = ThreadStorage::get(&conn, "em-update").unwrap().unwrap();
+        assert_eq!(got.extraction_mode, ExtractionMode::Verbatim);
     }
 }

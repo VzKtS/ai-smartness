@@ -258,6 +258,7 @@ impl ThreadManager {
             ratings: vec![],
             work_context,
             injection_stats: None,
+            extraction_mode: extraction.extraction_mode.clone(),
         };
 
         ThreadStorage::insert(conn, &thread)?;

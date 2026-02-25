@@ -25,7 +25,9 @@ use ai_smartness::storage::threads::ThreadStorage;
 use ai_smartness::thread::Thread;
 use rusqlite::Connection;
 
-use super::connection_pool::ConnectionPool;
+use super::connection_pool::{ConnectionPool, AgentKey};
+use super::pool_processor;
+use super::pool_writer;
 
 /// Run a single periodic task inside catch_unwind for panic isolation.
 /// Uses AssertUnwindSafe because rusqlite::Connection is not RefUnwindSafe
@@ -81,11 +83,28 @@ pub fn run_prune_loop(
                     continue;
                 }
 
-                // 0. Beat increment (no DB needed — filesystem only)
+                // 0. Beat increment + backpressure auto-clear (no DB needed — filesystem only)
                 run_task("beat", || {
                     let data_dir = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
                     let mut beat = BeatState::load(&data_dir);
                     beat.increment();
+                    // Auto-clear backpressure if stale (> 10 min safety timeout)
+                    if beat.processing_backpressure {
+                        if let Some(ref since) = beat.backpressure_since {
+                            if let Ok(t) = since.parse::<chrono::DateTime<chrono::Utc>>() {
+                                let age_secs = (chrono::Utc::now() - t).num_seconds();
+                                if age_secs > 600 {
+                                    beat.processing_backpressure = false;
+                                    beat.backpressure_since = None;
+                                    tracing::info!(
+                                        agent = %key.agent_id,
+                                        age_secs,
+                                        "Backpressure auto-cleared (>10min timeout)"
+                                    );
+                                }
+                            }
+                        }
+                    }
                     beat.save(&data_dir);
                     tracing::debug!(
                         agent = %key.agent_id,
@@ -222,6 +241,146 @@ pub fn run_prune_loop(
     }
 
     tracing::info!("Prune loop stopped");
+}
+
+/// Pool consumer loop — processes .pending pool files at LLM speed.
+/// Runs every 10s, separate from the prune loop (which runs every 5 min).
+/// Workers write captures to pool instantly; this thread processes them.
+pub fn run_pool_consumer_loop(
+    pool: Arc<ConnectionPool>,
+    running: Arc<AtomicBool>,
+) {
+    const POOL_SCAN_INTERVAL_SECS: u64 = 10;
+    let interval = Duration::from_secs(POOL_SCAN_INTERVAL_SECS);
+
+    while running.load(Ordering::Relaxed) {
+        std::thread::sleep(interval);
+        if !running.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let keys = pool.active_keys();
+        for key in &keys {
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
+            if pool.is_locked(key) {
+                continue;
+            }
+
+            let agent_data = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
+            let pool_dir = agent_data.join("pool");
+            if !pool_dir.exists() {
+                continue;
+            }
+
+            // Quick check: any .pending files?
+            let has_pending = std::fs::read_dir(&pool_dir)
+                .ok()
+                .map(|mut entries| {
+                    entries.any(|e| {
+                        e.ok()
+                            .map(|e| {
+                                e.path()
+                                    .extension()
+                                    .map(|x| x == "pending")
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+            if !has_pending {
+                continue;
+            }
+
+            // Get connection + pending context from pool
+            let conn = match pool.get_or_open(key) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(agent = %key.agent_id, error = %e, "Pool consumer: connection error");
+                    continue;
+                }
+            };
+            let conn_guard = match conn.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    tracing::warn!(agent = %key.agent_id, "Pool consumer: connection mutex poisoned");
+                    pool.force_evict(key);
+                    continue;
+                }
+            };
+            let pending_arc = match pool.get_pending(key) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let mut pending_guard = match pending_arc.lock() {
+                Ok(g) => g,
+                Err(poison) => poison.into_inner(),
+            };
+
+            let guardian = {
+                let cfg_path = path_utils::data_dir().join("config.json");
+                std::fs::read_to_string(&cfg_path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<GuardianConfig>(&s).ok())
+                    .unwrap_or_default()
+            };
+            let thread_quota = pool.get_thread_quota(key);
+
+            match pool_processor::process_pending_files(
+                &pool_dir,
+                &conn_guard,
+                &mut pending_guard,
+                thread_quota,
+                &guardian,
+            ) {
+                Ok(n) if n > 0 => {
+                    tracing::info!(
+                        agent = %key.agent_id,
+                        captures = n,
+                        "Pool consumer: processed"
+                    );
+                    clear_backpressure(key);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        agent = %key.agent_id,
+                        error = %e,
+                        "Pool consumer: processing error"
+                    );
+                    set_backpressure(key);
+                }
+            }
+        }
+    }
+
+    tracing::info!("Pool consumer loop stopped");
+}
+
+/// Signal backpressure ON via BeatState.
+fn set_backpressure(key: &AgentKey) {
+    let agent_data = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
+    let mut beat = BeatState::load(&agent_data);
+    if !beat.processing_backpressure {
+        beat.processing_backpressure = true;
+        beat.backpressure_since = Some(chrono::Utc::now().to_rfc3339());
+        beat.save(&agent_data);
+        tracing::info!(agent = %key.agent_id, "Backpressure ON: pool processing failed");
+    }
+}
+
+/// Clear backpressure via BeatState.
+fn clear_backpressure(key: &AgentKey) {
+    let agent_data = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
+    let mut beat = BeatState::load(&agent_data);
+    if beat.processing_backpressure {
+        beat.processing_backpressure = false;
+        beat.backpressure_since = None;
+        beat.save(&agent_data);
+        tracing::info!(agent = %key.agent_id, "Backpressure OFF: pool processing succeeded");
+    }
 }
 
 /// Single prune cycle for one agent — each task acquires/releases the lock
@@ -379,6 +538,18 @@ fn run_prune_cycle(conn_mtx: &Mutex<Connection>, guardian: &GuardianConfig, agen
             .checked_sub(std::time::Duration::from_secs(48 * 3600))
             .unwrap_or(std::time::UNIX_EPOCH);
         gc_session_agents(&dir, cutoff);
+    });
+
+    // 12. Pool .done cleanup: remove processed pool files
+    run_task("pool_done_cleanup", || {
+        let pool_dir = agent_data_dir.join("pool");
+        if pool_dir.exists() {
+            match pool_writer::cleanup_done_files(&pool_dir, guardian.capture.pool.cleanup_interval_secs) {
+                Ok(n) if n > 0 => tracing::info!(cleaned = n, "Pool .done cleanup"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "Pool .done cleanup failed"),
+            }
+        }
     });
 }
 

@@ -183,6 +183,14 @@ pub fn migrate_agent_db(conn: &Connection) -> AiResult<()> {
         set_schema_version(conn, 5)?;
     }
 
+    // V6: add extraction_mode column to threads (verbatim vs extract)
+    if version < 6 {
+        conn.execute_batch(
+            "ALTER TABLE threads ADD COLUMN extraction_mode TEXT DEFAULT 'extract';"
+        ).map_err(|e| AiError::Storage(format!("Agent DB V6 migration failed: {}", e)))?;
+        set_schema_version(conn, 6)?;
+    }
+
     Ok(())
 }
 
@@ -471,6 +479,40 @@ pub fn migrate_registry_db(conn: &Connection) -> AiResult<()> {
 mod tests {
     use super::*;
     use crate::test_helpers::setup_registry_db;
+
+    #[test]
+    fn test_agent_db_v6_extraction_mode_column() {
+        let conn = crate::test_helpers::setup_agent_db();
+        let version = get_schema_version(&conn).unwrap();
+        assert!(version >= 6);
+
+        conn.execute(
+            "INSERT INTO threads (id, title, status, extraction_mode, created_at, last_active) \
+             VALUES ('v6test', 'Test', 'active', 'verbatim', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let mode: String = conn.query_row(
+            "SELECT extraction_mode FROM threads WHERE id = 'v6test'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(mode, "verbatim");
+    }
+
+    #[test]
+    fn test_agent_db_v6_default_is_extract() {
+        let conn = crate::test_helpers::setup_agent_db();
+
+        conn.execute(
+            "INSERT INTO threads (id, title, status, created_at, last_active) \
+             VALUES ('old-thread', 'Old', 'active', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+
+        let mode: String = conn.query_row(
+            "SELECT extraction_mode FROM threads WHERE id = 'old-thread'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(mode, "extract", "Pre-existing threads should default to 'extract'");
+    }
 
     #[test]
     fn test_registry_v4_columns_exist() {

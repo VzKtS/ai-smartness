@@ -56,6 +56,7 @@ pub fn handle_thread_create(
         work_context: None,
         injection_stats: None,
         embedding: None,
+        extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
         created_at: now,
         last_active: now,
     };
@@ -659,6 +660,7 @@ mod tests {
                 work_context: None,
                 injection_stats: None,
                 embedding: None,
+                extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
                 created_at: chrono::Utc::now(),
                 last_active: chrono::Utc::now(),
             };
@@ -744,6 +746,7 @@ mod tests {
             work_context: None,
             injection_stats: None,
             embedding: None,
+            extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
             created_at: chrono::Utc::now(),
             last_active: chrono::Utc::now(),
         };
@@ -796,6 +799,7 @@ mod tests {
             work_context: None,
             injection_stats: None,
             embedding: None,
+            extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
             created_at: chrono::Utc::now(),
             last_active: chrono::Utc::now(),
         };
@@ -848,6 +852,7 @@ mod tests {
             work_context: None,
             injection_stats: None,
             embedding: None,
+            extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
             created_at: chrono::Utc::now(),
             last_active: chrono::Utc::now(),
         };

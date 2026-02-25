@@ -902,6 +902,33 @@ pub struct CaptureConfig {
     /// Per-tool capture toggles.
     #[serde(default)]
     pub tools: CaptureToolToggles,
+    /// Pool batching configuration.
+    #[serde(default)]
+    pub pool: PoolConfig,
+}
+
+/// Pool file system configuration — batching captures before processing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolConfig {
+    /// Max lines per pool file before sealing (.pending).
+    pub max_lines_per_file: usize,
+    /// Max bytes per pool file before sealing.
+    pub max_bytes_per_file: usize,
+    /// Max age in seconds before forced seal.
+    pub max_age_secs: u64,
+    /// Interval for .done cleanup (seconds).
+    pub cleanup_interval_secs: u64,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            max_lines_per_file: 20,
+            max_bytes_per_file: 512_000,  // 512 KB
+            max_age_secs: 120,            // 2 min
+            cleanup_interval_secs: 300,   // 5 min
+        }
+    }
 }
 
 
@@ -913,15 +940,15 @@ pub struct CaptureToolToggles {
     pub edit: bool,
     #[serde(default = "default_true")]
     pub write: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub bash: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub grep: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub glob: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub web_fetch: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub web_search: bool,
     #[serde(default = "default_true")]
     pub task: bool,
@@ -935,11 +962,11 @@ impl Default for CaptureToolToggles {
             read: true,
             edit: true,
             write: true,
-            bash: true,
-            grep: true,
-            glob: true,
-            web_fetch: true,
-            web_search: true,
+            bash: false,       // noisy — binary output, low semantic value
+            grep: false,       // noisy — search results, low semantic value
+            glob: false,       // noisy — file listings
+            web_fetch: false,  // noisy — large web content
+            web_search: false, // noisy — search results
             task: true,
             notebook_edit: true,
         }
@@ -966,6 +993,10 @@ impl CaptureToolToggles {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_false() -> bool {
+    false
 }
 
 
@@ -1458,12 +1489,31 @@ mod tests {
     }
 
     #[test]
-    fn test_capture_tool_toggles() {
+    fn test_capture_tool_toggles_noisy_disabled_by_default() {
         let toggles = CaptureToolToggles::default();
+        // Quiet tools: enabled
         assert!(toggles.is_enabled("Read"));
-        assert!(toggles.is_enabled("Bash"));
-        // Unknown tools default to enabled
+        assert!(toggles.is_enabled("Edit"));
+        assert!(toggles.is_enabled("Write"));
+        assert!(toggles.is_enabled("Task"));
+        assert!(toggles.is_enabled("NotebookEdit"));
+        // Noisy tools: disabled
+        assert!(!toggles.is_enabled("Bash"));
+        assert!(!toggles.is_enabled("Grep"));
+        assert!(!toggles.is_enabled("Glob"));
+        assert!(!toggles.is_enabled("WebFetch"));
+        assert!(!toggles.is_enabled("WebSearch"));
+        // Unknown tools still default to enabled
         assert!(toggles.is_enabled("UnknownTool"));
+    }
+
+    #[test]
+    fn test_pool_config_defaults() {
+        let cfg = PoolConfig::default();
+        assert_eq!(cfg.max_lines_per_file, 20);
+        assert_eq!(cfg.max_bytes_per_file, 512_000);
+        assert_eq!(cfg.max_age_secs, 120);
+        assert_eq!(cfg.cleanup_interval_secs, 300);
     }
 
     #[test]

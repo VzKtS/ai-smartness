@@ -1,15 +1,32 @@
 //! Extraction — LLM-based content extraction.
 //!
-//! Uses Guardian (claude subprocess) to extract structured metadata from raw content.
+//! Uses local LLM to extract structured metadata from raw content.
 //! Config-driven: model, truncation, prompt quality all from GuardianConfig.
-//! Fallback: heuristic extraction when LLM unavailable.
+//! No heuristic fallback — quality over quantity.
 
 use crate::config::{ExtractionConfig, ImportanceRatingConfig, LabelSuggestionConfig};
 use crate::constants::truncate_safe;
 use crate::AiResult;
 use serde::{Deserialize, Serialize};
 
-/// Extraction result from LLM or heuristics.
+/// How a thread's content was processed by the LLM.
+/// No Heuristic variant — heuristic fallback is removed entirely.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub enum ExtractionMode {
+    /// LLM returned content verbatim (short, already readable)
+    Verbatim,
+    /// LLM synthesized/extracted structured metadata
+    #[default]
+    Extract,
+}
+
+/// Parsed LLM extraction result — includes action decision.
+pub enum ExtractionResult {
+    Skip,
+    Extracted(Extraction),
+}
+
+/// Extraction result from LLM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Extraction {
     pub title: String,
@@ -20,6 +37,9 @@ pub struct Extraction {
     #[serde(default)]
     pub concepts: Vec<String>,
     pub importance: f64,
+    /// How the LLM processed this content.
+    #[serde(default)]
+    pub extraction_mode: ExtractionMode,
 }
 
 /// Source type for extraction prompts.
@@ -60,8 +80,9 @@ impl ExtractionSource {
     }
 }
 
-/// Extract structured data from content using LLM subprocess.
-/// Falls back to heuristic extraction if LLM call fails.
+/// Extract structured data from content using LLM.
+/// Returns None if LLM decides to skip or if extraction fails.
+/// No heuristic fallback — quality over quantity.
 ///
 /// `agent_context` — optional recent context from the agent's activity.
 /// Used ONLY for importance scoring (Step 2), never for classification (Step 1).
@@ -72,32 +93,34 @@ pub fn extract(
     label_cfg: &LabelSuggestionConfig,
     importance_cfg: &ImportanceRatingConfig,
     agent_context: Option<&str>,
-) -> AiResult<Extraction> {
+) -> AiResult<Option<Extraction>> {
     if !extraction_cfg.llm.enabled {
-        let extraction = extract_heuristic(content);
-        tracing::info!(mode = "heuristic", title = %extraction.title, "Extraction (LLM disabled)");
-        return Ok(extraction);
+        tracing::info!(mode = "disabled", "Extraction: LLM disabled, skipping");
+        return Ok(None);
     }
 
     match extract_via_llm(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context) {
-        Ok(mut extraction) => {
+        Ok(ExtractionResult::Skip) => {
+            tracing::info!(mode = "llm_skip", "Extraction: LLM decided to skip");
+            Ok(None)
+        }
+        Ok(ExtractionResult::Extracted(mut extraction)) => {
             // Prompt and Response: override summary with verbatim content (truncated).
             // These are already human-readable — LLM synthesis only degrades them.
             if matches!(source, ExtractionSource::Prompt | ExtractionSource::Response) {
                 extraction.summary = truncate_safe(content, crate::constants::VERBATIM_SUMMARY_LIMIT).to_string();
             }
             tracing::info!(mode = "llm", title = %extraction.title, confidence = extraction.confidence, "Extraction complete");
-            Ok(extraction)
+            Ok(Some(extraction))
         }
-        Err(_) => {
-            let extraction = extract_heuristic(content);
-            tracing::info!(mode = "heuristic", title = %extraction.title, confidence = extraction.confidence, "Extraction complete (fallback)");
-            Ok(extraction)
+        Err(e) => {
+            tracing::warn!("LLM extraction failed: {} — dropping capture (no heuristic fallback)", e);
+            Ok(None)
         }
     }
 }
 
-/// LLM-based extraction via claude subprocess.
+/// LLM-based extraction via local LLM.
 fn extract_via_llm(
     content: &str,
     source: ExtractionSource,
@@ -105,7 +128,7 @@ fn extract_via_llm(
     label_cfg: &LabelSuggestionConfig,
     importance_cfg: &ImportanceRatingConfig,
     agent_context: Option<&str>,
-) -> AiResult<Extraction> {
+) -> AiResult<ExtractionResult> {
     let prompt = build_extraction_prompt(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context);
 
     match super::llm_subprocess::call_claude(&prompt) {
@@ -114,51 +137,6 @@ fn extract_via_llm(
             tracing::warn!("LLM extraction failed: {}", e);
             Err(e)
         }
-    }
-}
-
-/// Heuristic fallback extraction — no LLM needed.
-fn extract_heuristic(content: &str) -> Extraction {
-    tracing::debug!(content_len = content.len(), "Heuristic extraction");
-    let clean = super::cleaner::clean_text(content);
-    let words: Vec<&str> = clean.split_whitespace().collect();
-
-    // Title: first ~60 chars
-    let title = if clean.chars().count() > 60 {
-        let t: String = clean.chars().take(57).collect();
-        format!("{}...", t)
-    } else {
-        clean.clone()
-    };
-
-    // Topics from cleaner
-    let subjects = super::cleaner::extract_topics(content);
-
-    // Summary: first 200 chars
-    let summary = if clean.chars().count() > 200 {
-        let s: String = clean.chars().take(197).collect();
-        format!("{}...", s)
-    } else {
-        clean.clone()
-    };
-
-    // Simple importance heuristic
-    let importance = if words.len() > 100 {
-        0.6
-    } else if words.len() > 30 {
-        0.5
-    } else {
-        0.4
-    };
-
-    Extraction {
-        title,
-        subjects,
-        summary,
-        confidence: 0.3,
-        labels: vec![],
-        concepts: vec![],
-        importance,
     }
 }
 
@@ -206,6 +184,13 @@ Higher alignment = higher importance. No alignment does NOT mean low importance 
 
     format!(
         r#"Your role is to process the content provided to you in order to extract only the text that are humanly understandable.
+        Follow these rules:
+        1. If not humanly comprehensible = skip
+        2. If the number of humanly comprehensible characters is less than 150 characters = skip
+        3. If the humanly comprehensible ratio is less than 20% of the capture = skip
+        4. If the humanly comprehensible ratio is less than 50% of the capture = verbatim
+        5. If the number of humanly comprehensible characters is greater than 150 characters and less than 500 = verbatim
+        6. If the number of humanly comprehensible characters is greater than or equal to 500 characters = extract
 
 ## ÉTAPE 1 — Classification (analysez le contenu ci-dessous, SANS contexte externe)
 
@@ -260,7 +245,9 @@ Acquisition source: {source_type}
 
 
 ## Output (JSON only, no markdown, no explanation)
-{{"title":"...","subjects":["..."],"summary":"...","confidence":0.0,"labels":["..."],"concepts":["..."],"importance":0.0}}"#,
+If action is "skip": {{"action":"skip"}}
+If action is "verbatim" or "extract":
+{{"action":"verbatim|extract","title":"...","subjects":["..."],"summary":"...","confidence":0.0,"labels":["..."],"concepts":["..."],"importance":0.0}}"#,
         noise_words = noise_words.join(", "),
         label_hint = label_hint,
         source_type = source.as_str(),
@@ -275,7 +262,7 @@ Acquisition source: {source_type}
     )
 }
 
-fn parse_extraction_response(response: &str) -> AiResult<Extraction> {
+fn parse_extraction_response(response: &str) -> AiResult<ExtractionResult> {
     // Try to find JSON in response
     let json_str = if let Some(start) = response.find('{') {
         if let Some(end) = response.rfind('}') {
@@ -287,7 +274,107 @@ fn parse_extraction_response(response: &str) -> AiResult<Extraction> {
         response
     };
 
-    serde_json::from_str(json_str).map_err(|e| {
-        crate::AiError::InvalidInput(format!("Failed to parse extraction: {}", e))
-    })
+    let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
+        crate::AiError::InvalidInput(format!("Failed to parse extraction JSON: {}", e))
+    })?;
+
+    // Check action field (skip/verbatim/extract)
+    let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("extract");
+
+    if action == "skip" {
+        return Ok(ExtractionResult::Skip);
+    }
+
+    let extraction_mode = match action {
+        "verbatim" => ExtractionMode::Verbatim,
+        _ => ExtractionMode::Extract,
+    };
+
+    // Parse the extraction fields
+    let mut extraction: Extraction = serde_json::from_value(value).map_err(|e| {
+        crate::AiError::InvalidInput(format!("Failed to parse extraction fields: {}", e))
+    })?;
+    extraction.extraction_mode = extraction_mode;
+
+    Ok(ExtractionResult::Extracted(extraction))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extraction_mode_default_is_extract() {
+        assert_eq!(ExtractionMode::default(), ExtractionMode::Extract);
+    }
+
+    #[test]
+    fn test_extraction_mode_serialize_roundtrip() {
+        let verbatim = ExtractionMode::Verbatim;
+        let json = serde_json::to_string(&verbatim).unwrap();
+        assert_eq!(json, "\"Verbatim\"");
+        let back: ExtractionMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ExtractionMode::Verbatim);
+    }
+
+    #[test]
+    fn test_parse_skip_action() {
+        let json = r#"{"action":"skip"}"#;
+        let result = parse_extraction_response(json).unwrap();
+        assert!(matches!(result, ExtractionResult::Skip));
+    }
+
+    #[test]
+    fn test_parse_verbatim_action() {
+        let json = r#"{"action":"verbatim","title":"Test","subjects":["rust"],"summary":"A test","confidence":0.9,"labels":["dev"],"concepts":["testing"],"importance":0.7}"#;
+        let result = parse_extraction_response(json).unwrap();
+        match result {
+            ExtractionResult::Extracted(e) => {
+                assert_eq!(e.extraction_mode, ExtractionMode::Verbatim);
+                assert_eq!(e.title, "Test");
+                assert_eq!(e.confidence, 0.9);
+            }
+            ExtractionResult::Skip => panic!("Expected Extracted, got Skip"),
+        }
+    }
+
+    #[test]
+    fn test_parse_extract_action() {
+        let json = r#"{"action":"extract","title":"Summary","subjects":["ai"],"summary":"AI topic","confidence":0.8,"labels":["ml"],"concepts":["neural"],"importance":0.6}"#;
+        let result = parse_extraction_response(json).unwrap();
+        match result {
+            ExtractionResult::Extracted(e) => {
+                assert_eq!(e.extraction_mode, ExtractionMode::Extract);
+            }
+            ExtractionResult::Skip => panic!("Expected Extracted, got Skip"),
+        }
+    }
+
+    #[test]
+    fn test_parse_no_action_field_defaults_to_extract() {
+        // Backward compat: old LLM responses without "action" field
+        let json = r#"{"title":"Legacy","subjects":["old"],"summary":"Old format","confidence":0.7,"labels":[],"concepts":[],"importance":0.5}"#;
+        let result = parse_extraction_response(json).unwrap();
+        match result {
+            ExtractionResult::Extracted(e) => {
+                assert_eq!(e.extraction_mode, ExtractionMode::Extract);
+                assert_eq!(e.title, "Legacy");
+            }
+            ExtractionResult::Skip => panic!("Expected Extracted, got Skip"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_json_returns_error() {
+        let json = "not json at all";
+        assert!(parse_extraction_response(json).is_err());
+    }
+
+    #[test]
+    fn test_parse_json_with_surrounding_text() {
+        // LLM sometimes wraps JSON in markdown or text
+        let response = r#"Here is the result: {"action":"skip"} done"#;
+        let result = parse_extraction_response(response).unwrap();
+        assert!(matches!(result, ExtractionResult::Skip));
+    }
 }

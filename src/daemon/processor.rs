@@ -90,14 +90,20 @@ pub fn process_capture(
         }
     }
 
-    let extraction = extractor::extract(
+    let extraction = match extractor::extract(
         &cleaned,
         source,
         &guardian.extraction,
         &guardian.label_suggestion,
         &guardian.importance_rating,
         agent_context,
-    )?;
+    )? {
+        Some(e) => e,
+        None => {
+            tracing::debug!("Extraction skipped (LLM skip or failure)");
+            return Ok(None);
+        }
+    };
     tracing::debug!(
         title = %extraction.title,
         confidence = extraction.confidence,

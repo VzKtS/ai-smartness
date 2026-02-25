@@ -119,6 +119,12 @@ pub struct BeatState {
     /// True when git working tree has uncommitted changes.
     #[serde(default)]
     pub git_dirty: bool,
+    /// True when capture processing is slow/failing — signals agent to reduce output.
+    #[serde(default)]
+    pub processing_backpressure: bool,
+    /// Timestamp of last backpressure signal.
+    #[serde(default)]
+    pub backpressure_since: Option<String>,
 }
 
 fn default_quota() -> usize { 50 }
@@ -170,6 +176,8 @@ impl Default for BeatState {
             shared_threads_cache: Vec::new(),
             git_branch: None,
             git_dirty: false,
+            processing_backpressure: false,
+            backpressure_since: None,
         }
     }
 }
@@ -411,5 +419,38 @@ mod tests {
         let loaded = BeatState::load(dir.path());
         assert_eq!(loaded.beat, 5);
         assert_eq!(loaded.quota, 50, "Missing quota should default to 50");
+    }
+
+    #[test]
+    fn test_backpressure_fields_default_false() {
+        let beat = BeatState::default();
+        assert!(!beat.processing_backpressure);
+        assert!(beat.backpressure_since.is_none());
+    }
+
+    #[test]
+    fn test_backpressure_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut beat = BeatState::default();
+        beat.processing_backpressure = true;
+        beat.backpressure_since = Some("2026-02-25T12:00:00Z".to_string());
+        beat.save(dir.path());
+
+        let loaded = BeatState::load(dir.path());
+        assert!(loaded.processing_backpressure);
+        assert_eq!(loaded.backpressure_since.unwrap(), "2026-02-25T12:00:00Z");
+    }
+
+    #[test]
+    fn test_backpressure_backward_compat_missing_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write old beat.json without backpressure fields
+        let json = r#"{"beat":10,"started_at":"2026-01-01T00:00:00Z","last_beat_at":"2026-01-01T00:00:00Z","last_interaction_at":"2026-01-01T00:00:00Z","last_interaction_beat":0}"#;
+        std::fs::write(dir.path().join("beat.json"), json).unwrap();
+
+        let loaded = BeatState::load(dir.path());
+        assert_eq!(loaded.beat, 10);
+        assert!(!loaded.processing_backpressure, "Missing field defaults to false");
+        assert!(loaded.backpressure_since.is_none());
     }
 }

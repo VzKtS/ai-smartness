@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use crate::bridge::{BridgeStatus, BridgeType, ThinkBridge};
+use crate::processing::extractor::ExtractionMode;
 use crate::thread::{Thread, ThreadMessage, ThreadStatus, OriginType, InjectionStats};
 
 // ============================================================================
@@ -43,6 +44,7 @@ impl ThreadBuilder {
                 ratings: vec![],
                 work_context: None,
                 injection_stats: Some(InjectionStats::default()),
+                extraction_mode: ExtractionMode::default(),
             },
         }
     }
@@ -109,6 +111,11 @@ impl ThreadBuilder {
 
     pub fn origin_type(mut self, o: OriginType) -> Self {
         self.thread.origin_type = o;
+        self
+    }
+
+    pub fn extraction_mode(mut self, mode: ExtractionMode) -> Self {
+        self.thread.extraction_mode = mode;
         self
     }
 

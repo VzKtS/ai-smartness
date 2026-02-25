@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use crate::processing::extractor::ExtractionMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ThreadStatus {
@@ -208,6 +209,9 @@ pub struct Thread {
     pub work_context: Option<WorkContext>,
     /// Injection tracking stats.
     pub injection_stats: Option<InjectionStats>,
+    /// How this thread was extracted: verbatim or full LLM extract.
+    #[serde(default)]
+    pub extraction_mode: ExtractionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

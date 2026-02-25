@@ -174,6 +174,17 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
         }
     }
 
+    // Layer 0.8: Processing backpressure warning
+    // Short message intentionally < MIN_PROMPT_LENGTH (150) → never captured
+    if beat_state.processing_backpressure {
+        let warning = "<system-reminder>Warning: Processing Latency</system-reminder>".to_string();
+        if warning.len() < budget {
+            budget -= warning.len();
+            injections.push(warning);
+            tracing::info!("Layer 0.8: Backpressure warning injected");
+        }
+    }
+
     // Layer 1: Lightweight context + beat + session_id
     match build_lightweight_context(&conn, &agent_data, session_id) {
         Some(ctx) => {

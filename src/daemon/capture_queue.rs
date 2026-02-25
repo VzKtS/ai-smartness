@@ -19,6 +19,7 @@ use ai_smartness::storage::database::{open_connection, ConnectionRole};
 use ai_smartness::storage::path_utils;
 
 use super::connection_pool::{AgentKey, ConnectionPool};
+use super::pool_writer;
 use super::processor;
 
 /// A capture job to be processed asynchronously by a worker.
@@ -256,6 +257,40 @@ fn worker_loop(
                 .unwrap_or_default()
         };
 
+        // Non-prompt captures: write to pool and continue (fast, non-blocking).
+        // The pool consumer thread processes .pending files at LLM speed.
+        if !job.is_prompt {
+            let agent_data = path_utils::agent_data_dir(&job.key.project_hash, &job.key.agent_id);
+            let pool_dir = agent_data.join("pool");
+            let mut pw = pool_writer::PoolWriter::new(&pool_dir, guardian.capture.pool.clone());
+            match pw.append(&job.source_type, &job.content, job.file_path.as_deref()) {
+                Ok(()) => {
+                    pw.seal_all().ok(); // Seal immediately for consumer pickup
+                    stats.processed.fetch_add(1, Ordering::Relaxed);
+                    tracing::info!(
+                        worker_id,
+                        agent = %job.key,
+                        source = %job.source_type,
+                        content_len = job.content.len(),
+                        duration_ms = start.elapsed().as_millis() as u64,
+                        "Capture written to pool"
+                    );
+                }
+                Err(e) => {
+                    stats.errors.fetch_add(1, Ordering::Relaxed);
+                    tracing::error!(
+                        worker_id,
+                        agent = %job.key,
+                        error = %e,
+                        "Pool write failed — capture dropped"
+                    );
+                }
+            }
+            continue;
+        }
+
+        // --- Prompt processing (direct, needs DB + pending context) ---
+
         // Get connection + pending context from pool
         let conn = match pool.get_or_open(&job.key) {
             Ok(c) => c,
@@ -362,6 +397,10 @@ fn worker_loop(
                     duration_ms,
                     "Worker capture complete"
                 );
+                // Clear backpressure on successful extraction
+                if tid.is_some() {
+                    clear_backpressure(&job_key);
+                }
             }
             Ok(Err(e)) => {
                 stats.errors.fetch_add(1, Ordering::Relaxed);
@@ -372,6 +411,8 @@ fn worker_loop(
                     duration_ms,
                     "Worker capture failed"
                 );
+                // Signal backpressure on extraction failure
+                set_backpressure(&job_key);
             }
             Err(panic_payload) => {
                 stats.errors.fetch_add(1, Ordering::Relaxed);
@@ -392,5 +433,29 @@ fn worker_loop(
                 pool.force_evict(&job_key);
             }
         }
+    }
+}
+
+/// Signal backpressure ON via BeatState when extraction fails.
+fn set_backpressure(key: &AgentKey) {
+    let agent_data = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
+    let mut beat = ai_smartness::storage::beat::BeatState::load(&agent_data);
+    if !beat.processing_backpressure {
+        beat.processing_backpressure = true;
+        beat.backpressure_since = Some(chrono::Utc::now().to_rfc3339());
+        beat.save(&agent_data);
+        tracing::info!(agent = %key.agent_id, "Backpressure ON: extraction failed/slow");
+    }
+}
+
+/// Clear backpressure via BeatState when extraction succeeds.
+fn clear_backpressure(key: &AgentKey) {
+    let agent_data = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
+    let mut beat = ai_smartness::storage::beat::BeatState::load(&agent_data);
+    if beat.processing_backpressure {
+        beat.processing_backpressure = false;
+        beat.backpressure_since = None;
+        beat.save(&agent_data);
+        tracing::info!(agent = %key.agent_id, "Backpressure OFF: extraction succeeded");
     }
 }

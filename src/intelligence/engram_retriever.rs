@@ -567,6 +567,7 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
         ratings,
         work_context,
         injection_stats,
+        extraction_mode: crate::processing::extractor::ExtractionMode::default(),
     })
 }
 
