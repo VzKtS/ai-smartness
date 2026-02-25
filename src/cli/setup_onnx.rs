@@ -7,8 +7,8 @@
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 
-/// ONNX Runtime version compatible with ort 2.0.0-rc.11.
-const ORT_VERSION: &str = "1.20.1";
+/// ONNX Runtime version compatible with ort 2.0.0-rc.11 (requires >= 1.23.x).
+const ORT_VERSION: &str = "1.23.0";
 
 /// Base URL for Microsoft ONNX Runtime releases.
 const ORT_RELEASE_BASE: &str = "https://github.com/microsoft/onnxruntime/releases/download";
