@@ -336,133 +336,88 @@
                     <div id="section-global" class="section-body open">
                         <div class="form-grid">
                             <label data-i18n="cfg.enabled" title="Master switch for the entire Guardian cognitive system. When disabled, no LLM calls are made — hooks pass through without memory processing.">Guardian Enabled <input type="checkbox" data-path="enabled"></label>
-                            <label data-i18n="cfg.clipath" title="Path to the Claude CLI executable. Leave empty for auto-detection. Only needed if Claude is installed in a non-standard location.">Claude CLI Path <input type="text" data-path="claude_cli_path" placeholder="auto-detect"></label>
-                            <label data-i18n="cfg.hookguard" title="Environment variable name used to prevent hook recursion. The daemon sets this variable when processing captures to avoid infinite loops. Default: AI_SMARTNESS_HOOK_RUNNING.">Hook Guard Env <input type="text" data-path="hook_guard_env"></label>
-                            <label data-i18n="cfg.cache" title="Cache extraction and synthesis results to avoid redundant LLM calls for identical inputs. Saves API costs but uses more RAM. Default: off.">Cache Enabled <input type="checkbox" data-path="cache_enabled"></label>
-                            <label data-i18n="cfg.cachettl" title="Time-to-live for cached LLM results in seconds. After this period, cached entries expire and will be recomputed on next access. Default: 300 (5 min).">Cache TTL (secs) <input type="number" data-path="cache_ttl_secs" min="0"></label>
-                            <label data-i18n="cfg.cachemax" title="Maximum number of cached LLM results before oldest entries are evicted. Higher values use more RAM. Default: 100.">Cache Max Entries <input type="number" data-path="cache_max_entries" min="0"></label>
-                            <label data-i18n="cfg.pattern" title="Enable automatic learning of extraction patterns from LLM outputs. Patterns improve heuristic fallback quality over time. Default: on.">Pattern Learning <input type="checkbox" data-path="pattern_learning_enabled"></label>
-                            <label data-i18n="cfg.patterndecay" title="Number of days before learned patterns lose relevance. Older patterns are weighted less. Higher values retain patterns longer. Default: 30 days.">Pattern Decay (days) <input type="number" data-path="pattern_decay_days" min="0" step="0.1"></label>
-                            <label data-i18n="cfg.usage" title="Track which threads are injected into prompts and how often. Usage data feeds the Engram V5 validator (Injection History) for smarter recall. Default: on.">Usage Tracking <input type="checkbox" data-path="usage_tracking_enabled"></label>
-                            <label data-i18n="cfg.fallback" title="Deprecated — use per-task Failure Mode instead. Legacy global fallback toggle.">Fallback on Failure <input type="checkbox" data-path="fallback_on_failure"></label>
+                            <label data-i18n="cfg.clipath" title="Path to the Claude CLI executable. Leave empty for auto-detection.">Claude CLI Path <input type="text" data-path="claude_cli_path" placeholder="auto-detect"></label>
+                            <label data-i18n="cfg.usage" title="Track which threads are injected into prompts and how often. Feeds Engram V5 validator. Default: on.">Usage Tracking <input type="checkbox" data-path="usage_tracking_enabled"></label>
                         </div>
                     </div>
                 </div>
                 <div class="config-section">
-                    <h3 class="section-toggle" data-section="extraction" data-i18n="sec.extraction">Extraction</h3>
-                    <div id="section-extraction" class="section-body">
+                    <h3 class="section-toggle open" data-section="llm-tasks">LLM Tasks</h3>
+                    <div id="section-llm-tasks" class="section-body open">
+                        <table class="task-table">
+                            <thead>
+                                <tr><th>Task</th><th>Enabled</th><th>Model</th><th>Failure Mode</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr title="Extracts title, topics, and summary from tool outputs. Called on every capture (high frequency).">
+                                    <td data-i18n="sec.extraction">Extraction</td>
+                                    <td><input type="checkbox" data-path="extraction.llm.enabled"></td>
+                                    <td><select data-path="extraction.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></td>
+                                    <td><select data-path="extraction.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></td>
+                                </tr>
+                                <tr title="Scores thematic coherence between consecutive captures. Determines if content continues an existing thread.">
+                                    <td data-i18n="sec.coherence">Coherence</td>
+                                    <td><input type="checkbox" data-path="coherence.llm.enabled"></td>
+                                    <td><select data-path="coherence.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></td>
+                                    <td><select data-path="coherence.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></td>
+                                </tr>
+                                <tr title="Decides whether to reactivate suspended threads when similar content appears (low frequency).">
+                                    <td data-i18n="sec.reactivation">Reactivation</td>
+                                    <td><input type="checkbox" data-path="reactivation.llm.enabled"></td>
+                                    <td><select data-path="reactivation.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></td>
+                                    <td><select data-path="reactivation.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></td>
+                                </tr>
+                                <tr title="Summarizes threads when they reach context capacity or are archived (medium frequency).">
+                                    <td data-i18n="sec.synthesis">Synthesis</td>
+                                    <td><input type="checkbox" data-path="synthesis.llm.enabled"></td>
+                                    <td><select data-path="synthesis.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></td>
+                                    <td><select data-path="synthesis.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></td>
+                                </tr>
+                                <tr title="Suggests semantic labels on threads (action, idea, question, issue). Low frequency.">
+                                    <td data-i18n="sec.labels">Labels</td>
+                                    <td><input type="checkbox" data-path="label_suggestion.llm.enabled"></td>
+                                    <td><select data-path="label_suggestion.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></td>
+                                    <td><select data-path="label_suggestion.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></td>
+                                </tr>
+                                <tr title="Rates thread importance (critical/high/normal/low/disposable). Usually piggybacked on extraction.">
+                                    <td data-i18n="sec.importance">Importance</td>
+                                    <td><input type="checkbox" data-path="importance_rating.llm.enabled"></td>
+                                    <td><select data-path="importance_rating.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></td>
+                                    <td><select data-path="importance_rating.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="advanced-llm">Advanced</h3>
+                    <div id="section-advanced-llm" class="section-body">
                         <div class="form-grid">
-                            <label data-i18n="cfg.model" title="LLM model for extracting title, topics, and summary from tool outputs. Called on EVERY tool capture (high frequency). Haiku recommended for speed/cost. Sonnet/Opus give higher quality but cost more.">Model <select data-path="extraction.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
-                            <label data-i18n="cfg.timeout" title="Maximum seconds to wait for the extraction LLM response before timing out. Default: 30s.">Timeout (s) <input type="number" data-path="extraction.llm.timeout_secs" min="1"></label>
-                            <label data-i18n="cfg.retries" title="Number of retry attempts if the extraction LLM call fails (timeout, network error). 0 = no retries. Default: 1.">Max Retries <input type="number" data-path="extraction.llm.max_retries" min="0" max="5"></label>
-                            <label data-i18n="cfg.taskEnabled" title="Enable LLM-based extraction. When disabled, no title/topics/summary are extracted — threads get generic names. Default: on.">Enabled <input type="checkbox" data-path="extraction.llm.enabled"></label>
-                            <label data-i18n="cfg.failmode" title="What happens when the extraction LLM fails. RetryWithHaiku: retry with cheapest model then skip. Skip: silently skip. HeuristicRegex: use regex patterns (lower quality). Default: RetryWithHaiku.">Failure Mode <select data-path="extraction.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
-                            <label title="Maximum characters of tool output sent to the LLM for extraction. Longer content is truncated. Higher values give better context but cost more tokens. Default: 3000.">Max Content Chars <input type="number" data-path="extraction.max_content_chars" min="100"></label>
-                            <label title="Minimum number of mentions required for a topic to be included in extraction results. Filters out one-off noise words. Default: 1.">Min Topic Frequency <input type="number" data-path="extraction.min_topic_frequency" min="1"></label>
-                            <label title="Detect skip markers in tool output (e.g., 'skip_extraction', 'SKIP'). When detected, extraction is skipped entirely — useful for noisy tools. Default: on.">Skip Signal <input type="checkbox" data-path="extraction.enable_skip_signal"></label>
-                            <label title="Minimum content length (chars) to attempt capture. Content shorter than this is treated as noise and skipped. Default: 80.">Min Capture Length <input type="number" data-path="extraction.min_capture_length" min="0"></label>
-                            <label title="Tool names to skip extraction for (one per line). Captures from these tools are silently dropped.">
+                            <label title="Maximum characters of tool output sent to extraction LLM. Default: 3000.">Extraction Max Chars <input type="number" data-path="extraction.max_content_chars" min="100"></label>
+                            <label title="Minimum content length to attempt capture. Default: 80.">Min Capture Length <input type="number" data-path="extraction.min_capture_length" min="0"></label>
+                            <label title="Detect skip markers in tool output. Default: on.">Skip Signal <input type="checkbox" data-path="extraction.enable_skip_signal"></label>
+                            <label title="Coherence score threshold to continue an existing thread. Default: 0.6.">Coherence Child Threshold <input type="number" data-path="coherence.child_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Score below which content is dropped. Default: 0.4.">Coherence Orphan Threshold <input type="number" data-path="coherence.orphan_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Default coherence score when LLM fails. Default: 0.5.">Coherence Fallback Score <input type="number" data-path="coherence.fallback_score" min="0" max="1" step="0.05"></label>
+                            <label title="Similarity above this = auto-reactivate without LLM. Default: 0.35.">Reactivation Auto Threshold <input type="number" data-path="reactivation.auto_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Below this = skip reactivation entirely. Default: 0.15.">Reactivation Borderline <input type="number" data-path="reactivation.borderline_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Piggyback importance on extraction prompt (zero extra cost). Default: on.">Importance Piggyback <input type="checkbox" data-path="importance_rating.piggyback_on_extraction"></label>
+                            <label title="Auto suggest labels on extraction. Default: on.">Labels Auto Suggest <input type="checkbox" data-path="label_suggestion.auto_suggest_on_extraction"></label>
+                            <label title="Cache LLM results. Default: off.">Cache Enabled <input type="checkbox" data-path="cache_enabled"></label>
+                            <label title="Pattern learning from LLM outputs. Default: on.">Pattern Learning <input type="checkbox" data-path="pattern_learning_enabled"></label>
+                            <label title="Hook recursion guard env var. Default: AI_SMARTNESS_HOOK_RUNNING.">Hook Guard Env <input type="text" data-path="hook_guard_env"></label>
+                            <label title="Tool names to skip extraction for (one per line).">
                                 <span>Skip Tools</span>
                                 <textarea data-path="extraction.skip_tools" data-array="lines" rows="3" placeholder="tool_name_1&#10;tool_name_2"></textarea>
                             </label>
-                            <label title="Noise words filtered from extracted topics (one per line). These common words are removed from topic lists to improve signal quality.">
+                            <label title="Noise words filtered from topics (one per line).">
                                 <span>Topic Noise Words</span>
-                                <textarea data-path="extraction.topic_noise_words" data-array="lines" rows="4" placeholder="message&#10;function&#10;code"></textarea>
+                                <textarea data-path="extraction.topic_noise_words" data-array="lines" rows="3" placeholder="message&#10;function&#10;code"></textarea>
                             </label>
-                            <label title="Topic aliases — maps extracted terms to canonical topics (one per line: alias=canonical). Example: js=javascript">
+                            <label title="Topic aliases (one per line: alias=canonical).">
                                 <span>Topic Aliases</span>
                                 <textarea data-path="extraction.topic_aliases" data-array="keyval" rows="3" placeholder="js=javascript&#10;ts=typescript"></textarea>
                             </label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle" data-section="coherence" data-i18n="sec.coherence">Coherence</h3>
-                    <div id="section-coherence" class="section-body">
-                        <div class="form-grid">
-                            <label data-i18n="cfg.model" title="LLM model for scoring thematic coherence between consecutive captures. Determines if new content continues an existing thread or starts a new one. Called on every capture with pending context (high frequency). Haiku recommended.">Model <select data-path="coherence.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
-                            <label data-i18n="cfg.timeout" title="Maximum seconds to wait for coherence LLM response. Default: 15s.">Timeout (s) <input type="number" data-path="coherence.llm.timeout_secs" min="1"></label>
-                            <label data-i18n="cfg.retries" title="Retry attempts on coherence LLM failure. Default: 0 (no retries — speed priority).">Max Retries <input type="number" data-path="coherence.llm.max_retries" min="0" max="5"></label>
-                            <label data-i18n="cfg.taskEnabled" title="Enable LLM coherence check. When disabled, fallback_score is always used. Default: on.">Enabled <input type="checkbox" data-path="coherence.llm.enabled"></label>
-                            <label data-i18n="cfg.failmode" title="Behavior when coherence LLM fails. RetryWithHaiku: retry with cheapest model. Skip: use fallback_score. HeuristicRegex: keyword overlap heuristic.">Failure Mode <select data-path="coherence.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
-                            <label title="Maximum characters of context sent to the coherence LLM. Default: 1500.">Max Context Chars <input type="number" data-path="coherence.max_context_chars" min="100"></label>
-                            <label title="Coherence score threshold to continue an existing thread. Score >= this = add as child message. Higher values create more separate threads. Default: 0.6.">Child Threshold <input type="number" data-path="coherence.child_threshold" min="0" max="1" step="0.05"></label>
-                            <label title="Score below child_threshold but >= orphan_threshold creates a new thread. Score below orphan_threshold = forget (drop content). Lower values keep more content. Default: 0.4.">Orphan Threshold <input type="number" data-path="coherence.orphan_threshold" min="0" max="1" step="0.05"></label>
-                            <label title="Default coherence score returned when the LLM fails or is disabled. Should be between orphan and child thresholds for safe behavior. Default: 0.5.">Fallback Score <input type="number" data-path="coherence.fallback_score" min="0" max="1" step="0.05"></label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle" data-section="reactivation" data-i18n="sec.reactivation">Reactivation</h3>
-                    <div id="section-reactivation" class="section-body">
-                        <div class="form-grid">
-                            <label data-i18n="cfg.model" title="LLM model for borderline thread reactivation decisions. Only called when a suspended thread's similarity falls between the borderline and auto thresholds (low frequency). Haiku is fine.">Model <select data-path="reactivation.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
-                            <label data-i18n="cfg.timeout" title="Maximum seconds to wait for reactivation LLM response. Default: 30s.">Timeout (s) <input type="number" data-path="reactivation.llm.timeout_secs" min="1"></label>
-                            <label data-i18n="cfg.retries" title="Retry attempts on reactivation LLM failure. Default: 0.">Max Retries <input type="number" data-path="reactivation.llm.max_retries" min="0" max="5"></label>
-                            <label data-i18n="cfg.taskEnabled" title="Enable LLM-assisted reactivation for borderline cases. When disabled, only auto_threshold applies. Default: on.">Enabled <input type="checkbox" data-path="reactivation.llm.enabled"></label>
-                            <label data-i18n="cfg.failmode" title="Behavior when reactivation LLM fails. Default: RetryWithHaiku.">Failure Mode <select data-path="reactivation.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
-                            <label title="Similarity above this threshold = auto-reactivate suspended thread without LLM. Higher values are more conservative (fewer reactivations). Default: 0.35.">Auto Threshold <input type="number" data-path="reactivation.auto_threshold" min="0" max="1" step="0.05"></label>
-                            <label title="Similarity between borderline and auto thresholds triggers LLM decision. Below borderline = skip reactivation entirely. Lower values check more candidates. Default: 0.15.">Borderline Threshold <input type="number" data-path="reactivation.borderline_threshold" min="0" max="1" step="0.05"></label>
-                            <label title="Maximum characters of context sent to the reactivation LLM. Default: 500.">Max Context Chars <input type="number" data-path="reactivation.max_context_chars" min="100"></label>
-                            <label title="Maximum number of topic tags included in the reactivation prompt. Default: 5.">Max Topics <input type="number" data-path="reactivation.max_topics" min="1"></label>
-                            <label title="Maximum characters of thread summary included in the reactivation prompt. Default: 200.">Max Summary Chars <input type="number" data-path="reactivation.max_summary_chars" min="50"></label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle" data-section="synthesis" data-i18n="sec.synthesis">Synthesis</h3>
-                    <div id="section-synthesis" class="section-body">
-                        <div class="form-grid">
-                            <label data-i18n="cfg.model" title="LLM model for thread summarization. Called when a thread reaches 95% context capacity or is archived. Medium frequency. Sonnet gives better summaries for complex threads.">Model <select data-path="synthesis.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
-                            <label data-i18n="cfg.timeout" title="Maximum seconds for synthesis LLM. Longer timeout recommended as synthesis processes more context. Default: 60s.">Timeout (s) <input type="number" data-path="synthesis.llm.timeout_secs" min="1"></label>
-                            <label data-i18n="cfg.retries" title="Retry attempts on synthesis LLM failure. Default: 0.">Max Retries <input type="number" data-path="synthesis.llm.max_retries" min="0" max="5"></label>
-                            <label data-i18n="cfg.taskEnabled" title="Enable LLM summarization. When disabled, threads accumulate messages without being summarized. Default: on.">Enabled <input type="checkbox" data-path="synthesis.llm.enabled"></label>
-                            <label data-i18n="cfg.failmode" title="Behavior when synthesis LLM fails. Default: RetryWithHaiku.">Failure Mode <select data-path="synthesis.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
-                            <label title="Maximum number of messages included in the synthesis prompt. Older messages are dropped. Default: 10.">Max Messages <input type="number" data-path="synthesis.max_messages" min="1"></label>
-                            <label title="Maximum characters per message sent to synthesis. Longer messages are truncated. Default: 500.">Max Message Chars <input type="number" data-path="synthesis.max_message_chars" min="50"></label>
-                            <label title="Maximum length of the generated summary output. Longer summaries preserve more detail but cost more tokens and storage. Default: 1000.">Max Output Chars <input type="number" data-path="synthesis.max_output_chars" min="100"></label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle" data-section="labels" data-i18n="sec.labels">Label Suggestion</h3>
-                    <div id="section-labels" class="section-body">
-                        <div class="form-grid">
-                            <label data-i18n="cfg.model" title="LLM model for suggesting semantic labels on threads (action, idea, question, issue, etc.). Triggered by HealthGuard or on extraction (low frequency). Haiku is sufficient.">Model <select data-path="label_suggestion.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
-                            <label data-i18n="cfg.timeout" title="Maximum seconds for label suggestion LLM. Default: 30s.">Timeout (s) <input type="number" data-path="label_suggestion.llm.timeout_secs" min="1"></label>
-                            <label data-i18n="cfg.retries" title="Retry attempts on label LLM failure. Default: 0.">Max Retries <input type="number" data-path="label_suggestion.llm.max_retries" min="0" max="5"></label>
-                            <label data-i18n="cfg.taskEnabled" title="Enable LLM label suggestions. When disabled, threads remain unlabeled unless manually tagged. Default: on.">Enabled <input type="checkbox" data-path="label_suggestion.llm.enabled"></label>
-                            <label data-i18n="cfg.failmode" title="Behavior when label LLM fails. Default: RetryWithHaiku.">Failure Mode <select data-path="label_suggestion.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
-                            <label title="Automatically suggest labels when a new thread is created via extraction. Adds a small overhead to each extraction but keeps threads organized. Default: on.">Auto Suggest on Extraction <input type="checkbox" data-path="label_suggestion.auto_suggest_on_extraction"></label>
-                            <label title="Allow the LLM to suggest labels outside the predefined vocabulary (action, idea, question, issue, reference, social, decision, learning, frustration, intuition). Default: on.">Allow Custom Labels <input type="checkbox" data-path="label_suggestion.allow_custom_labels"></label>
-                            <label title="Maximum number of unlabeled threads processed in a single label suggestion batch. Default: 10.">Batch Size <input type="number" data-path="label_suggestion.batch_size" min="1"></label>
-                            <label title="Predefined label vocabulary (one per line). The LLM will prefer these labels. If 'Allow Custom Labels' is off, only these labels are used.">
-                                <span>Label Vocabulary</span>
-                                <textarea data-path="label_suggestion.label_vocabulary" data-array="lines" rows="4" placeholder="bug-fix&#10;feature&#10;refactor&#10;architecture"></textarea>
-                            </label>
-                            <label title="Blocked labels (one per line). Labels in this list are never suggested, even if the LLM returns them.">
-                                <span>Label Blocklist</span>
-                                <textarea data-path="label_suggestion.label_blocklist" data-array="lines" rows="3" placeholder="action&#10;decision&#10;metadata"></textarea>
-                            </label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle" data-section="importance" data-i18n="sec.importance">Importance Rating</h3>
-                    <div id="section-importance" class="section-body">
-                        <div class="form-grid">
-                            <label data-i18n="cfg.model" title="LLM model for importance rating. Usually piggybacked on extraction (zero extra cost). Standalone model only used if piggyback is disabled.">Model <select data-path="importance_rating.llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
-                            <label data-i18n="cfg.timeout" title="Maximum seconds for standalone importance LLM call. Default: 15s.">Timeout (s) <input type="number" data-path="importance_rating.llm.timeout_secs" min="1"></label>
-                            <label data-i18n="cfg.retries" title="Retry attempts on importance LLM failure. Default: 0.">Max Retries <input type="number" data-path="importance_rating.llm.max_retries" min="0" max="5"></label>
-                            <label data-i18n="cfg.taskEnabled" title="Enable importance rating. When disabled, all threads get the fallback score. Default: on.">Enabled <input type="checkbox" data-path="importance_rating.llm.enabled"></label>
-                            <label data-i18n="cfg.failmode" title="Behavior when importance LLM fails. RetryWithHaiku: retry with cheapest model. Skip: use fallback score. HeuristicRegex: regex heuristic. Default: RetryWithHaiku.">Failure Mode <select data-path="importance_rating.llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option><option value="HeuristicRegex">HeuristicRegex</option></select></label>
-                            <label title="Include importance rating in the extraction prompt (zero extra LLM cost). When enabled, importance is extracted alongside title/topics. Highly recommended. Default: on.">Piggyback on Extraction <input type="checkbox" data-path="importance_rating.piggyback_on_extraction"></label>
-                            <label title="Default importance score assigned when the LLM fails or is disabled. Affects thread decay rate and suspend priority. Default: 0.5.">Fallback Score <input type="number" data-path="importance_rating.fallback_score" min="0" max="1" step="0.1"></label>
-                            <label title="Score for critical content: architecture decisions, blockers, security issues. These threads decay slowest and are last to be suspended. Default: 1.0.">Score: Critical <input type="number" data-path="importance_rating.score_map.critical" min="0" max="1" step="0.1"></label>
-                            <label title="Score for high-importance content: implementation details, bug fixes, configurations. Default: 0.8.">Score: High <input type="number" data-path="importance_rating.score_map.high" min="0" max="1" step="0.1"></label>
-                            <label title="Score for normal content: exploration, questions, learning notes. Default: 0.5.">Score: Normal <input type="number" data-path="importance_rating.score_map.normal" min="0" max="1" step="0.1"></label>
-                            <label title="Score for low-importance content: casual chat, noise, meta-discussion. These threads decay faster. Default: 0.3.">Score: Low <input type="number" data-path="importance_rating.score_map.low" min="0" max="1" step="0.1"></label>
-                            <label title="Score for disposable content: one-off debug outputs, transient logs. These threads are suspended first when quota is reduced. Default: 0.1.">Score: Disposable <input type="number" data-path="importance_rating.score_map.disposable" min="0" max="1" step="0.1"></label>
                         </div>
                     </div>
                 </div>

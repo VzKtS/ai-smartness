@@ -1,16 +1,19 @@
-//! Gossip v2 — concept-based bridge discovery.
+//! Gossip v2 — multi-phase bridge discovery.
 //!
 //! Pipeline:
+//!   0. Embedding cosine similarity (zero-LLM, ONNX)
 //!   1. ConceptIndex inverted index → find_overlaps(min_shared)
 //!   2. Score: weight = overlap_ratio × 0.5 + richness × 0.5
 //!   3. Create bridges, collect merge candidates (weight >= 0.60)
 //!   4. Legacy topic overlap fallback for threads without concepts
+//!   5. Transitive propagation (A↔B + B↔C → A↔C)
 //!
-//! Replaces v1 (TF-IDF embedding + topic/label overlap + propagation).
+//! Phase 0 catches semantic similarity even when concepts are missing.
 
 use crate::{id_gen, time_utils};
 use crate::bridge::{BridgeStatus, BridgeType, ThinkBridge};
-use crate::config::GossipConfig;
+use crate::config::{EmbeddingMode, GossipConfig};
+use crate::processing::embeddings::EmbeddingManager;
 use crate::thread::{OriginType, Thread, ThreadStatus};
 use crate::AiResult;
 use crate::storage::bridges::BridgeStorage;
@@ -70,6 +73,18 @@ impl Gossip {
         let (max_per, _max_total) = Self::dynamic_limits(thread_count, config);
         let mut created = 0u32;
         let mut merge_candidates = Vec::new();
+
+        // Phase 0: Embedding cosine similarity (zero-LLM, uses stored ONNX vectors)
+        if config.embedding_gossip_enabled && config.embedding.mode != EmbeddingMode::Disabled {
+            let (emb_created, emb_merges) = Self::run_embedding_similarity(
+                conn, &all_threads, config, max_per,
+            )?;
+            created += emb_created;
+            merge_candidates.extend(emb_merges);
+            if emb_created > 0 {
+                tracing::info!(bridges = emb_created, "Gossip v2 P0: embedding similarity");
+            }
+        }
 
         // Phase 1: Concept overlap discovery via inverted index
         let min_shared = config.concept_overlap_min_shared;
@@ -290,6 +305,125 @@ impl Gossip {
         }
 
         Ok(created)
+    }
+
+    /// Phase 0: Embedding cosine similarity bridge discovery.
+    /// Uses pre-computed thread embeddings (ONNX all-MiniLM-L6-v2 or TF-IDF).
+    /// Zero LLM cost — pure vector math.
+    fn run_embedding_similarity(
+        conn: &Connection,
+        all_threads: &[Thread],
+        config: &GossipConfig,
+        max_per: usize,
+    ) -> AiResult<(u32, Vec<MergeCandidate>)> {
+        // Collect threads with embeddings
+        let with_emb: Vec<(&Thread, &[f32])> = all_threads
+            .iter()
+            .filter_map(|t| t.embedding.as_ref().map(|e| (t, e.as_slice())))
+            .collect();
+
+        if with_emb.len() < 2 {
+            tracing::debug!(
+                threads_with_embedding = with_emb.len(),
+                "Gossip v2 P0: not enough threads with embeddings"
+            );
+            return Ok((0, vec![]));
+        }
+
+        // Choose threshold based on embedding mode
+        let emb_mgr = EmbeddingManager::global();
+        let threshold = if emb_mgr.use_onnx {
+            config.embedding.onnx_threshold
+        } else {
+            config.embedding.tfidf_threshold
+        };
+
+        let merge_threshold = config.merge_evaluation_threshold;
+        let mut created = 0u32;
+        let mut merge_candidates = Vec::new();
+
+        tracing::debug!(
+            pairs = with_emb.len() * (with_emb.len() - 1) / 2,
+            threshold = format!("{:.2}", threshold).as_str(),
+            "Gossip v2 P0: scanning embedding pairs"
+        );
+
+        for i in 0..with_emb.len() {
+            let (ta, emb_a) = with_emb[i];
+
+            // Check bridge limits for source
+            let existing_a = BridgeStorage::list_for_thread(conn, &ta.id)?;
+            if existing_a.len() >= max_per {
+                continue;
+            }
+
+            for j in (i + 1)..with_emb.len() {
+                let (tb, emb_b) = with_emb[j];
+
+                // Skip if bridge already exists (check both directions)
+                let already_bridged = existing_a.iter().any(|b| {
+                    b.source_id == tb.id || b.target_id == tb.id
+                });
+                if already_bridged {
+                    continue;
+                }
+
+                let sim = emb_mgr.similarity(emb_a, emb_b);
+                if sim < threshold {
+                    continue;
+                }
+
+                // Check bridge limits for target
+                let existing_b = BridgeStorage::list_for_thread(conn, &tb.id)?;
+                if existing_b.len() >= max_per {
+                    continue;
+                }
+
+                let weight = sim.clamp(0.0, 1.0);
+                let relation = Self::determine_relation(ta, tb, weight);
+
+                let bridge_id = id_gen::bridge_id();
+                let bridge = ThinkBridge {
+                    id: bridge_id.clone(),
+                    source_id: ta.id.clone(),
+                    target_id: tb.id.clone(),
+                    relation_type: relation,
+                    reason: format!("gossip:embedding_similarity(sim={:.2})", sim),
+                    shared_concepts: vec![],
+                    weight,
+                    confidence: weight,
+                    status: BridgeStatus::Active,
+                    propagated_from: None,
+                    propagation_depth: 0,
+                    created_by: "gossip_v2".to_string(),
+                    use_count: 0,
+                    created_at: time_utils::now(),
+                    last_reinforced: None,
+                };
+
+                if BridgeStorage::insert(conn, &bridge).is_ok() {
+                    tracing::info!(
+                        source = %&ta.id[..8.min(ta.id.len())],
+                        target = %&tb.id[..8.min(tb.id.len())],
+                        sim = format!("{:.3}", sim).as_str(),
+                        "Gossip v2 P0: bridge created (embedding similarity)"
+                    );
+                    created += 1;
+
+                    if weight >= merge_threshold {
+                        merge_candidates.push(MergeCandidate {
+                            thread_a: ta.id.clone(),
+                            thread_b: tb.id.clone(),
+                            overlap_score: weight,
+                            shared_concepts: vec![],
+                            bridge_id,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok((created, merge_candidates))
     }
 
     /// Dynamic bridge limits based on thread count and config.
