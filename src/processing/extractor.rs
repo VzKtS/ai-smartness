@@ -129,16 +129,54 @@ fn extract_via_llm(
     importance_cfg: &ImportanceRatingConfig,
     agent_context: Option<&str>,
 ) -> AiResult<ExtractionResult> {
+    let start = std::time::Instant::now();
     let prompt = build_extraction_prompt(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context);
+    tracing::info!(
+        prompt_len = prompt.len(),
+        content_len = content.len(),
+        source = source.as_str(),
+        max_content_chars = extraction_cfg.max_content_chars,
+        "Extraction: prompt built, calling LLM"
+    );
 
     match super::llm_subprocess::call_claude(&prompt) {
         Ok(response) => {
-            tracing::info!(response_len = response.len(), "LLM extraction response received");
-            tracing::debug!(raw_response = %response, "LLM raw output");
-            parse_extraction_response(&response)
+            tracing::info!(
+                response_len = response.len(),
+                elapsed_ms = start.elapsed().as_millis(),
+                "Extraction: LLM response received"
+            );
+            tracing::debug!(raw_response = %response, "Extraction: LLM raw output");
+            let parse_result = parse_extraction_response(&response);
+            match &parse_result {
+                Ok(ExtractionResult::Skip) => {
+                    tracing::info!(elapsed_ms = start.elapsed().as_millis(), "Extraction: parsed → Skip");
+                }
+                Ok(ExtractionResult::Extracted(e)) => {
+                    tracing::info!(
+                        title = %e.title,
+                        confidence = e.confidence,
+                        action = ?e.extraction_mode,
+                        elapsed_ms = start.elapsed().as_millis(),
+                        "Extraction: parsed → Extracted"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        response_preview = %&response[..response.len().min(200)],
+                        "Extraction: JSON parse failed"
+                    );
+                }
+            }
+            parse_result
         }
         Err(e) => {
-            tracing::warn!("LLM extraction failed: {}", e);
+            tracing::warn!(
+                error = %e,
+                elapsed_ms = start.elapsed().as_millis(),
+                "Extraction: LLM call failed"
+            );
             Err(e)
         }
     }

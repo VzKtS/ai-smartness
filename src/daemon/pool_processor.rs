@@ -91,12 +91,26 @@ fn process_single_file(
     thread_quota: usize,
     guardian: &GuardianConfig,
 ) -> AiResult<usize> {
+    let file_start = std::time::Instant::now();
+    tracing::info!(
+        file = %path.display(),
+        "Pool file: reading JSONL entries"
+    );
+
     let content = std::fs::read_to_string(path)
         .map_err(|e| ai_smartness::AiError::Storage(format!("Read pool file: {}", e)))?;
 
+    let total_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
+    tracing::info!(
+        file = %path.display(),
+        total_lines = total_lines,
+        file_bytes = content.len(),
+        "Pool file: loaded, processing entries"
+    );
+
     let mut processed = 0;
 
-    for line in content.lines() {
+    for (line_idx, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
@@ -104,11 +118,26 @@ fn process_single_file(
         let entry: PoolEntry = match serde_json::from_str(line) {
             Ok(e) => e,
             Err(e) => {
-                tracing::warn!(error = %e, "Skipping malformed JSONL line");
+                tracing::warn!(
+                    line = line_idx + 1,
+                    error = %e,
+                    line_preview = %&line[..line.len().min(100)],
+                    "Skipping malformed JSONL line"
+                );
                 continue;
             }
         };
 
+        tracing::info!(
+            line = line_idx + 1,
+            total = total_lines,
+            source_type = %entry.source_type,
+            content_len = entry.content.len(),
+            file_path = ?entry.file_path,
+            "Pool entry: starting pipeline"
+        );
+
+        let entry_start = std::time::Instant::now();
         match processor::process_capture(
             conn,
             pending,
@@ -118,16 +147,34 @@ fn process_single_file(
             thread_quota,
             guardian,
         ) {
-            Ok(_) => processed += 1,
+            Ok(thread_id) => {
+                processed += 1;
+                tracing::info!(
+                    line = line_idx + 1,
+                    thread_id = ?thread_id,
+                    elapsed_ms = entry_start.elapsed().as_millis(),
+                    "Pool entry: complete"
+                );
+            }
             Err(e) => {
                 tracing::warn!(
+                    line = line_idx + 1,
                     source_type = %entry.source_type,
                     error = %e,
-                    "Pool entry processing failed"
+                    elapsed_ms = entry_start.elapsed().as_millis(),
+                    "Pool entry: processing failed"
                 );
             }
         }
     }
+
+    tracing::info!(
+        file = %path.display(),
+        processed = processed,
+        total_lines = total_lines,
+        elapsed_ms = file_start.elapsed().as_millis(),
+        "Pool file: done"
+    );
 
     Ok(processed)
 }

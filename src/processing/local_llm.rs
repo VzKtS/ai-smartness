@@ -119,6 +119,15 @@ impl LocalLlm {
     /// Creates a fresh context for each call (stateless — no conversation history).
     /// Thread-safe: each call creates its own LlamaContext from the shared model.
     pub fn generate(&self, prompt: &str, max_tokens: u32) -> AiResult<String> {
+        let gen_start = std::time::Instant::now();
+        tracing::info!(
+            prompt_len = prompt.len(),
+            prompt_chars = prompt.chars().count(),
+            max_tokens = max_tokens,
+            model = %self.model_path.display(),
+            "Local LLM generate() called"
+        );
+
         let inner = self.inner.as_ref().ok_or_else(|| {
             AiError::Provider("Local LLM model not loaded".into())
         })?;
@@ -126,14 +135,22 @@ impl LocalLlm {
         let max_tokens = if max_tokens == 0 { DEFAULT_MAX_TOKENS } else { max_tokens };
 
         // Create context (one per call — cheap for small models)
+        tracing::debug!("Creating LLM context (ctx_size={})", DEFAULT_CTX_SIZE);
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(std::num::NonZeroU32::new(DEFAULT_CTX_SIZE));
         let mut ctx = inner.model.new_context(&inner.backend, ctx_params)
             .map_err(|e| AiError::Provider(format!("Failed to create LLM context: {:?}", e)))?;
+        tracing::debug!(elapsed_ms = gen_start.elapsed().as_millis(), "LLM context created");
 
         // Tokenize prompt
+        tracing::debug!("Tokenizing prompt...");
         let tokens = inner.model.str_to_token(prompt, AddBos::Always)
             .map_err(|e| AiError::Provider(format!("Tokenization failed: {:?}", e)))?;
+        tracing::info!(
+            prompt_tokens = tokens.len(),
+            elapsed_ms = gen_start.elapsed().as_millis(),
+            "Tokenization complete"
+        );
 
         if tokens.len() >= DEFAULT_CTX_SIZE as usize {
             return Err(AiError::Provider(format!(
@@ -144,16 +161,24 @@ impl LocalLlm {
         }
 
         // Create batch and add prompt tokens
+        tracing::debug!(n_tokens = tokens.len(), "Creating batch and adding prompt tokens");
         let mut batch = LlamaBatch::new(DEFAULT_CTX_SIZE as usize, 1);
         let last_idx = tokens.len() - 1;
         for (i, &token) in tokens.iter().enumerate() {
             batch.add(token, i as i32, &[0], i == last_idx)
                 .map_err(|e| AiError::Provider(format!("Batch add failed: {:?}", e)))?;
         }
+        tracing::debug!("Batch prepared, decoding prompt...");
 
         // Decode prompt (process all input tokens)
+        let decode_start = std::time::Instant::now();
         ctx.decode(&mut batch)
             .map_err(|e| AiError::Provider(format!("Prompt decode failed: {:?}", e)))?;
+        tracing::info!(
+            decode_ms = decode_start.elapsed().as_millis(),
+            elapsed_ms = gen_start.elapsed().as_millis(),
+            "Prompt decode complete — starting generation"
+        );
 
         // Setup sampler (low temperature + greedy for JSON reliability)
         let mut sampler = LlamaSampler::chain_simple([
@@ -166,19 +191,34 @@ impl LocalLlm {
         let mut n_pos = tokens.len() as i32;
         let eos = inner.model.token_eos();
         let mut piece_decoder = encoding_rs::UTF_8.new_decoder();
+        let sample_start = std::time::Instant::now();
 
-        for _ in 0..max_tokens {
+        for i in 0..max_tokens {
             let token = sampler.sample(&ctx, -1);
 
             // Check end-of-sequence
             if token == eos {
+                tracing::debug!(tokens_generated = i, "EOS token reached");
                 break;
             }
 
             // Decode token to string (stateful decoder handles multi-byte UTF-8)
             match inner.model.token_to_piece(token, &mut piece_decoder, false, None) {
                 Ok(piece) => output.push_str(&piece),
-                Err(_) => break,
+                Err(e) => {
+                    tracing::warn!(token_idx = i, error = ?e, "Token decode error, stopping");
+                    break;
+                }
+            }
+
+            // Progress logging every 50 tokens
+            if (i + 1) % 50 == 0 {
+                tracing::debug!(
+                    tokens_generated = i + 1,
+                    output_len = output.len(),
+                    elapsed_ms = sample_start.elapsed().as_millis(),
+                    "Generation progress"
+                );
             }
 
             // Prepare next iteration
@@ -192,16 +232,28 @@ impl LocalLlm {
             n_pos += 1;
         }
 
+        let total_generated = n_pos as usize - tokens.len();
+
         if output.trim().is_empty() {
+            tracing::warn!(
+                elapsed_ms = gen_start.elapsed().as_millis(),
+                "Local LLM returned empty response"
+            );
             return Err(AiError::Provider("Local LLM returned empty response".into()));
         }
 
-        tracing::debug!(
+        tracing::info!(
             prompt_tokens = tokens.len(),
-            output_tokens = n_pos as usize - tokens.len(),
+            output_tokens = total_generated,
             output_len = output.len(),
+            total_ms = gen_start.elapsed().as_millis(),
+            sample_ms = sample_start.elapsed().as_millis(),
+            tokens_per_sec = if sample_start.elapsed().as_millis() > 0 {
+                (total_generated as u128 * 1000) / sample_start.elapsed().as_millis()
+            } else { 0 },
             "Local LLM generation complete"
         );
+        tracing::debug!(output = %output, "LLM raw output");
 
         Ok(output)
     }

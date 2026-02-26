@@ -44,12 +44,30 @@ pub fn process_capture(
     thread_quota: usize,
     guardian: &GuardianConfig,
 ) -> AiResult<Option<String>> {
-    tracing::info!(source = source_type, content_len = content.len(), "Processing capture");
+    let pipeline_start = Instant::now();
+    tracing::info!(
+        source = source_type,
+        content_len = content.len(),
+        file_path = ?file_path,
+        thread_quota = thread_quota,
+        "Pipeline START — processing capture"
+    );
 
     // 1. Clean content
     let cleaned = cleaner::clean_tool_output(content);
+    tracing::debug!(
+        original_len = content.len(),
+        cleaned_len = cleaned.len(),
+        min_capture = guardian.extraction.min_capture_length,
+        "Stage 1/6: Content cleaned"
+    );
     if !cleaner::should_capture_with_config(&cleaned, guardian.extraction.min_capture_length) {
-        tracing::debug!(cleaned_len = cleaned.len(), "Capture filtered out (noise)");
+        tracing::info!(
+            cleaned_len = cleaned.len(),
+            min_required = guardian.extraction.min_capture_length,
+            elapsed_ms = pipeline_start.elapsed().as_millis(),
+            "Pipeline DROP at stage 1 — noise filter"
+        );
         return Ok(None);
     }
 
@@ -90,6 +108,13 @@ pub fn process_capture(
         }
     }
 
+    tracing::info!(
+        source = source.as_str(),
+        cleaned_len = cleaned.len(),
+        has_agent_context = agent_context.is_some(),
+        elapsed_ms = pipeline_start.elapsed().as_millis(),
+        "Stage 2/6: Starting LLM extraction"
+    );
     let extraction = match extractor::extract(
         &cleaned,
         source,
@@ -100,22 +125,33 @@ pub fn process_capture(
     )? {
         Some(e) => e,
         None => {
-            tracing::debug!("Extraction skipped (LLM skip or failure)");
+            tracing::info!(
+                elapsed_ms = pipeline_start.elapsed().as_millis(),
+                "Pipeline DROP at stage 2 — LLM skip or failure"
+            );
             return Ok(None);
         }
     };
-    tracing::debug!(
+    tracing::info!(
         title = %extraction.title,
         confidence = extraction.confidence,
+        importance = extraction.importance,
         topics = ?extraction.subjects,
-        "Extraction complete"
+        labels = ?extraction.labels,
+        n_concepts = extraction.concepts.len(),
+        elapsed_ms = pipeline_start.elapsed().as_millis(),
+        "Stage 2/6: Extraction complete"
     );
 
     // 3. Confidence quality gate
     if extraction.confidence == 0.0 {
-        tracing::debug!("Extraction confidence=0, skipping");
+        tracing::info!(
+            elapsed_ms = pipeline_start.elapsed().as_millis(),
+            "Pipeline DROP at stage 3 — confidence=0"
+        );
         return Ok(None);
     }
+    tracing::debug!(confidence = extraction.confidence, "Stage 3/6: Confidence gate passed");
 
     // 4. Coherence gate — determine relationship with pending context
     let coherence_cfg = &guardian.coherence;
@@ -167,6 +203,11 @@ pub fn process_capture(
     };
 
     // 5. Thread management (NewThread / Continue / Fork / Reactivate)
+    tracing::info!(
+        parent_hint = ?parent_hint,
+        elapsed_ms = pipeline_start.elapsed().as_millis(),
+        "Stage 5/6: Thread management"
+    );
     let thread_id = ThreadManager::process_input(
         conn,
         &extraction,
@@ -178,7 +219,11 @@ pub fn process_capture(
         guardian,
     )?;
 
-    tracing::info!(thread_id = ?thread_id, "Capture processed");
+    tracing::info!(
+        thread_id = ?thread_id,
+        elapsed_ms = pipeline_start.elapsed().as_millis(),
+        "Stage 5/6: Thread management complete"
+    );
 
     // 6. Update pending context for next capture
     if let Some(ref tid) = thread_id {
@@ -188,10 +233,22 @@ pub fn process_capture(
         *pending = Some(PendingContext {
             content: truncate_safe(&cleaned, 4000).to_string(),
             thread_id: tid.clone(),
-            labels,
+            labels: labels.clone(),
             timestamp: Instant::now(),
         });
+        tracing::debug!(
+            thread_id = %tid,
+            labels = ?labels,
+            "Stage 6/6: Pending context updated"
+        );
     }
+
+    tracing::info!(
+        source = source_type,
+        thread_id = ?thread_id,
+        total_ms = pipeline_start.elapsed().as_millis(),
+        "Pipeline COMPLETE"
+    );
 
     Ok(thread_id)
 }
