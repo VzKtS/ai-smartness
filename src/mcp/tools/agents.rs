@@ -120,6 +120,37 @@ pub fn handle_agent_cleanup(
         return Ok(serde_json::json!({"removed": agent_id}));
     }
 
+    // Remove orphan agents whose project no longer exists
+    if optional_str(params, "remove_orphans").is_some() {
+        let orphans: Vec<(String, String)> = ctx.registry_conn
+            .prepare(
+                "SELECT a.id, a.project_hash FROM agents a \
+                 LEFT JOIN projects p ON a.project_hash = p.hash \
+                 WHERE p.hash IS NULL",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map(|rows| rows.flatten().collect())
+            })
+            .unwrap_or_default();
+
+        let mut removed = Vec::new();
+        for (agent_id, project_hash) in &orphans {
+            match AgentRegistry::delete(ctx.registry_conn, agent_id, project_hash) {
+                Ok(()) => removed.push(agent_id.clone()),
+                Err(e) => tracing::warn!(agent = %agent_id, error = %e, "Failed to remove orphan agent"),
+            }
+        }
+
+        return Ok(serde_json::json!({
+            "action": "remove_orphans",
+            "found": orphans.len(),
+            "removed": removed,
+        }));
+    }
+
     let hb_config = HeartbeatConfig::default();
     Heartbeat::mark_stale(ctx.registry_conn, &hb_config)?;
     Ok(serde_json::json!({"action": "cleanup", "status": "ok"}))

@@ -118,19 +118,30 @@ impl AgentRegistry {
     }
 
     pub fn delete(conn: &Connection, agent_id: &str, project_hash: &str) -> AiResult<()> {
-        // Refuse to delete the last agent in a project
-        let agent_count: usize = conn
+        // Check if project still exists — orphan agents can always be deleted
+        let project_exists: bool = conn
             .query_row(
-                "SELECT COUNT(*) FROM agents WHERE project_hash = ?1 AND status != 'offline'",
+                "SELECT COUNT(*) FROM projects WHERE hash = ?1",
                 params![project_hash],
-                |r| r.get(0),
+                |r| r.get::<_, usize>(0).map(|c| c > 0),
             )
-            .unwrap_or(0);
+            .unwrap_or(false);
 
-        if agent_count <= 1 {
-            return Err(AiError::InvalidInput(
-                "Cannot delete the last agent in a project".into(),
-            ));
+        // Refuse to delete the last agent only if the project still exists
+        if project_exists {
+            let agent_count: usize = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agents WHERE project_hash = ?1 AND status != 'offline'",
+                    params![project_hash],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+
+            if agent_count <= 1 {
+                return Err(AiError::InvalidInput(
+                    "Cannot delete the last agent in a project".into(),
+                ));
+            }
         }
 
         // Check for active tasks assigned BY this agent

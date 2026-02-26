@@ -81,15 +81,19 @@ pub fn remove(hash: &str) -> Result<()> {
         .unwrap_or_default();
 
     // 2. Remove agents + tasks from registry (bypass last-agent check)
-    let _ = reg_conn.execute(
+    if let Err(e) = reg_conn.execute(
         "DELETE FROM agent_tasks WHERE assigned_to IN \
          (SELECT id FROM agents WHERE project_hash = ?1)",
         rusqlite::params![hash],
-    );
-    let _ = reg_conn.execute(
+    ) {
+        eprintln!("Warning: failed to delete agent_tasks: {}", e);
+    }
+    if let Err(e) = reg_conn.execute(
         "DELETE FROM agents WHERE project_hash = ?1",
         rusqlite::params![hash],
-    );
+    ) {
+        eprintln!("Warning: failed to delete agents: {}", e);
+    }
 
     // 3. Remove project from registry
     let mut registry = SqliteProjectRegistry::new(reg_conn);

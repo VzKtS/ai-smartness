@@ -321,15 +321,19 @@ pub fn remove_project(hash: String) -> Result<serde_json::Value, String> {
         .unwrap_or_default();
 
     // 2. Remove agents + tasks from registry (bypass last-agent check)
-    let _ = reg_conn.execute(
+    if let Err(e) = reg_conn.execute(
         "DELETE FROM agent_tasks WHERE assigned_to IN \
          (SELECT id FROM agents WHERE project_hash = ?1)",
         rusqlite::params![&hash],
-    );
-    let _ = reg_conn.execute(
+    ) {
+        tracing::warn!(hash = %&hash[..8.min(hash.len())], error = %e, "GUI: failed to delete agent_tasks for project");
+    }
+    if let Err(e) = reg_conn.execute(
         "DELETE FROM agents WHERE project_hash = ?1",
         rusqlite::params![&hash],
-    );
+    ) {
+        tracing::warn!(hash = %&hash[..8.min(hash.len())], error = %e, "GUI: failed to delete agents for project");
+    }
 
     // 3. Remove project from registry
     let mut registry = SqliteProjectRegistry::new(reg_conn);
