@@ -13,7 +13,7 @@ use crate::AiResult;
 use crate::intelligence::gossip::Gossip;
 use crate::intelligence::merge_metadata::{self, MAX_TOPICS, MAX_LABELS};
 use crate::processing::embeddings::EmbeddingManager;
-use crate::processing::extractor::Extraction;
+use crate::processing::extractor::{Extraction, ExtractionMode};
 use crate::storage::bridges::BridgeStorage;
 use crate::storage::concept_index::find_threads_sharing_concepts_db;
 use crate::storage::threads::ThreadStorage;
@@ -265,24 +265,31 @@ impl ThreadManager {
 
         tracing::info!(thread_id = %thread_id, title = %extraction.title, topics = ?extraction.subjects, "Thread created");
 
-        // Add initial message (truncate: 10k for prompt/response, 2k for others)
-        let limit = match source_type {
-            "prompt" | "response" => CONTENT_LIMIT_CONVERSATION,
-            _ => CONTENT_LIMIT_DEFAULT,
-        };
-        let truncated = content.len() > limit;
-        let msg_content = if truncated {
-            tracing::warn!(thread_id = %thread_id, len = content.len(), limit = limit, "Message truncated");
-            truncate_safe(content, limit).to_string()
+        // Add initial message
+        // For Summary mode: store the LLM summary (not raw logs/code)
+        // For Extract mode: store the original content (meaningful human text)
+        let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary {
+            ("summary".to_string(), extraction.summary.clone(), false)
         } else {
-            content.to_string()
+            let limit = match source_type {
+                "prompt" | "response" => CONTENT_LIMIT_CONVERSATION,
+                _ => CONTENT_LIMIT_DEFAULT,
+            };
+            let trunc = content.len() > limit;
+            let c = if trunc {
+                tracing::warn!(thread_id = %thread_id, len = content.len(), limit = limit, "Message truncated");
+                truncate_safe(content, limit).to_string()
+            } else {
+                content.to_string()
+            };
+            ("capture".to_string(), c, trunc)
         };
 
         let msg = ThreadMessage {
             thread_id: thread_id.clone(),
             msg_id: id_gen::message_id(),
             content: msg_content,
-            source: "capture".to_string(),
+            source: msg_source,
             source_type: source_type.to_string(),
             timestamp: now,
             metadata: serde_json::Value::Object(Default::default()),
@@ -330,23 +337,29 @@ impl ThreadManager {
             None => return Ok(()),
         };
 
-        let limit = match source_type {
-            "prompt" | "response" => CONTENT_LIMIT_CONVERSATION,
-            _ => CONTENT_LIMIT_DEFAULT,
-        };
-        let truncated = content.len() > limit;
-        let msg_content = if truncated {
-            tracing::warn!(thread_id = %thread_id, len = content.len(), limit = limit, "Message truncated");
-            truncate_safe(content, limit).to_string()
+        // For Summary mode: store the LLM summary (not raw logs/code)
+        let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary {
+            ("summary".to_string(), extraction.summary.clone(), false)
         } else {
-            content.to_string()
+            let limit = match source_type {
+                "prompt" | "response" => CONTENT_LIMIT_CONVERSATION,
+                _ => CONTENT_LIMIT_DEFAULT,
+            };
+            let trunc = content.len() > limit;
+            let c = if trunc {
+                tracing::warn!(thread_id = %thread_id, len = content.len(), limit = limit, "Message truncated");
+                truncate_safe(content, limit).to_string()
+            } else {
+                content.to_string()
+            };
+            ("capture".to_string(), c, trunc)
         };
 
         let msg = ThreadMessage {
             thread_id: thread_id.to_string(),
             msg_id: id_gen::message_id(),
             content: msg_content,
-            source: "capture".to_string(),
+            source: msg_source,
             source_type: source_type.to_string(),
             timestamp: time_utils::now(),
             metadata: serde_json::Value::Object(Default::default()),

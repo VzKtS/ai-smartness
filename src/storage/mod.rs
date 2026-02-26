@@ -13,5 +13,3 @@ pub mod threads;
 pub mod topic_index;
 pub mod transcript;
 pub mod concept_index;
-pub mod credentials;
-pub mod quota_probe;

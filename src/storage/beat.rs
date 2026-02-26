@@ -84,29 +84,6 @@ pub struct BeatState {
     pub tool_call_count: u64,
     #[serde(default)]
     pub prompt_count: u64,
-    // ── MAX quota tracking ──
-    #[serde(default)]
-    pub plan_type: Option<String>,
-    #[serde(default)]
-    pub plan_tier: Option<String>,
-    #[serde(default)]
-    pub quota_5h: Option<f64>,
-    #[serde(default)]
-    pub quota_7d: Option<f64>,
-    #[serde(default)]
-    pub quota_status_5h: Option<String>,
-    #[serde(default)]
-    pub quota_status_7d: Option<String>,
-    #[serde(default)]
-    pub quota_constraint: Option<String>,
-    #[serde(default)]
-    pub quota_reset_5h: Option<u64>,
-    #[serde(default)]
-    pub quota_reset_7d: Option<u64>,
-    #[serde(default)]
-    pub quota_updated_at: Option<String>,
-    #[serde(default)]
-    pub quota_alert: Option<String>,
     /// Cached pending tasks from registry (refreshed by heartbeat every tick).
     #[serde(default)]
     pub pending_tasks: Vec<serde_json::Value>,
@@ -161,17 +138,6 @@ impl Default for BeatState {
             last_error_at: None,
             tool_call_count: 0,
             prompt_count: 0,
-            plan_type: None,
-            plan_tier: None,
-            quota_5h: None,
-            quota_7d: None,
-            quota_status_5h: None,
-            quota_status_7d: None,
-            quota_constraint: None,
-            quota_reset_5h: None,
-            quota_reset_7d: None,
-            quota_updated_at: None,
-            quota_alert: None,
             pending_tasks: Vec::new(),
             shared_threads_cache: Vec::new(),
             git_branch: None,
