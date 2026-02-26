@@ -246,6 +246,10 @@ pub fn run_prune_loop(
 /// Pool consumer loop — processes .pending pool files at LLM speed.
 /// Runs every 10s, separate from the prune loop (which runs every 5 min).
 /// Workers write captures to pool instantly; this thread processes them.
+///
+/// Discovery: scans the filesystem (projects/*/agents/*/pool/) instead of
+/// relying on active_keys(), because non-prompt captures write to pool
+/// without opening a DB connection in the connection pool.
 pub fn run_pool_consumer_loop(
     pool: Arc<ConnectionPool>,
     running: Arc<AtomicBool>,
@@ -259,7 +263,7 @@ pub fn run_pool_consumer_loop(
             break;
         }
 
-        let keys = pool.active_keys();
+        let keys = discover_agents_with_pools();
         for key in &keys {
             if !running.load(Ordering::Relaxed) {
                 break;
@@ -357,6 +361,51 @@ pub fn run_pool_consumer_loop(
     }
 
     tracing::info!("Pool consumer loop stopped");
+}
+
+/// Discover all agents that have a pool/ directory by scanning the filesystem.
+/// This is necessary because non-prompt captures write to pool/ without opening
+/// a DB connection, so pool.active_keys() misses them entirely.
+fn discover_agents_with_pools() -> Vec<AgentKey> {
+    let projects_dir = path_utils::projects_dir();
+    let mut keys = Vec::new();
+
+    let project_entries = match std::fs::read_dir(&projects_dir) {
+        Ok(e) => e,
+        Err(_) => return keys,
+    };
+
+    for project_entry in project_entries.flatten() {
+        let project_hash = project_entry.file_name().to_string_lossy().to_string();
+        let agents_dir = project_entry.path().join("agents");
+        if !agents_dir.exists() {
+            continue;
+        }
+
+        let agent_entries = match std::fs::read_dir(&agents_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for agent_entry in agent_entries.flatten() {
+            let path = agent_entry.path();
+            // Only consider directories (agent data dirs), skip .db files
+            if !path.is_dir() {
+                continue;
+            }
+            let pool_dir = path.join("pool");
+            if !pool_dir.exists() {
+                continue;
+            }
+            let agent_id = agent_entry.file_name().to_string_lossy().to_string();
+            keys.push(AgentKey {
+                project_hash: project_hash.clone(),
+                agent_id,
+            });
+        }
+    }
+
+    keys
 }
 
 /// Signal backpressure ON via BeatState.
