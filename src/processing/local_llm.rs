@@ -154,11 +154,13 @@ impl LocalLlm {
         // Create context with explicit thread count to avoid over-subscription
         tracing::debug!(
             ctx_size = DEFAULT_CTX_SIZE,
+            n_batch = DEFAULT_CTX_SIZE,
             n_threads = INFERENCE_THREADS,
             "Creating LLM context"
         );
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(std::num::NonZeroU32::new(DEFAULT_CTX_SIZE))
+            .with_n_batch(DEFAULT_CTX_SIZE)
             .with_n_threads(INFERENCE_THREADS)
             .with_n_threads_batch(INFERENCE_THREADS);
         let mut ctx = inner.model.new_context(&inner.backend, ctx_params)
@@ -198,8 +200,9 @@ impl LocalLlm {
         tracing::info!(
             n_tokens = tokens.len(),
             ctx_size = DEFAULT_CTX_SIZE,
+            n_batch = DEFAULT_CTX_SIZE,
             n_threads = INFERENCE_THREADS,
-            "Batch prepared — entering llama.cpp decode (this is where crashes happen)"
+            "Batch prepared — entering llama.cpp decode"
         );
         // Force flush: if llama.cpp segfaults, at least the last log line is visible.
         use std::io::Write;
