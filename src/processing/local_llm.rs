@@ -10,7 +10,7 @@
 use crate::config::LocalModelSize;
 use crate::{AiError, AiResult};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
@@ -19,14 +19,18 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
-/// Context size (tokens). 8192 is plenty for extraction prompts + 4K content + response.
-const DEFAULT_CTX_SIZE: u32 = 8192;
+/// Context size (tokens). 4096 for extraction prompts (reduces KV cache memory).
+const DEFAULT_CTX_SIZE: u32 = 4096;
 
 /// Default max output tokens for generation.
 const DEFAULT_MAX_TOKENS: u32 = 512;
 
 /// Temperature for sampling (low = more deterministic, better for JSON).
 const SAMPLING_TEMP: f32 = 0.1;
+
+/// Number of threads for llama.cpp context evaluation.
+/// Explicit to avoid over-subscription in multi-threaded daemon.
+const INFERENCE_THREADS: i32 = 2;
 
 static GLOBAL: OnceLock<LocalLlm> = OnceLock::new();
 
@@ -35,6 +39,9 @@ pub struct LocalLlm {
     /// Backend + model held together. None = unavailable.
     inner: Option<LlmInner>,
     model_path: PathBuf,
+    /// Serialize all generate() calls — llama.cpp context creation from a shared
+    /// model can have thread-safety issues. One inference at a time.
+    inference_lock: Mutex<()>,
 }
 
 struct LlmInner {
@@ -67,7 +74,11 @@ impl LocalLlm {
         let model_dir = crate::storage::path_utils::data_dir().join("models");
         let model_path = model_dir.join(size.filename());
 
-        let unavailable = |model_path: PathBuf| Self { inner: None, model_path };
+        let unavailable = |model_path: PathBuf| Self {
+            inner: None,
+            model_path,
+            inference_lock: Mutex::new(()),
+        };
 
         // Initialize llama.cpp backend
         let backend = match LlamaBackend::init() {
@@ -100,6 +111,7 @@ impl LocalLlm {
                 Self {
                     inner: Some(LlmInner { backend, model }),
                     model_path,
+                    inference_lock: Mutex::new(()),
                 }
             }
             Err(e) => {
@@ -132,12 +144,23 @@ impl LocalLlm {
             AiError::Provider("Local LLM model not loaded".into())
         })?;
 
+        // Serialize all inference — llama.cpp model access is NOT thread-safe
+        // for concurrent context creation + decode from the same model.
+        let _lock = self.inference_lock.lock().unwrap_or_else(|e| e.into_inner());
+        tracing::debug!("Inference lock acquired");
+
         let max_tokens = if max_tokens == 0 { DEFAULT_MAX_TOKENS } else { max_tokens };
 
-        // Create context (one per call — cheap for small models)
-        tracing::debug!("Creating LLM context (ctx_size={})", DEFAULT_CTX_SIZE);
+        // Create context with explicit thread count to avoid over-subscription
+        tracing::debug!(
+            ctx_size = DEFAULT_CTX_SIZE,
+            n_threads = INFERENCE_THREADS,
+            "Creating LLM context"
+        );
         let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(std::num::NonZeroU32::new(DEFAULT_CTX_SIZE));
+            .with_n_ctx(std::num::NonZeroU32::new(DEFAULT_CTX_SIZE))
+            .with_n_threads(INFERENCE_THREADS)
+            .with_n_threads_batch(INFERENCE_THREADS);
         let mut ctx = inner.model.new_context(&inner.backend, ctx_params)
             .map_err(|e| AiError::Provider(format!("Failed to create LLM context: {:?}", e)))?;
         tracing::debug!(elapsed_ms = gen_start.elapsed().as_millis(), "LLM context created");
@@ -152,11 +175,15 @@ impl LocalLlm {
             "Tokenization complete"
         );
 
-        if tokens.len() >= DEFAULT_CTX_SIZE as usize {
+        // Reserve space for generation (prompt + max_tokens must fit in context)
+        let max_input_tokens = DEFAULT_CTX_SIZE.saturating_sub(max_tokens) as usize;
+        if tokens.len() >= max_input_tokens {
             return Err(AiError::Provider(format!(
-                "Prompt too long: {} tokens (max {})",
+                "Prompt too long: {} tokens (ctx={}, reserved for output={}, max input={})",
                 tokens.len(),
-                DEFAULT_CTX_SIZE
+                DEFAULT_CTX_SIZE,
+                max_tokens,
+                max_input_tokens
             )));
         }
 
@@ -168,7 +195,15 @@ impl LocalLlm {
             batch.add(token, i as i32, &[0], i == last_idx)
                 .map_err(|e| AiError::Provider(format!("Batch add failed: {:?}", e)))?;
         }
-        tracing::debug!("Batch prepared, decoding prompt...");
+        tracing::info!(
+            n_tokens = tokens.len(),
+            ctx_size = DEFAULT_CTX_SIZE,
+            n_threads = INFERENCE_THREADS,
+            "Batch prepared — entering llama.cpp decode (this is where crashes happen)"
+        );
+        // Force flush: if llama.cpp segfaults, at least the last log line is visible.
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
 
         // Decode prompt (process all input tokens)
         let decode_start = std::time::Instant::now();
