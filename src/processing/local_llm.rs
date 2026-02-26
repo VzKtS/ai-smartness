@@ -291,7 +291,16 @@ impl LocalLlm {
             } else { 0 },
             "Local LLM generation complete"
         );
-        tracing::info!(output_preview = %&output[..output.len().min(500)], "LLM raw output");
+        // Safe char-boundary truncation for preview (avoid panic on multi-byte UTF-8)
+        let preview_end = {
+            let max = output.len().min(500);
+            let mut end = max;
+            while end > 0 && !output.is_char_boundary(end) {
+                end -= 1;
+            }
+            end
+        };
+        tracing::info!(output_preview = %&output[..preview_end], "LLM raw output");
 
         Ok(output)
     }
