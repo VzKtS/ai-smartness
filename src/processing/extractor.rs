@@ -139,7 +139,7 @@ fn extract_via_llm(
         "Extraction: prompt built, calling LLM"
     );
 
-    match super::llm_subprocess::call_claude(&prompt) {
+    match super::llm_subprocess::call_llm(&prompt) {
         Ok(response) => {
             tracing::info!(
                 response_len = response.len(),

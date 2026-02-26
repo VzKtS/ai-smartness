@@ -9,7 +9,7 @@ en: {
     'tab.dashboard':'Dashboard','tab.threads':'Threads','tab.agents':'Agents','tab.graph':'Graph','tab.settings':'Settings',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Thread Matching',
     'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decay & Lifecycle','stab.alerts':'Alerts',
-    'stab.fallback':'Fallback','stab.guardcode':'GuardCode','stab.network':'Network','stab.updates':'Updates',
+    'stab.guardcode':'GuardCode','stab.network':'Network','stab.updates':'Updates',
     'dash.daemon':'Daemon','dash.active':'Active Threads','dash.suspended':'Suspended',
     'dash.archived':'Archived','dash.bridges':'Bridges','dash.version':'Version',
     'dash.cpu':'CPU','dash.memory':'Memory','dash.pool':'Pool',
@@ -46,21 +46,20 @@ en: {
     'th.path':'Path','th.provider':'Provider','th.hash':'Hash',
     'modal.editproject':'Edit Project','modal.provider':'Provider',
     'project.noprojects':'No projects registered','project.confirmdelete':'Delete project',
-    'cfg.enabled':'Guardian Enabled','cfg.clipath':'Claude CLI Path','cfg.hookguard':'Hook Guard Env',
+    'cfg.enabled':'Guardian Enabled','cfg.hookguard':'Hook Guard Env',
     'cfg.cache':'Cache Enabled','cfg.cachettl':'Cache TTL (secs)','cfg.cachemax':'Cache Max Entries',
     'cfg.pattern':'Pattern Learning','cfg.patterndecay':'Pattern Decay (days)',
-    'cfg.usage':'Usage Tracking','cfg.fallback':'Fallback on Failure',
+    'cfg.usage':'Usage Tracking',
     'cfg.model':'Model','cfg.timeout':'Timeout (s)','cfg.retries':'Max Retries',
-    'cfg.taskEnabled':'Enabled','cfg.failmode':'Failure Mode','cfg.language':'Language',
+    'cfg.taskEnabled':'Enabled','cfg.language':'Language',
     'gc.enabled':'Enabled','gc.maxbytes':'Max Content Bytes','gc.warnonblock':'Warn on Block',
     'gc.action':'Action on Block','gc.blockedpatterns':'Blocked Patterns','gc.addpattern':'+ Add Pattern',
-    'gc.sanitize':'Sanitize LLM','gc.sanitizeretries':'Sanitize Loop Max',
 },
 fr: {
     'tab.dashboard':'Tableau de bord','tab.threads':'Threads','tab.agents':'Agents','tab.graph':'Graphe','tab.settings':'Parametres',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Correspondance',
     'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decroissance & Cycle de vie','stab.alerts':'Alertes',
-    'stab.fallback':'Repli','stab.guardcode':'GuardCode','stab.network':'Reseau','stab.updates':'Mises a jour',
+    'stab.guardcode':'GuardCode','stab.network':'Reseau','stab.updates':'Mises a jour',
     'dash.daemon':'Daemon','dash.active':'Threads actifs','dash.suspended':'Suspendus',
     'dash.archived':'Archives','dash.bridges':'Ponts','dash.version':'Version',
     'dash.cpu':'CPU','dash.memory':'Memoire','dash.pool':'Pool',
@@ -97,21 +96,20 @@ fr: {
     'th.path':'Chemin','th.provider':'Fournisseur','th.hash':'Hash',
     'modal.editproject':'Modifier le projet','modal.provider':'Fournisseur',
     'project.noprojects':'Aucun projet enregistre','project.confirmdelete':'Supprimer le projet',
-    'cfg.enabled':'Guardian active','cfg.clipath':'Chemin CLI Claude','cfg.hookguard':'Env Hook Guard',
+    'cfg.enabled':'Guardian active','cfg.hookguard':'Env Hook Guard',
     'cfg.cache':'Cache active','cfg.cachettl':'Cache TTL (sec)','cfg.cachemax':'Cache max entrees',
     'cfg.pattern':'Apprentissage de patterns','cfg.patterndecay':'Decroissance patterns (jours)',
-    'cfg.usage':"Suivi d'utilisation",'cfg.fallback':"Repli en cas d'echec",
+    'cfg.usage':"Suivi d'utilisation",
     'cfg.model':'Modele','cfg.timeout':'Timeout (s)','cfg.retries':'Max tentatives',
-    'cfg.taskEnabled':'Active','cfg.failmode':"Mode d'echec",'cfg.language':'Langue',
+    'cfg.taskEnabled':'Active','cfg.language':'Langue',
     'gc.enabled':'Active','gc.maxbytes':'Taille max (octets)','gc.warnonblock':'Avertir au blocage',
     'gc.action':'Action au blocage','gc.blockedpatterns':'Patterns bloques','gc.addpattern':'+ Ajouter Pattern',
-    'gc.sanitize':'Nettoyage LLM','gc.sanitizeretries':'Boucle nettoyage max',
 },
 es: {
     'tab.dashboard':'Panel','tab.threads':'Hilos','tab.agents':'Agentes','tab.graph':'Grafo','tab.settings':'Configuracion',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Correspondencia',
     'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decaimiento & Ciclo de vida','stab.alerts':'Alertas',
-    'stab.fallback':'Respaldo','stab.guardcode':'GuardCode','stab.network':'Red','stab.updates':'Actualizaciones',
+    'stab.guardcode':'GuardCode','stab.network':'Red','stab.updates':'Actualizaciones',
     'dash.daemon':'Daemon','dash.active':'Hilos activos','dash.suspended':'Suspendidos',
     'dash.archived':'Archivados','dash.bridges':'Puentes','dash.version':'Version',
     'dash.cpu':'CPU','dash.memory':'Memoria','dash.pool':'Pool',
@@ -148,15 +146,14 @@ es: {
     'th.path':'Ruta','th.provider':'Proveedor','th.hash':'Hash',
     'modal.editproject':'Editar proyecto','modal.provider':'Proveedor',
     'project.noprojects':'Ningun proyecto registrado','project.confirmdelete':'Eliminar proyecto',
-    'cfg.enabled':'Guardian activado','cfg.clipath':'Ruta CLI Claude','cfg.hookguard':'Env Hook Guard',
+    'cfg.enabled':'Guardian activado','cfg.hookguard':'Env Hook Guard',
     'cfg.cache':'Cache activado','cfg.cachettl':'Cache TTL (seg)','cfg.cachemax':'Cache max entradas',
     'cfg.pattern':'Aprendizaje de patrones','cfg.patterndecay':'Decaimiento patrones (dias)',
-    'cfg.usage':'Seguimiento de uso','cfg.fallback':'Respaldo en caso de fallo',
+    'cfg.usage':'Seguimiento de uso',
     'cfg.model':'Modelo','cfg.timeout':'Timeout (s)','cfg.retries':'Max reintentos',
-    'cfg.taskEnabled':'Activado','cfg.failmode':'Modo de fallo','cfg.language':'Idioma',
+    'cfg.taskEnabled':'Activado','cfg.language':'Idioma',
     'gc.enabled':'Activado','gc.maxbytes':'Tamano max (bytes)','gc.warnonblock':'Avisar al bloquear',
     'gc.action':'Accion al bloquear','gc.blockedpatterns':'Patrones bloqueados','gc.addpattern':'+ Agregar Patron',
-    'gc.sanitize':'Sanear LLM','gc.sanitizeretries':'Bucle saneamiento max',
 }
 };
 
@@ -1039,7 +1036,6 @@ function toggleAgentEditRow(tr, agent, toggleBtn) {
     const curModel = agent.expected_model || '';
     const modelOptions = [
         { value: '', label: '— Default —' },
-        { value: 'haiku', label: 'Haiku' },
         { value: 'sonnet', label: 'Sonnet' },
         { value: 'opus', label: 'Opus' },
     ].map(m => `<option value="${m.value}" ${m.value === curModel ? 'selected' : ''}>${m.label}</option>`).join('');
@@ -1262,8 +1258,6 @@ function populateForm(obj) {
     });
     // Render blocked patterns list
     renderBlockedPatterns(obj.guardcode?.blocked_patterns || []);
-    // Show/hide sanitize section
-    updateSanitizeVisibility();
 }
 
 function collectForm() {
@@ -1353,15 +1347,6 @@ document.getElementById('btn-add-pattern')?.addEventListener('click', () => {
     if (list) addPatternRow(list, '');
 });
 
-// Show/hide sanitize LLM section based on action_on_block
-function updateSanitizeVisibility() {
-    const sel = document.getElementById('gc-action-select');
-    const section = document.getElementById('gc-sanitize-section');
-    if (sel && section) {
-        section.style.display = sel.value === 'SanitizeLlm' ? '' : 'none';
-    }
-}
-document.getElementById('gc-action-select')?.addEventListener('change', updateSanitizeVisibility);
 
 // ═══════════════════════════════════════════════════════════════
 // UTILITY

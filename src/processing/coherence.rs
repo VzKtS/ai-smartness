@@ -30,7 +30,7 @@ pub enum CoherenceAction {
 }
 
 /// Verifie la coherence entre un contexte parent et un nouveau contenu.
-/// Appelle le LLM (claude subprocess) avec le COHERENCE_PROMPT.
+/// Appelle le LLM local avec le COHERENCE_PROMPT.
 /// Falls back to embedding similarity if LLM unavailable.
 pub fn check_coherence(
     context: &str,
@@ -96,7 +96,7 @@ New content:
         current_labels, ctx_truncated, cnt_truncated
     );
 
-    let response = super::llm_subprocess::call_claude(&prompt)?;
+    let response = super::llm_subprocess::call_llm(&prompt)?;
 
     // Parse JSON from response
     let json_str = if let Some(start) = response.find('{') {

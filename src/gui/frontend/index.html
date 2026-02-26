@@ -539,20 +539,7 @@
                         <option value="Reject">Reject</option>
                         <option value="WarnOnly">WarnOnly</option>
                         <option value="Truncate">Truncate</option>
-                        <option value="SanitizeLlm">SanitizeLlm</option>
                     </select></label>
-                </div>
-                <div id="gc-sanitize-section" class="config-section" style="display:none;margin-top:12px">
-                    <h3 class="section-toggle open" data-section="gc-sanitize" data-i18n="gc.sanitize">Sanitize LLM</h3>
-                    <div id="section-gc-sanitize" class="section-body open">
-                        <div class="form-grid">
-                            <label data-i18n="cfg.model" title="LLM model for content sanitization (only used when Action on Block = SanitizeLlm). Haiku is fast and sufficient for cleanup tasks.">Model <select data-path="guardcode.sanitize_llm.model"><option value="haiku">Haiku</option><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
-                            <label data-i18n="cfg.timeout" title="Maximum seconds for sanitization LLM call. Default: 30s.">Timeout (s) <input type="number" data-path="guardcode.sanitize_llm.timeout_secs" min="1"></label>
-                            <label data-i18n="cfg.retries" title="Retry attempts on sanitization LLM failure. Default: 1.">Max Retries <input type="number" data-path="guardcode.sanitize_llm.max_retries" min="0" max="5"></label>
-                            <label data-i18n="gc.sanitizeretries" title="Maximum sanitize-then-revalidate loops. Prevents infinite cycles where sanitized content still fails validation. Default: 2.">Sanitize Loop Max <input type="number" data-path="guardcode.sanitize_max_retries" min="1" max="5"></label>
-                            <label data-i18n="cfg.failmode" title="Behavior when sanitization LLM fails. RetryWithHaiku: retry with cheapest model. Skip: discard the content. Default: Skip.">Failure Mode <select data-path="guardcode.sanitize_llm.failure_mode"><option value="RetryWithHaiku">RetryWithHaiku</option><option value="Skip">Skip</option></select></label>
-                        </div>
-                    </div>
                 </div>
                 <h4 data-i18n="gc.blockedpatterns">Blocked Patterns</h4>
                 <div class="pattern-list" id="blocked-patterns-list"></div>
@@ -910,7 +897,6 @@
                 <label for="new-agent-model" title="Expected Claude model for this agent. Used for mismatch detection when the agent runs on a different model than configured.">Expected Model</label>
                 <select id="new-agent-model">
                     <option value="">— Default —</option>
-                    <option value="haiku">Haiku</option>
                     <option value="sonnet">Sonnet</option>
                     <option value="opus">Opus</option>
                 </select>

@@ -7,7 +7,7 @@ use crate::{AiError, AiResult};
 
 /// Call LLM with a prompt and return the response text.
 /// Uses local llama.cpp only. No fallback.
-pub fn call_claude(prompt: &str) -> AiResult<String> {
+pub fn call_llm(prompt: &str) -> AiResult<String> {
     let start = std::time::Instant::now();
     tracing::info!(prompt_len = prompt.len(), "LLM call starting");
 

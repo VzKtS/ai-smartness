@@ -308,7 +308,7 @@ Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", 
         prompt, context_block
     );
 
-    let response = ai_smartness::processing::llm_subprocess::call_claude(&gate_prompt)?;
+    let response = ai_smartness::processing::llm_subprocess::call_llm(&gate_prompt)?;
 
     // Parse JSON response
     if let Some(start) = response.find('{') {

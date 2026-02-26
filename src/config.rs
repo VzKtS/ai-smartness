@@ -658,9 +658,6 @@ pub enum BlockAction {
     WarnOnly,
     /// Truncate content to max_content_bytes.
     Truncate,
-    /// Send to LLM for sanitization, then re-validate through GuardCode.
-    /// Flow: blocked content → LLM sanitize → re-check rules → accept or reject.
-    SanitizeLlm,
 }
 
 /// GuardCode configuration — content validation rules.
@@ -677,11 +674,6 @@ pub struct GuardCodeConfig {
     pub warn_on_block: bool,
     /// Action to take when content is blocked.
     pub action_on_block: BlockAction,
-    /// LLM config for SanitizeLlm action.
-    /// Used when action_on_block = SanitizeLlm.
-    pub sanitize_llm: TaskLlmConfig,
-    /// Max retries for the sanitize → re-validate loop (prevents infinite loops).
-    pub sanitize_max_retries: u32,
     /// Custom messages (editable from GUI). Empty strings use defaults.
     #[serde(default)]
     pub messages: GuardCodeMessages,
@@ -709,8 +701,6 @@ impl Default for GuardCodeConfig {
             blocked_patterns: vec![],
             warn_on_block: true,
             action_on_block: BlockAction::Reject,
-            sanitize_llm: TaskLlmConfig { enabled: true },
-            sanitize_max_retries: 2,
             messages: GuardCodeMessages::default(),
         }
     }

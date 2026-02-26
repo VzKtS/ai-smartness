@@ -57,7 +57,7 @@ impl ReactivationDecider {
             ctx_preview
         );
 
-        match llm_subprocess::call_claude(&prompt) {
+        match llm_subprocess::call_llm(&prompt) {
             Ok(response) => {
                 if let Some(start) = response.find('{') {
                     if let Some(end) = response.rfind('}') {

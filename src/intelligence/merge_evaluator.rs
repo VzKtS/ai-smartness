@@ -100,7 +100,7 @@ impl MergeEvaluator {
     ) -> AiResult<MergeDecision> {
         let prompt = Self::build_prompt(thread_a, thread_b, candidate, conn)?;
 
-        let response = match llm_subprocess::call_claude(&prompt) {
+        let response = match llm_subprocess::call_llm(&prompt) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("MergeEvaluator LLM call failed: {}", e);

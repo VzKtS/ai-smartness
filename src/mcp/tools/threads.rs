@@ -368,7 +368,7 @@ Output JSON only: {{"concepts":["word1","word2",...]}}"#,
             thread.summary.as_deref().unwrap_or("(none)"),
         );
 
-        match ai_smartness::processing::llm_subprocess::call_claude(&prompt) {
+        match ai_smartness::processing::llm_subprocess::call_llm(&prompt) {
             Ok(response) => {
                 // Parse concepts from response
                 if let Some(start) = response.find('{') {
