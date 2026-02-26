@@ -291,7 +291,7 @@ impl LocalLlm {
             } else { 0 },
             "Local LLM generation complete"
         );
-        tracing::debug!(output = %output, "LLM raw output");
+        tracing::info!(output_preview = %&output[..output.len().min(500)], "LLM raw output");
 
         Ok(output)
     }
