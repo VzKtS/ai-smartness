@@ -344,8 +344,10 @@ impl LocalLlm {
                         }
                     }
                 }
-                Err(e) => {
-                    tracing::warn!(token_idx = i, error = ?e, "Token decode error, stopping");
+                Err(_e) => {
+                    // Special tokens like <|end|> (Phi-4-mini) can't be decoded to text.
+                    // This is expected end-of-turn behavior, not an error.
+                    tracing::info!(token_idx = i, "End-of-turn token — stopping generation");
                     break;
                 }
             }
