@@ -4,8 +4,8 @@
 //!   - LLM-based: extraction, coherence, reactivation, synthesis, labels, importance
 //!   - Embedding-based: gossip, recall, thread matching
 //!
-//! Design: LLM-FIRST — prefer LLM (even haiku) over heuristic fallbacks.
-//! Heuristics create "junk" threads with poor titles and imprecise topics.
+//! Design: LOCAL LLM ONLY — no fallback, no heuristics, no API calls.
+//! Zero cost. If local LLM is unavailable, extraction fails cleanly.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -16,26 +16,23 @@ use std::collections::HashMap;
 
 /// Configuration for a single LLM task.
 /// Controls whether this Guardian task is active.
-/// Inference is handled by the local LLM (llama.cpp) or Claude CLI fallback.
+/// Inference is handled by the local LLM (llama.cpp) only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskLlmConfig {
     pub enabled: bool,
 }
 
 // ============================================================================
-// LLM BACKEND (local llama.cpp vs Claude CLI)
+// LLM BACKEND (local llama.cpp only)
 // ============================================================================
 
 /// LLM backend for Guardian inference tasks.
+/// Only local llama.cpp is supported. No API fallback.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub enum LlmBackend {
-    /// In-process llama.cpp (zero API cost). Default.
+    /// In-process llama.cpp (zero API cost). Only option.
     #[default]
     Local,
-    /// Claude CLI subprocess (API cost).
-    Claude,
-    /// Try local first, fallback to Claude CLI.
-    LocalWithFallback,
 }
 
 /// Local GGUF model size (Qwen2.5-Instruct family).
@@ -837,7 +834,7 @@ pub struct GuardianConfig {
 
     // --- Global settings ---
     pub enabled: bool,
-    /// LLM backend: Local (llama.cpp, zero cost), Claude (API), or LocalWithFallback.
+    /// LLM backend: Local llama.cpp only. No fallback.
     #[serde(default)]
     pub llm_backend: LlmBackend,
     /// Local model size: ThreeB (default, ~2.1GB) or SevenB (~4.7GB).
@@ -1601,19 +1598,15 @@ mod tests {
 
     #[test]
     fn test_llm_backend_serde_roundtrip() {
-        let backends = [LlmBackend::Local, LlmBackend::Claude, LlmBackend::LocalWithFallback];
-        for backend in &backends {
-            let json = serde_json::to_string(backend).expect("serialize");
-            let back: LlmBackend = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(&back, backend, "serde roundtrip failed for {:?}", backend);
-        }
+        let backend = LlmBackend::Local;
+        let json = serde_json::to_string(&backend).expect("serialize");
+        let back: LlmBackend = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, backend);
     }
 
     #[test]
     fn test_llm_backend_equality() {
         assert_eq!(LlmBackend::Local, LlmBackend::Local);
-        assert_ne!(LlmBackend::Local, LlmBackend::Claude);
-        assert_ne!(LlmBackend::Claude, LlmBackend::LocalWithFallback);
     }
 
     // ========================================================================
@@ -1630,12 +1623,11 @@ mod tests {
     #[test]
     fn test_guardian_config_serde_with_local_model_fields() {
         let mut gc = GuardianConfig::default();
-        gc.llm_backend = LlmBackend::LocalWithFallback;
         gc.local_model_size = LocalModelSize::SevenB;
 
         let json = serde_json::to_string(&gc).expect("serialize");
         let back: GuardianConfig = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.llm_backend, LlmBackend::LocalWithFallback);
+        assert_eq!(back.llm_backend, LlmBackend::Local);
         assert_eq!(back.local_model_size, LocalModelSize::SevenB);
     }
 

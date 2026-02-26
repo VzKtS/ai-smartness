@@ -1,7 +1,7 @@
 //! CLI subcommand: setup-model — download local LLM model for zero-cost inference.
 //!
 //! Downloads a Qwen2.5-Instruct GGUF model from HuggingFace into {data_dir}/models/
-//! so the daemon can use local llama.cpp inference instead of Claude CLI.
+//! so the daemon can use local llama.cpp inference.
 //!
 //! Models: 3B (default, ~2.1GB) or 7B (~4.7GB).
 

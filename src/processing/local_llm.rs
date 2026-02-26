@@ -1,7 +1,7 @@
 //! Local LLM — in-process inference via llama.cpp (zero API cost).
 //!
-//! Replaces the Claude CLI subprocess for Guardian tasks (extraction,
-//! coherence, reactivation, merge evaluation, etc.).
+//! Handles all Guardian tasks: extraction, coherence, reactivation,
+//! merge evaluation, etc. No fallback — local only.
 //!
 //! Model: Qwen2.5-Instruct GGUF, auto-downloaded to {data_dir}/models/ on first use.
 //! Sizes: 3B (default, ~2.1GB) or 7B (~4.7GB), selectable via config.
