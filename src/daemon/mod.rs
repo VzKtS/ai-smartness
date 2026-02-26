@@ -70,39 +70,17 @@ pub fn run() {
     let pid_path = data_dir.join("daemon.pid");
     let socket_path_early = data_dir.join("processor.sock");
 
-    // Singleton guard: kill any existing daemon before starting
-    if pid_path.exists() {
-        if let Ok(old_pid_str) = std::fs::read_to_string(&pid_path) {
-            let old_pid_str = old_pid_str.trim();
-            if let Ok(old_pid) = old_pid_str.parse::<u32>() {
-                let my_pid = std::process::id();
-                if old_pid != my_pid && is_process_alive(old_pid) {
-                    tracing::warn!(
-                        old_pid = old_pid,
-                        my_pid = my_pid,
-                        "Existing daemon detected — killing before startup"
-                    );
-                    kill_process(old_pid);
-                    // Wait up to 3s for old daemon to die
-                    for _ in 0..30 {
-                        if !is_process_alive(old_pid) {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-                    if is_process_alive(old_pid) {
-                        tracing::error!(old_pid = old_pid, "Old daemon did not die — force killing");
-                        kill_process_force(old_pid);
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
-                    // Clean stale socket
-                    let _ = std::fs::remove_file(&socket_path_early);
-                    tracing::info!(old_pid = old_pid, "Old daemon killed, starting fresh");
-                }
-            }
-        }
-        let _ = std::fs::remove_file(&pid_path);
+    // Singleton guard: kill ALL existing daemon processes before starting.
+    // Scans /proc for any "ai-smartness daemon run-foreground" besides ourselves,
+    // then also checks the PID file for good measure.
+    let my_pid = std::process::id();
+    let killed = kill_old_daemons(my_pid);
+    if killed > 0 {
+        tracing::warn!(killed = killed, my_pid = my_pid, "Killed old daemon(s) before startup");
+        // Clean stale socket
+        let _ = std::fs::remove_file(&socket_path_early);
     }
+    let _ = std::fs::remove_file(&pid_path);
 
     std::fs::write(&pid_path, std::process::id().to_string()).ok();
 
@@ -395,6 +373,60 @@ fn kill_process_force(pid: u32) {
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/F"])
             .output();
+    }
+}
+
+/// Scan /proc for all running "ai-smartness daemon run-foreground" processes
+/// and kill any that are not ourselves. Returns the number of processes killed.
+fn kill_old_daemons(my_pid: u32) -> usize {
+    #[cfg(unix)]
+    {
+        let mut killed = 0;
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let Ok(pid) = name_str.parse::<u32>() else {
+                continue;
+            };
+            if pid == my_pid {
+                continue;
+            }
+            // Read /proc/{pid}/cmdline — args are NUL-separated
+            let cmdline_path = format!("/proc/{}/cmdline", pid);
+            let Ok(cmdline) = std::fs::read(&cmdline_path) else {
+                continue;
+            };
+            let cmdline_str = String::from_utf8_lossy(&cmdline);
+            if cmdline_str.contains("ai-smartness")
+                && cmdline_str.contains("daemon")
+                && cmdline_str.contains("run-foreground")
+            {
+                tracing::warn!(old_pid = pid, "Found orphan daemon process — killing");
+                kill_process(pid);
+                // Wait up to 3s
+                for _ in 0..30 {
+                    if !is_process_alive(pid) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if is_process_alive(pid) {
+                    tracing::error!(old_pid = pid, "Orphan daemon did not die — SIGKILL");
+                    kill_process_force(pid);
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                killed += 1;
+            }
+        }
+        killed
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = my_pid;
+        0
     }
 }
 
