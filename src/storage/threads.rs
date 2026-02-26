@@ -67,7 +67,7 @@ fn thread_from_row(row: &Row) -> rusqlite::Result<Thread> {
         last_active: time_utils::from_sqlite(&last_active_str)
             .unwrap_or_else(|_| chrono::Utc::now()),
         extraction_mode: match extraction_mode_str.as_str() {
-            "verbatim" => ExtractionMode::Verbatim,
+            "summary" | "verbatim" => ExtractionMode::Summary,
             _ => ExtractionMode::Extract,
         },
     })
@@ -151,7 +151,7 @@ impl ThreadStorage {
                 time_utils::to_sqlite(&thread.created_at),
                 time_utils::to_sqlite(&thread.last_active),
                 match thread.extraction_mode {
-                    ExtractionMode::Verbatim => "verbatim",
+                    ExtractionMode::Summary => "summary",
                     ExtractionMode::Extract => "extract",
                 },
             ],
@@ -227,7 +227,7 @@ impl ThreadStorage {
                 embedding_blob,
                 time_utils::to_sqlite(&thread.last_active),
                 match thread.extraction_mode {
-                    ExtractionMode::Verbatim => "verbatim",
+                    ExtractionMode::Summary => "summary",
                     ExtractionMode::Extract => "extract",
                 },
             ],
@@ -1005,12 +1005,12 @@ mod tests {
         let thread = ThreadBuilder::new()
             .id("em-test")
             .title("Extraction mode test")
-            .extraction_mode(ExtractionMode::Verbatim)
+            .extraction_mode(ExtractionMode::Summary)
             .build();
         ThreadStorage::insert(&conn, &thread).unwrap();
 
         let got = ThreadStorage::get(&conn, "em-test").unwrap().unwrap();
-        assert_eq!(got.extraction_mode, ExtractionMode::Verbatim);
+        assert_eq!(got.extraction_mode, ExtractionMode::Summary);
     }
 
     #[test]
@@ -1036,10 +1036,10 @@ mod tests {
             .build();
         ThreadStorage::insert(&conn, &thread).unwrap();
 
-        thread.extraction_mode = ExtractionMode::Verbatim;
+        thread.extraction_mode = ExtractionMode::Summary;
         ThreadStorage::update(&conn, &thread).unwrap();
 
         let got = ThreadStorage::get(&conn, "em-update").unwrap().unwrap();
-        assert_eq!(got.extraction_mode, ExtractionMode::Verbatim);
+        assert_eq!(got.extraction_mode, ExtractionMode::Summary);
     }
 }
