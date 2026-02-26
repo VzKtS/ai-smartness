@@ -92,6 +92,14 @@ fn process_single_file(
     guardian: &GuardianConfig,
 ) -> AiResult<usize> {
     let file_start = std::time::Instant::now();
+
+    // Skip files deleted between directory listing and processing
+    if !path.exists() {
+        tracing::debug!(file = %path.display(), "Pool file vanished — skipping");
+        let _ = std::fs::remove_file(path); // cleanup stale entry
+        return Ok(0);
+    }
+
     tracing::info!(
         file = %path.display(),
         "Pool file: reading JSONL entries"
