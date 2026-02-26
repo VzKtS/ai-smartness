@@ -39,6 +39,8 @@ pub struct LocalLlm {
     /// Backend + model held together. None = unavailable.
     inner: Option<LlmInner>,
     model_path: PathBuf,
+    /// Which model variant is loaded (needed for chat template wrapping).
+    model_size: LocalModelSize,
     /// Serialize all generate() calls — llama.cpp context creation from a shared
     /// model can have thread-safety issues. One inference at a time.
     inference_lock: Mutex<()>,
@@ -74,9 +76,10 @@ impl LocalLlm {
         let model_dir = crate::storage::path_utils::data_dir().join("models");
         let model_path = model_dir.join(size.filename());
 
-        let unavailable = |model_path: PathBuf| Self {
+        let unavailable = |model_path: PathBuf, size: LocalModelSize| Self {
             inner: None,
             model_path,
+            model_size: size,
             inference_lock: Mutex::new(()),
         };
 
@@ -85,7 +88,7 @@ impl LocalLlm {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!("Failed to init llama backend: {:?}, local LLM unavailable", e);
-                return unavailable(model_path);
+                return unavailable(model_path, size);
             }
         };
 
@@ -94,30 +97,49 @@ impl LocalLlm {
             tracing::info!("Local LLM model not found at {}, attempting download...", model_path.display());
             if let Err(e) = Self::download_model(&model_dir, &model_path, size.download_url()) {
                 tracing::warn!("Failed to download model: {}, local LLM unavailable", e);
-                return unavailable(model_path);
+                return unavailable(model_path, size);
             }
         }
 
-        // Load model
-        let model_params = LlamaModelParams::default();
-        match LlamaModel::load_from_file(&backend, &model_path, &model_params) {
-            Ok(model) => {
-                tracing::info!(
-                    model = %model_path.display(),
-                    params = model.n_params(),
-                    size = %size.display_name(),
-                    "Local LLM loaded successfully"
+        // Load model — offload layers to GPU (Vulkan).
+        // GTX 1650 has 4GB VRAM. 3B fits fully (99 layers), 7B needs partial offload.
+        // Try full offload first; if it fails, retry with partial (28 layers).
+        let gpu_layers: u32 = 99;
+        let model_params = LlamaModelParams::default()
+            .with_n_gpu_layers(gpu_layers);
+        let (model, actual_gpu_layers) = match LlamaModel::load_from_file(&backend, &model_path, &model_params) {
+            Ok(m) => (m, gpu_layers),
+            Err(e) => {
+                // Full offload failed (likely VRAM overflow) — retry with partial
+                let partial = 28;
+                tracing::warn!(
+                    gpu_layers = gpu_layers,
+                    error = ?e,
+                    "Full GPU offload failed, retrying with {} layers", partial
                 );
-                Self {
-                    inner: Some(LlmInner { backend, model }),
-                    model_path,
-                    inference_lock: Mutex::new(()),
+                let partial_params = LlamaModelParams::default()
+                    .with_n_gpu_layers(partial);
+                match LlamaModel::load_from_file(&backend, &model_path, &partial_params) {
+                    Ok(m) => (m, partial),
+                    Err(e2) => {
+                        tracing::warn!("Failed to load model {}: {:?}", model_path.display(), e2);
+                        return unavailable(model_path, size);
+                    }
                 }
             }
-            Err(e) => {
-                tracing::warn!("Failed to load model {}: {:?}", model_path.display(), e);
-                unavailable(model_path)
-            }
+        };
+        tracing::info!(
+            model = %model_path.display(),
+            params = model.n_params(),
+            size = %size.display_name(),
+            gpu_layers = actual_gpu_layers,
+            "Local LLM loaded successfully (Vulkan GPU offload)"
+        );
+        Self {
+            inner: Some(LlmInner { backend, model }),
+            model_path,
+            model_size: size,
+            inference_lock: Mutex::new(()),
         }
     }
 
@@ -132,12 +154,19 @@ impl LocalLlm {
     /// Thread-safe: each call creates its own LlamaContext from the shared model.
     pub fn generate(&self, prompt: &str, max_tokens: u32) -> AiResult<String> {
         let gen_start = std::time::Instant::now();
+
+        // Wrap raw prompt in model-specific chat template
+        let wrapped = self.model_size.wrap_chat_template(prompt);
         tracing::info!(
-            prompt_len = prompt.len(),
-            prompt_chars = prompt.chars().count(),
+            raw_prompt_len = prompt.len(),
+            wrapped_prompt_len = wrapped.len(),
             max_tokens = max_tokens,
             model = %self.model_path.display(),
-            "Local LLM generate() called"
+            template = %match self.model_size {
+                LocalModelSize::ThreeB | LocalModelSize::SevenB => "chatml",
+                LocalModelSize::Phi4Mini => "phi4",
+            },
+            "Local LLM generate() called (chat template applied)"
         );
 
         let inner = self.inner.as_ref().ok_or_else(|| {
@@ -167,9 +196,9 @@ impl LocalLlm {
             .map_err(|e| AiError::Provider(format!("Failed to create LLM context: {:?}", e)))?;
         tracing::debug!(elapsed_ms = gen_start.elapsed().as_millis(), "LLM context created");
 
-        // Tokenize prompt
+        // Tokenize prompt (using chat-template-wrapped version)
         tracing::debug!("Tokenizing prompt...");
-        let tokens = inner.model.str_to_token(prompt, AddBos::Always)
+        let tokens = inner.model.str_to_token(&wrapped, AddBos::Always)
             .map_err(|e| AiError::Provider(format!("Tokenization failed: {:?}", e)))?;
         tracing::info!(
             prompt_tokens = tokens.len(),
@@ -259,6 +288,27 @@ impl LocalLlm {
                         } else if ch == '}' {
                             json_depth -= 1;
                             if json_started && json_depth <= 0 {
+                                // Only accept closure if all critical fields are present.
+                                // Small LLMs close JSON prematurely — skip early-stop
+                                // and let them keep generating if fields are missing.
+                                const REQUIRED_KEYS: &[&str] = &[
+                                    "\"title\"", "\"confidence\"", "\"importance\"",
+                                    "\"subjects\"", "\"labels\"", "\"summary\"",
+                                ];
+                                let missing: Vec<&&str> = REQUIRED_KEYS.iter()
+                                    .filter(|k| !output.contains(**k))
+                                    .collect();
+                                if !missing.is_empty() {
+                                    tracing::info!(
+                                        missing = ?missing,
+                                        tokens_generated = i + 1,
+                                        "JSON closed but missing fields — skipping early-stop"
+                                    );
+                                    // Reset: let the LLM keep generating
+                                    json_depth = 0;
+                                    json_started = false;
+                                    continue;
+                                }
                                 tracing::info!(
                                     tokens_generated = i + 1,
                                     "JSON complete — early stop"

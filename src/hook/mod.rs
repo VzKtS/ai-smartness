@@ -194,9 +194,8 @@ pub fn run(action: HookAction) {
                 pretool::run(project_hash, &agent, &input);
             }
             HookAction::Stop { project_hash, agent_id } => {
-                let agent = resolve_agent(agent_id, project_hash);
-                tracing::info!(agent = %agent, "Dispatching stop (response capture)");
-                response::run(project_hash, &agent, &input);
+                let _agent = resolve_agent(agent_id, project_hash);
+                tracing::debug!("Stop hook: response capture disabled (prompt-only mode)");
             }
         }
 

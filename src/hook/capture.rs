@@ -172,11 +172,11 @@ fn extract_from_content_blocks(blocks: &[serde_json::Value]) -> String {
     parts.join("\n")
 }
 
-/// Check if a tool is enabled for capture in guardian_config.json.
-/// Reads JSON value directly to avoid parsing the full GuardianConfig.
-fn is_tool_capture_enabled(project_hash: &str, tool_name: &str) -> bool {
-    let config_path =
-        path_utils::project_dir(project_hash).join("guardian_config.json");
+/// Check if a tool is enabled for capture in config.json.
+/// Reads the global config (~/.config/ai-smartness/config.json).
+/// Default: false (all tool captures off unless explicitly enabled).
+fn is_tool_capture_enabled(_project_hash: &str, tool_name: &str) -> bool {
+    let config_path = path_utils::data_dir().join("config.json");
     if let Ok(content) = std::fs::read_to_string(&config_path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(tools) = v.get("capture").and_then(|c| c.get("tools")) {
@@ -191,13 +191,13 @@ fn is_tool_capture_enabled(project_hash: &str, tool_name: &str) -> bool {
                     "WebSearch" => "web_search",
                     "Task" => "task",
                     "NotebookEdit" => "notebook_edit",
-                    _ => return true,
+                    _ => return false,
                 };
-                return tools.get(key).and_then(|v| v.as_bool()).unwrap_or(true);
+                return tools.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
             }
         }
     }
-    true
+    false
 }
 
 /// Update session state with tool call info and file modifications.

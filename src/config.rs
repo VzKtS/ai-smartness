@@ -35,14 +35,16 @@ pub enum LlmBackend {
     Local,
 }
 
-/// Local GGUF model size (Qwen2.5-Instruct family).
+/// Local GGUF model selection.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub enum LocalModelSize {
-    /// Qwen2.5-3B-Instruct Q4_K_M (~2.1 GB). Default — best balance.
-    #[default]
+    /// Qwen2.5-3B-Instruct Q4_K_M (~2.1 GB). Lightweight, limited instruction-following.
     ThreeB,
-    /// Qwen2.5-7B-Instruct Q4_K_M (~4.7 GB). Higher quality, slower.
+    /// Qwen2.5-7B-Instruct Q4_K_M (~4.7 GB). Needs >4GB VRAM.
     SevenB,
+    /// Phi-4-mini-instruct Q4_K_M (~2.5 GB). Default — best instruction-following per VRAM.
+    #[default]
+    Phi4Mini,
 }
 
 impl LocalModelSize {
@@ -50,13 +52,15 @@ impl LocalModelSize {
         match self {
             Self::ThreeB => "qwen2.5-3b-instruct-q4_k_m.gguf",
             Self::SevenB => "qwen2.5-7b-instruct-q4_k_m.gguf",
+            Self::Phi4Mini => "phi-4-mini-instruct-q4_k_m.gguf",
         }
     }
 
     pub fn download_url(&self) -> &'static str {
         match self {
             Self::ThreeB => "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
-            Self::SevenB => "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf",
+            Self::SevenB => "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+            Self::Phi4Mini => "https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
         }
     }
 
@@ -64,6 +68,28 @@ impl LocalModelSize {
         match self {
             Self::ThreeB => "Qwen2.5-3B-Instruct (Q4_K_M, ~2.1 GB)",
             Self::SevenB => "Qwen2.5-7B-Instruct (Q4_K_M, ~4.7 GB)",
+            Self::Phi4Mini => "Phi-4-mini-instruct (Q4_K_M, ~2.5 GB)",
+        }
+    }
+
+    /// Wrap a raw prompt in the model's chat template.
+    /// Instruct models require specific framing to produce output.
+    pub fn wrap_chat_template(&self, prompt: &str) -> String {
+        match self {
+            Self::ThreeB | Self::SevenB => {
+                // Qwen2.5 ChatML format
+                format!(
+                    "<|im_start|>system\nYou are a JSON extraction assistant. Output only valid JSON, no explanation.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+                    prompt
+                )
+            }
+            Self::Phi4Mini => {
+                // Phi-4-mini instruct format
+                format!(
+                    "<|system|>You are a JSON extraction assistant. Output only valid JSON, no explanation.<|end|>\n<|user|>{}<|end|>\n<|assistant|>\n",
+                    prompt
+                )
+            }
         }
     }
 }
@@ -854,7 +880,7 @@ impl Default for GuardianConfig {
             decay: DecayConfig::default(),
             enabled: true,
             llm_backend: LlmBackend::Local,
-            local_model_size: LocalModelSize::ThreeB,
+            local_model_size: LocalModelSize::Phi4Mini,
             hook_guard_env: "AI_SMARTNESS_HOOK_RUNNING".to_string(),
         }
     }
@@ -921,11 +947,11 @@ impl Default for PoolConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureToolToggles {
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub read: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub edit: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub write: bool,
     #[serde(default = "default_false")]
     pub bash: bool,
@@ -937,25 +963,25 @@ pub struct CaptureToolToggles {
     pub web_fetch: bool,
     #[serde(default = "default_false")]
     pub web_search: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub task: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub notebook_edit: bool,
 }
 
 impl Default for CaptureToolToggles {
     fn default() -> Self {
         Self {
-            read: true,
-            edit: true,
-            write: true,
-            bash: false,       // noisy — binary output, low semantic value
-            grep: false,       // noisy — search results, low semantic value
-            glob: false,       // noisy — file listings
-            web_fetch: false,  // noisy — large web content
-            web_search: false, // noisy — search results
-            task: true,
-            notebook_edit: true,
+            read: false,
+            edit: false,
+            write: false,
+            bash: false,
+            grep: false,
+            glob: false,
+            web_fetch: false,
+            web_search: false,
+            task: false,
+            notebook_edit: false,
         }
     }
 }
@@ -1472,19 +1498,18 @@ mod tests {
         assert_eq!(gc.engram.strong_inject_min_votes, 5);
         assert!(gc.guardcode.enabled);
         assert_eq!(gc.llm_backend, LlmBackend::Local);
-        assert_eq!(gc.local_model_size, LocalModelSize::ThreeB);
+        assert_eq!(gc.local_model_size, LocalModelSize::Phi4Mini);
     }
 
     #[test]
     fn test_capture_tool_toggles_noisy_disabled_by_default() {
         let toggles = CaptureToolToggles::default();
-        // Quiet tools: enabled
-        assert!(toggles.is_enabled("Read"));
-        assert!(toggles.is_enabled("Edit"));
-        assert!(toggles.is_enabled("Write"));
-        assert!(toggles.is_enabled("Task"));
-        assert!(toggles.is_enabled("NotebookEdit"));
-        // Noisy tools: disabled
+        // All tool captures disabled by default (prompt-only mode)
+        assert!(!toggles.is_enabled("Read"));
+        assert!(!toggles.is_enabled("Edit"));
+        assert!(!toggles.is_enabled("Write"));
+        assert!(!toggles.is_enabled("Task"));
+        assert!(!toggles.is_enabled("NotebookEdit"));
         assert!(!toggles.is_enabled("Bash"));
         assert!(!toggles.is_enabled("Grep"));
         assert!(!toggles.is_enabled("Glob"));
@@ -1530,46 +1555,44 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_local_model_size_default_is_three_b() {
-        assert_eq!(LocalModelSize::default(), LocalModelSize::ThreeB);
+    fn test_local_model_size_default_is_phi4mini() {
+        assert_eq!(LocalModelSize::default(), LocalModelSize::Phi4Mini);
     }
 
     #[test]
     fn test_local_model_size_filenames() {
         assert_eq!(LocalModelSize::ThreeB.filename(), "qwen2.5-3b-instruct-q4_k_m.gguf");
         assert_eq!(LocalModelSize::SevenB.filename(), "qwen2.5-7b-instruct-q4_k_m.gguf");
-        // Both must end in .gguf
+        assert_eq!(LocalModelSize::Phi4Mini.filename(), "phi-4-mini-instruct-q4_k_m.gguf");
+        // All must end in .gguf
         assert!(LocalModelSize::ThreeB.filename().ends_with(".gguf"));
         assert!(LocalModelSize::SevenB.filename().ends_with(".gguf"));
+        assert!(LocalModelSize::Phi4Mini.filename().ends_with(".gguf"));
     }
 
     #[test]
     fn test_local_model_size_download_urls() {
-        let url_3b = LocalModelSize::ThreeB.download_url();
-        let url_7b = LocalModelSize::SevenB.download_url();
-        // URLs must point to HuggingFace
-        assert!(url_3b.starts_with("https://huggingface.co/"));
-        assert!(url_7b.starts_with("https://huggingface.co/"));
-        // URLs must end with the correct filename
-        assert!(url_3b.ends_with(LocalModelSize::ThreeB.filename()));
-        assert!(url_7b.ends_with(LocalModelSize::SevenB.filename()));
-        // URLs must be different
-        assert_ne!(url_3b, url_7b);
+        let sizes = [LocalModelSize::ThreeB, LocalModelSize::SevenB, LocalModelSize::Phi4Mini];
+        for size in &sizes {
+            let url = size.download_url();
+            assert!(url.starts_with("https://huggingface.co/"), "URL must point to HuggingFace: {}", url);
+        }
     }
 
     #[test]
     fn test_local_model_size_display_names() {
-        let name_3b = LocalModelSize::ThreeB.display_name();
-        let name_7b = LocalModelSize::SevenB.display_name();
-        assert!(name_3b.contains("3B"), "3B display name should mention 3B");
-        assert!(name_7b.contains("7B"), "7B display name should mention 7B");
-        assert!(name_3b.contains("Q4_K_M"), "display name should mention quantization");
-        assert!(name_7b.contains("Q4_K_M"), "display name should mention quantization");
+        assert!(LocalModelSize::ThreeB.display_name().contains("3B"));
+        assert!(LocalModelSize::SevenB.display_name().contains("7B"));
+        assert!(LocalModelSize::Phi4Mini.display_name().contains("Phi-4"));
+        // All mention quantization
+        assert!(LocalModelSize::ThreeB.display_name().contains("Q4_K_M"));
+        assert!(LocalModelSize::SevenB.display_name().contains("Q4_K_M"));
+        assert!(LocalModelSize::Phi4Mini.display_name().contains("Q4_K_M"));
     }
 
     #[test]
     fn test_local_model_size_serde_roundtrip() {
-        let sizes = [LocalModelSize::ThreeB, LocalModelSize::SevenB];
+        let sizes = [LocalModelSize::ThreeB, LocalModelSize::SevenB, LocalModelSize::Phi4Mini];
         for size in &sizes {
             let json = serde_json::to_string(size).expect("serialize");
             let back: LocalModelSize = serde_json::from_str(&json).expect("deserialize");
@@ -1607,7 +1630,7 @@ mod tests {
     fn test_guardian_config_default_llm_backend() {
         let gc = GuardianConfig::default();
         assert_eq!(gc.llm_backend, LlmBackend::Local);
-        assert_eq!(gc.local_model_size, LocalModelSize::ThreeB);
+        assert_eq!(gc.local_model_size, LocalModelSize::Phi4Mini);
     }
 
     #[test]
@@ -1633,6 +1656,6 @@ mod tests {
         let json_without = serde_json::to_string(&v).expect("reserialize");
         let gc2: GuardianConfig = serde_json::from_str(&json_without).expect("deserialize");
         assert_eq!(gc2.llm_backend, LlmBackend::Local);
-        assert_eq!(gc2.local_model_size, LocalModelSize::ThreeB);
+        assert_eq!(gc2.local_model_size, LocalModelSize::Phi4Mini);
     }
 }

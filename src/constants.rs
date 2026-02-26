@@ -37,7 +37,7 @@ pub const MERGE_EVALUATOR_MSG_MAX_CHARS: usize = 500;
 // === Content Limits ===
 pub const CONTENT_LIMIT_DEFAULT: usize = 2_000;
 pub const CONTENT_LIMIT_CONVERSATION: usize = 10_000;
-pub const VERBATIM_SUMMARY_LIMIT: usize = 1_000;
+pub const VERBATIM_SUMMARY_LIMIT: usize = 250;
 
 // === Retrieval ===
 pub const RETRIEVAL_ACTIVE_MIN: f64 = 0.05;

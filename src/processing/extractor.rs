@@ -31,6 +31,7 @@ pub enum ExtractionResult {
 pub struct Extraction {
     pub title: String,
     pub subjects: Vec<String>,
+    #[serde(default)]
     pub summary: String,
     pub confidence: f64,
     pub labels: Vec<String>,
@@ -105,9 +106,12 @@ pub fn extract(
             Ok(None)
         }
         Ok(ExtractionResult::Extracted(mut extraction)) => {
-            // Prompt and Response: override summary with original content (truncated).
-            // These are already human-readable — LLM synthesis only degrades them.
-            if matches!(source, ExtractionSource::Prompt | ExtractionSource::Response) {
+            // Prompt and Response: use verbatim fallback ONLY if LLM didn't produce a summary.
+            // When the LLM succeeds, its summary (max 250 chars per prompt spec) is better
+            // than raw content for agent consumption (Engram scanning).
+            if matches!(source, ExtractionSource::Prompt | ExtractionSource::Response)
+                && extraction.summary.trim().is_empty()
+            {
                 extraction.summary = truncate_safe(content, crate::constants::VERBATIM_SUMMARY_LIMIT).to_string();
             }
             tracing::info!(mode = "llm", title = %extraction.title, confidence = extraction.confidence, "Extraction complete");
@@ -225,42 +229,73 @@ Higher alignment = higher importance. No alignment does NOT mean low importance 
     };
 
     format!(
-        r#"You are a content classifier. Respond with ONE JSON object only. No explanation, no markdown.
+        r#"Your role is to process the content provided and follow these rules:
+        
+        1. If not humanly comprehensible = skip
+        2. If the number of humanly comprehensible characters is less than 150 characters = skip
+        3. If the humanly comprehensible ratio is less than 20% of the capture = skip
+        4. If the humanly comprehensible ratio is less than 50% of the capture = verbatim
+        5. If the number of humanly comprehensible characters is greater than 150 characters and less than 500 = verbatim
+        6. If the number of humanly comprehensible characters is greater than or equal to 500 characters = extract
 
-STEP 1 — DECIDE ACTION (analyze content below, ignore context):
-- NOT human-readable (binary, encoded, empty, gibberish) → skip
-- Very little readable text (under ~150 chars) → skip
-- Mostly code/logs/paths, under 20% natural language → summary
-- Readable, meaningful content worth remembering → extract
+## ÉTAPE 1 — Classification (analysez le contenu ci-dessous, SANS contexte externe)
 
-If skip: {{"action":"skip"}}
-If summary or extract, continue to STEP 2.
+### title (max 50 chars)
+Specific, descriptive title capturing the core subject of the content.
 
-STEP 2 — CLASSIFY (based on content only, no external context):
-- title: max 50 chars, specific and descriptive
-- subjects: 2-3 concrete topics present in the content
-- summary: max 250 chars. For "summary": describe WHAT the code/logs DO. For "extract": describe what the content contains.
-- confidence: YOUR comprehension (1.0=clear, 0.7=mostly understood, 0.4=partial, 0.1=barely legible, 0.0=gibberish)
-- labels: 1-3 descriptors of subject matter{label_hint}
+### subjects (2-3 items)
+Concrete topics, concepts, or entities present in the content.
+Prefer specific terms over vague ones.
 Exclude noise words: {noise_words}
 
-STEP 3 — SEMANTIC EXPLOSION (based on STEP 2 results):
-Generate an associative concept cloud from your subjects and labels.
+## summary (max 250 chars)
+Concise description of what this content contains.
+
+### confidence (0.0-1.0)
+Your self-assessment of how well YOU understood this content.
+- 1.0 = fully understood, clear and coherent
+- 0.7-0.9 = mostly understood, some ambiguity
+- 0.4-0.6 = partially understood, fragmented or incomplete
+- 0.1-0.3 = barely legible, very noisy
+- 0.0 = NOT humanly comprehensible (binary data, encoded content, empty, gibberish)
+Confidence measures YOUR comprehension, not content quality or relevance.
+A perfectly clear text about any subject = high confidence.
+
+### labels (1-3 items)
+Describe WHAT the content covers. Must reflect the subject matter.{label_hint}
+
+
+
+## STEP 1B — Semantic explosion
+
+From the topics and labels you produced in Step 1, generate an associative concept cloud.
 Include: synonyms, related domains, hypernyms, hyponyms, adjacent concepts.
-Single lowercase words, English only. No duplicates with subjects or labels.
+Single lowercase words only, **in English only**. No duplicates. Do NOT repeat subjects or labels.
 Between 5 and 25 items.
 
-STEP 4 — IMPORTANCE SCORING (now use the context below):
-Source: {source_type} ({source_desc})
-{context_block}
-Scale: {critical:.1}=critical, {high:.1}=significant, {normal:.1}=standard, {low:.1}=minor, {disposable:.1}=ephemeral
-Higher alignment with agent context = higher importance. No alignment does NOT mean low importance.
+## Content to classify ({source_type}: {source_desc}):
 
-CONTENT:
 {content}
 
-JSON OUTPUT:
-{{"action":"summary|extract","title":"...","subjects":["..."],"summary":"...","confidence":0.0,"labels":["..."],"concepts":["..."],"importance":0.0}}"#,
+
+## STEP 2 — Importance scoring
+
+Now that you have classified the content above, assess its importance.
+Acquisition source: {source_type}
+{context_block}
+
+### importance (0.0-1.0)
+- {critical:.1} = critical, must be retained long-term
+- {high:.1} = significant, strong retention value
+- {normal:.1} = standard, normal retention
+- {low:.1} = minor, weak retention
+- {disposable:.1} = ephemeral, minimal value
+
+
+## Output (JSON only, no markdown, no explanation)
+If action is "skip": {{"action":"skip"}}
+If action is "verbatim" or "extract":
+{{"action":"verbatim|extract","title":"...","confidence":0.0,"importance":0.0,"subjects":["..."],"labels":["..."],"concepts":["..."],"summary":"..."}}"#,
         noise_words = noise_words.join(", "),
         label_hint = label_hint,
         source_type = source.as_str(),
@@ -346,11 +381,11 @@ fn parse_extraction_response(response: &str) -> AiResult<ExtractionResult> {
     }
 
     let extraction_mode = match action {
-        "summary" => ExtractionMode::Summary,
+        "summary" | "verbatim" => ExtractionMode::Summary,
         _ => ExtractionMode::Extract,
     };
 
-    // Parse the extraction fields
+    // Parse the extraction fields — all required, no defaults
     let mut extraction: Extraction = serde_json::from_value(value).map_err(|e| {
         crate::AiError::InvalidInput(format!("Failed to parse extraction fields: {}", e))
     })?;
@@ -393,6 +428,19 @@ mod tests {
                 assert_eq!(e.extraction_mode, ExtractionMode::Summary);
                 assert_eq!(e.title, "Test");
                 assert_eq!(e.confidence, 0.9);
+            }
+            ExtractionResult::Skip => panic!("Expected Extracted, got Skip"),
+        }
+    }
+
+    #[test]
+    fn test_parse_verbatim_action_maps_to_summary() {
+        let json = r#"{"action":"verbatim","title":"Logs","subjects":["daemon"],"summary":"Daemon logs","confidence":0.5,"labels":["ops"],"concepts":["logging"],"importance":0.4}"#;
+        let result = parse_extraction_response(json).unwrap();
+        match result {
+            ExtractionResult::Extracted(e) => {
+                assert_eq!(e.extraction_mode, ExtractionMode::Summary);
+                assert_eq!(e.title, "Logs");
             }
             ExtractionResult::Skip => panic!("Expected Extracted, got Skip"),
         }
