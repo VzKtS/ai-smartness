@@ -68,6 +68,42 @@ pub fn run() {
     }
 
     let pid_path = data_dir.join("daemon.pid");
+    let socket_path_early = data_dir.join("processor.sock");
+
+    // Singleton guard: kill any existing daemon before starting
+    if pid_path.exists() {
+        if let Ok(old_pid_str) = std::fs::read_to_string(&pid_path) {
+            let old_pid_str = old_pid_str.trim();
+            if let Ok(old_pid) = old_pid_str.parse::<u32>() {
+                let my_pid = std::process::id();
+                if old_pid != my_pid && is_process_alive(old_pid) {
+                    tracing::warn!(
+                        old_pid = old_pid,
+                        my_pid = my_pid,
+                        "Existing daemon detected — killing before startup"
+                    );
+                    kill_process(old_pid);
+                    // Wait up to 3s for old daemon to die
+                    for _ in 0..30 {
+                        if !is_process_alive(old_pid) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    if is_process_alive(old_pid) {
+                        tracing::error!(old_pid = old_pid, "Old daemon did not die — force killing");
+                        kill_process_force(old_pid);
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                    // Clean stale socket
+                    let _ = std::fs::remove_file(&socket_path_early);
+                    tracing::info!(old_pid = old_pid, "Old daemon killed, starting fresh");
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&pid_path);
+    }
+
     std::fs::write(&pid_path, std::process::id().to_string()).ok();
 
     // Cleanup legacy per-project PID files
@@ -306,6 +342,60 @@ fn check_missed_backups() {
     cfg.last_backup_at = Some(chrono::Utc::now().to_rfc3339());
     cfg.save();
     BackupManager::enforce_retention(&backup_dir, config.retention_count);
+}
+
+/// Check if a process is alive (signal 0).
+fn is_process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        unsafe { kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+/// Send SIGTERM to a process.
+fn kill_process(pid: u32) {
+    #[cfg(unix)]
+    {
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        unsafe {
+            kill(pid as i32, 15); // SIGTERM
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output();
+    }
+}
+
+/// Send SIGKILL to a process (force).
+fn kill_process_force(pid: u32) {
+    #[cfg(unix)]
+    {
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        unsafe {
+            kill(pid as i32, 9); // SIGKILL
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output();
+    }
 }
 
 /// Remove legacy per-project PID files (from pre-global daemon era).
