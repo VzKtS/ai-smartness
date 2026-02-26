@@ -231,6 +231,12 @@ impl LocalLlm {
         let mut piece_decoder = encoding_rs::UTF_8.new_decoder();
         let sample_start = std::time::Instant::now();
 
+        // Track JSON brace depth for early stop: once we've seen a complete
+        // top-level JSON object (depth goes 0→N→0), stop immediately.
+        // This prevents Qwen from repeating the same JSON endlessly.
+        let mut json_depth: i32 = 0;
+        let mut json_started = false;
+
         for i in 0..max_tokens {
             let token = sampler.sample(&ctx, -1);
 
@@ -242,7 +248,52 @@ impl LocalLlm {
 
             // Decode token to string (stateful decoder handles multi-byte UTF-8)
             match inner.model.token_to_piece(token, &mut piece_decoder, false, None) {
-                Ok(piece) => output.push_str(&piece),
+                Ok(piece) => {
+                    output.push_str(&piece);
+
+                    // JSON early-stop: track brace depth
+                    for ch in piece.chars() {
+                        if ch == '{' {
+                            json_depth += 1;
+                            json_started = true;
+                        } else if ch == '}' {
+                            json_depth -= 1;
+                            if json_started && json_depth <= 0 {
+                                tracing::info!(
+                                    tokens_generated = i + 1,
+                                    "JSON complete — early stop"
+                                );
+                                // Truncate output to end at this closing brace
+                                if let Some(pos) = output.rfind('}') {
+                                    output.truncate(pos + 1);
+                                }
+                                // Return early — skip further generation
+                                let total_generated = i as usize + 1;
+                                tracing::info!(
+                                    prompt_tokens = tokens.len(),
+                                    output_tokens = total_generated,
+                                    output_len = output.len(),
+                                    total_ms = gen_start.elapsed().as_millis(),
+                                    sample_ms = sample_start.elapsed().as_millis(),
+                                    tokens_per_sec = if sample_start.elapsed().as_millis() > 0 {
+                                        (total_generated as u128 * 1000) / sample_start.elapsed().as_millis()
+                                    } else { 0 },
+                                    "Local LLM generation complete (JSON early-stop)"
+                                );
+                                let preview_end = {
+                                    let max = output.len().min(500);
+                                    let mut end = max;
+                                    while end > 0 && !output.is_char_boundary(end) {
+                                        end -= 1;
+                                    }
+                                    end
+                                };
+                                tracing::info!(output_preview = %&output[..preview_end], "LLM raw output");
+                                return Ok(output);
+                            }
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(token_idx = i, error = ?e, "Token decode error, stopping");
                     break;
