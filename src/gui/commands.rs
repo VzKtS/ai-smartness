@@ -206,9 +206,30 @@ pub fn pool_flush() -> Result<serde_json::Value, String> {
         }
     }
 
+    // Clean stale PID file and socket
+    let data_dir = path_utils::data_dir();
+    let pid_path = data_dir.join("daemon.pid");
+    let sock_path = data_dir.join("processor.sock");
+    let mut stale_cleaned = Vec::new();
+    if pid_path.exists() {
+        if let Err(e) = std::fs::remove_file(&pid_path) {
+            errors.push(format!("daemon.pid: {}", e));
+        } else {
+            stale_cleaned.push("daemon.pid".to_string());
+        }
+    }
+    if sock_path.exists() {
+        if let Err(e) = std::fs::remove_file(&sock_path) {
+            errors.push(format!("processor.sock: {}", e));
+        } else {
+            stale_cleaned.push("processor.sock".to_string());
+        }
+    }
+
     Ok(serde_json::json!({
         "flushed": true,
         "files_removed": files_removed,
+        "stale_cleaned": stale_cleaned,
         "errors": errors,
     }))
 }
