@@ -196,7 +196,7 @@ pub fn pool_flush() -> Result<serde_json::Value, String> {
             for file in entries.flatten() {
                 let path = file.path();
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if ext == "pending" || ext == "jsonl" {
+                if ext == "pending" || ext == "jsonl" || ext == "done" {
                     match std::fs::remove_file(&path) {
                         Ok(_) => files_removed += 1,
                         Err(e) => errors.push(format!("{}: {}", path.display(), e)),
