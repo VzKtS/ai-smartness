@@ -41,6 +41,7 @@ pub fn handle_status(
         "response_latency_ms": beat.response_latency_ms,
         "last_error": beat.last_error,
         "last_error_at": beat.last_error_at,
+        "system_metrics": beat.system_metrics,
     }))
 }
 
