@@ -357,17 +357,158 @@ fn extract_first_json_object(s: &str) -> Option<&str> {
     None
 }
 
+/// Repair truncated JSON from LLM output that hit max_tokens.
+/// Two strategies: (1) close unclosed string + close stack, (2) cut at last
+/// complete value boundary + close stack. Returns None if repair fails.
+fn repair_truncated_json(raw: &str) -> Option<String> {
+    let start = raw.find('{')?;
+    let json_part = &raw[start..];
+    let json_bytes = json_part.as_bytes();
+
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut stack: Vec<u8> = Vec::new(); // expected closers: b'}' or b']'
+    let mut last_value_end = 0; // byte offset after last complete key:value or array element
+
+    // Track whether we're after a ':' (next complete token is a value)
+    let mut after_colon = false;
+
+    for i in 0..json_bytes.len() {
+        let ch = json_bytes[i];
+
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+
+        if in_string {
+            if ch == b'\\' {
+                escape_next = true;
+            } else if ch == b'"' {
+                in_string = false;
+                // A closed string after a colon = completed value
+                // A closed string inside an array = completed element
+                if after_colon || stack.last() == Some(&b']') {
+                    last_value_end = i + 1;
+                    after_colon = false;
+                }
+            }
+            continue;
+        }
+
+        match ch {
+            b'"' => {
+                in_string = true;
+            }
+            b'{' => {
+                stack.push(b'}');
+                after_colon = false;
+            }
+            b'[' => {
+                stack.push(b']');
+                after_colon = false;
+            }
+            b'}' | b']' => {
+                stack.pop();
+                last_value_end = i + 1;
+                after_colon = false;
+                if stack.is_empty() {
+                    return Some(json_part[..=i].to_string());
+                }
+            }
+            b':' => {
+                after_colon = true;
+            }
+            b',' => {
+                after_colon = false;
+            }
+            b'0'..=b'9' | b'.' | b'-' => {
+                if after_colon || stack.last() == Some(&b']') {
+                    last_value_end = i + 1;
+                }
+            }
+            // true/false/null
+            b't' | b'f' | b'n' => {
+                if after_colon || stack.last() == Some(&b']') {
+                    last_value_end = i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if stack.is_empty() {
+        return None;
+    }
+
+    // Strategy 1: If inside an unclosed string, close it + close stack
+    if in_string {
+        let mut attempt = json_part.to_string();
+        attempt.push('"');
+        for closer in stack.iter().rev() {
+            attempt.push(*closer as char);
+        }
+        if serde_json::from_str::<serde_json::Value>(&attempt).is_ok() {
+            return Some(attempt);
+        }
+    }
+
+    // Strategy 2: Cut at last complete value boundary + close stack
+    if last_value_end == 0 {
+        return None;
+    }
+
+    let mut result = json_part[..last_value_end].to_string();
+
+    // Strip trailing commas and whitespace
+    while result.ends_with(|c: char| c == ',' || c.is_ascii_whitespace()) {
+        result.pop();
+    }
+
+    // Close remaining open brackets/braces
+    for closer in stack.iter().rev() {
+        result.push(*closer as char);
+    }
+
+    // Verify it actually parses
+    if serde_json::from_str::<serde_json::Value>(&result).is_err() {
+        return None;
+    }
+
+    Some(result)
+}
+
 fn parse_extraction_response(response: &str) -> AiResult<ExtractionResult> {
     // Extract the first complete JSON object by tracking brace depth.
     // Qwen sometimes appends trailing text or extra JSON after the main object,
     // e.g. `{"action":"skip"}{"explanation":"..."}` or `{"action":"skip"} done`.
     // The old `find('{')..rfind('}')` captured everything → "trailing characters" error.
-    let json_str = extract_first_json_object(response).ok_or_else(|| {
-        crate::AiError::InvalidInput(format!(
-            "No JSON object found in LLM response (len={})",
-            response.len()
-        ))
-    })?;
+    let json_str_opt = extract_first_json_object(response);
+
+    // If no complete JSON found, try repair (LLM hit max_tokens → truncated JSON).
+    let repaired_owned: Option<String>;
+    let json_str = match json_str_opt {
+        Some(s) => s,
+        None => {
+            repaired_owned = repair_truncated_json(response);
+            match &repaired_owned {
+                Some(repaired) => {
+                    tracing::info!(
+                        repaired_len = repaired.len(),
+                        original_len = response.len(),
+                        "JSON repair succeeded — using repaired output"
+                    );
+                    repaired.as_str()
+                }
+                None => {
+                    return Err(crate::AiError::InvalidInput(format!(
+                        "No JSON object found in LLM response (len={})",
+                        response.len()
+                    )));
+                }
+            }
+        }
+    };
 
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         crate::AiError::InvalidInput(format!("Failed to parse extraction JSON: {}", e))
@@ -566,5 +707,62 @@ mod tests {
         let response = "```json\n{\"action\":\"skip\"}\n```";
         let result = parse_extraction_response(response).unwrap();
         assert!(matches!(result, ExtractionResult::Skip));
+    }
+
+    // --- repair_truncated_json ---
+
+    #[test]
+    fn test_repair_truncated_array_element() {
+        // Simulates LLM hitting max_tokens mid-array
+        let truncated = r#"{"action":"extract","title":"Test","subjects":["a","b"],"confidence":0.8,"importance":0.7,"labels":["x"],"concepts":["foo","bar","incomple"#;
+        let repaired = repair_truncated_json(truncated).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(v["title"], "Test");
+        assert_eq!(v["confidence"], 0.8);
+        // concepts should have "foo" and "bar" (incomplete "incomple" dropped)
+        let concepts = v["concepts"].as_array().unwrap();
+        assert!(concepts.len() >= 2);
+    }
+
+    #[test]
+    fn test_repair_truncated_mid_string() {
+        // Truncated in the middle of a string value
+        let truncated = r#"{"action":"extract","title":"Test","subjects":["a"],"confidence":0.8,"importance":0.7,"labels":["x"],"summary":"This is a long summa"#;
+        let repaired = repair_truncated_json(truncated).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(v["title"], "Test");
+        // summary should be included (string was closed by repair)
+        assert!(v["summary"].as_str().unwrap().starts_with("This is a long summa"));
+    }
+
+    #[test]
+    fn test_repair_no_json_returns_none() {
+        assert!(repair_truncated_json("no json here at all").is_none());
+    }
+
+    #[test]
+    fn test_repair_complete_json_returns_it() {
+        let complete = r#"{"action":"skip"}"#;
+        let repaired = repair_truncated_json(complete).unwrap();
+        assert_eq!(repaired, complete);
+    }
+
+    #[test]
+    fn test_repair_too_little_json() {
+        assert!(repair_truncated_json("{").is_none());
+    }
+
+    #[test]
+    fn test_parse_uses_repair_fallback() {
+        // Truncated JSON (no closing brace) — parse_extraction_response should repair it
+        let truncated = r#"{"action":"extract","title":"Repaired","subjects":["test"],"confidence":0.9,"importance":0.8,"labels":["dev"],"concepts":["repa"#;
+        let result = parse_extraction_response(truncated).unwrap();
+        match result {
+            ExtractionResult::Extracted(e) => {
+                assert_eq!(e.title, "Repaired");
+                assert_eq!(e.confidence, 0.9);
+            }
+            ExtractionResult::Skip => panic!("Expected Extracted"),
+        }
     }
 }

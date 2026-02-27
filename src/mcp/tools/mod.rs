@@ -431,6 +431,7 @@ mod tests {
                 ratings: vec![],
                 work_context: None,
                 injection_stats: None,
+                extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
                 embedding: None,
                 created_at: chrono::Utc::now(),
                 last_active: chrono::Utc::now(),

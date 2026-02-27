@@ -21,6 +21,10 @@ pub struct PoolEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
     pub timestamp: String,
+    /// Chunk index for oversized content split across multiple pool entries.
+    /// 0 = original (or content fits in one chunk), 1+ = continuation chunks.
+    #[serde(default)]
+    pub chunk_index: u8,
 }
 
 /// Tracks an active (open) JSONL file being written to.
@@ -62,6 +66,7 @@ impl PoolWriter {
             content: content.to_string(),
             file_path: file_path.map(String::from),
             timestamp: chrono::Utc::now().to_rfc3339(),
+            chunk_index: 0,
         };
 
         let line = serde_json::to_string(&entry)
@@ -171,7 +176,7 @@ pub fn cleanup_done_files(pool_dir: &Path, max_age_secs: u64) -> io::Result<usiz
         if path.extension().map(|e| e == "done").unwrap_or(false) {
             if let Ok(meta) = path.metadata() {
                 if let Ok(modified) = meta.modified() {
-                    if modified.elapsed().unwrap_or_default().as_secs() > max_age_secs {
+                    if modified.elapsed().unwrap_or_default().as_secs() >= max_age_secs {
                         std::fs::remove_file(&path)?;
                         cleaned += 1;
                     }
@@ -299,7 +304,7 @@ mod tests {
         // Create a .pending file (should not be cleaned)
         fs::write(pool_dir.join("Read_2000.pending"), "waiting").unwrap();
 
-        // Cleanup with 0 max_age (clean everything)
+        // Cleanup with 0 max_age (clean everything — >= 0 is always true)
         let cleaned = cleanup_done_files(&pool_dir, 0).unwrap();
         assert_eq!(cleaned, 1);
 

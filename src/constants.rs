@@ -55,6 +55,11 @@ pub const MIN_RESPONSE_LENGTH: usize = 150;
 pub const MAX_CONTEXT_SIZE: usize = 15_000;
 pub const MAX_COGNITIVE_MESSAGES: usize = 5;
 
+// === Content Chunking ===
+/// Maximum number of chunks for oversized content. Each chunk is processed
+/// as a separate pool entry, creating one thread per chunk.
+pub const MAX_CONTENT_CHUNKS: u8 = 5;
+
 // === Archiver ===
 pub const ARCHIVE_AFTER_HOURS: i64 = 72;
 

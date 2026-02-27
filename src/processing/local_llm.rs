@@ -23,7 +23,9 @@ use llama_cpp_2::sampling::LlamaSampler;
 const DEFAULT_CTX_SIZE: u32 = 4096;
 
 /// Default max output tokens for generation.
-const DEFAULT_MAX_TOKENS: u32 = 512;
+/// 768 gives enough room for full extraction JSON (title, subjects, labels,
+/// concepts, summary) while keeping latency reasonable (~25s on GTX 1650).
+const DEFAULT_MAX_TOKENS: u32 = 768;
 
 /// Temperature for sampling (low = more deterministic, better for JSON).
 const SAMPLING_TEMP: f32 = 0.1;
