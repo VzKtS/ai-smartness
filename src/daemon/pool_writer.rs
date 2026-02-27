@@ -21,10 +21,6 @@ pub struct PoolEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
     pub timestamp: String,
-    /// Chunk index for oversized content split across multiple pool entries.
-    /// 0 = original (or content fits in one chunk), 1+ = continuation chunks.
-    #[serde(default)]
-    pub chunk_index: u8,
 }
 
 /// Tracks an active (open) JSONL file being written to.
@@ -66,7 +62,6 @@ impl PoolWriter {
             content: content.to_string(),
             file_path: file_path.map(String::from),
             timestamp: chrono::Utc::now().to_rfc3339(),
-            chunk_index: 0,
         };
 
         let line = serde_json::to_string(&entry)

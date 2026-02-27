@@ -14,6 +14,7 @@ use ai_smartness::intelligence::thread_manager::ThreadManager;
 use ai_smartness::processing::cleaner;
 use ai_smartness::processing::coherence::{self, CoherenceAction};
 use ai_smartness::processing::extractor::{self, ExtractionSource};
+use ai_smartness::processing::toolextractor;
 use ai_smartness::storage::threads::ThreadStorage;
 use rusqlite::Connection;
 
@@ -71,17 +72,6 @@ pub fn process_capture(
         return Ok(None);
     }
 
-    // 2. Extract metadata (LLM with config-driven model and truncation)
-    let source = match source_type {
-        "Read" | "file_read" => ExtractionSource::FileRead,
-        "Write" | "file_write" => ExtractionSource::FileWrite,
-        "Task" | "task" => ExtractionSource::Task,
-        "Fetch" | "fetch" => ExtractionSource::Fetch,
-        "Response" | "response" => ExtractionSource::Response,
-        "Command" | "command" => ExtractionSource::Command,
-        _ => ExtractionSource::Prompt,
-    };
-
     // Build agent context from PendingContext (recent activity) for importance scoring
     let ttl = guardian.extraction.pending_context_ttl_secs;
     let agent_context = pending
@@ -89,47 +79,86 @@ pub fn process_capture(
         .filter(|p| !p.is_expired(ttl))
         .map(|ctx| ctx.content.as_str());
 
-    // Phase B: Gate LLM relevance for short prompts (51-150 chars)
-    if source_type == "prompt" {
-        let char_count = cleaned.chars().count();
-        if char_count <= ai_smartness::constants::PROMPT_RELEVANCE_GATE_MAX {
-            match check_prompt_relevance(&cleaned, agent_context, guardian) {
-                Ok(true) => {
-                    tracing::info!(chars = char_count, "Short prompt judged RELEVANT by gate LLM");
-                }
-                Ok(false) => {
-                    tracing::info!(chars = char_count, "Short prompt judged NOT relevant, dropping");
-                    return Ok(None);
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Relevance gate LLM failed, proceeding normally");
+    // 2. Extract metadata — branch: tool pipeline vs human exchange pipeline
+    let extraction = if is_tool_source(source_type) {
+        // Tool pipeline: single-pass summary via toolextractor (faster, shorter prompt)
+        tracing::info!(
+            source = source_type,
+            cleaned_len = cleaned.len(),
+            has_agent_context = agent_context.is_some(),
+            elapsed_ms = pipeline_start.elapsed().as_millis(),
+            "Stage 2/6: Starting TOOL extraction (single-pass summary)"
+        );
+        match toolextractor::summarize_tool_output(
+            &cleaned,
+            source_type,
+            file_path,
+            agent_context,
+            &guardian.extraction,
+        )? {
+            Some(e) => e,
+            None => {
+                tracing::info!(
+                    elapsed_ms = pipeline_start.elapsed().as_millis(),
+                    "Pipeline DROP at stage 2 — tool extraction skip or failure"
+                );
+                return Ok(None);
+            }
+        }
+    } else {
+        // Human exchange pipeline: full extractor.rs (prompt/response)
+        let source = match source_type {
+            "Read" | "file_read" => ExtractionSource::FileRead,
+            "Write" | "file_write" => ExtractionSource::FileWrite,
+            "Task" | "task" => ExtractionSource::Task,
+            "Fetch" | "fetch" => ExtractionSource::Fetch,
+            "Response" | "response" => ExtractionSource::Response,
+            "Command" | "command" => ExtractionSource::Command,
+            _ => ExtractionSource::Prompt,
+        };
+
+        // Phase B: Gate LLM relevance for short prompts (51-150 chars)
+        if source_type == "prompt" {
+            let char_count = cleaned.chars().count();
+            if char_count <= ai_smartness::constants::PROMPT_RELEVANCE_GATE_MAX {
+                match check_prompt_relevance(&cleaned, agent_context, guardian) {
+                    Ok(true) => {
+                        tracing::info!(chars = char_count, "Short prompt judged RELEVANT by gate LLM");
+                    }
+                    Ok(false) => {
+                        tracing::info!(chars = char_count, "Short prompt judged NOT relevant, dropping");
+                        return Ok(None);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Relevance gate LLM failed, proceeding normally");
+                    }
                 }
             }
         }
-    }
 
-    tracing::info!(
-        source = source.as_str(),
-        cleaned_len = cleaned.len(),
-        has_agent_context = agent_context.is_some(),
-        elapsed_ms = pipeline_start.elapsed().as_millis(),
-        "Stage 2/6: Starting LLM extraction"
-    );
-    let extraction = match extractor::extract(
-        &cleaned,
-        source,
-        &guardian.extraction,
-        &guardian.label_suggestion,
-        &guardian.importance_rating,
-        agent_context,
-    )? {
-        Some(e) => e,
-        None => {
-            tracing::info!(
-                elapsed_ms = pipeline_start.elapsed().as_millis(),
-                "Pipeline DROP at stage 2 — LLM skip or failure"
-            );
-            return Ok(None);
+        tracing::info!(
+            source = source.as_str(),
+            cleaned_len = cleaned.len(),
+            has_agent_context = agent_context.is_some(),
+            elapsed_ms = pipeline_start.elapsed().as_millis(),
+            "Stage 2/6: Starting LLM extraction (human exchange)"
+        );
+        match extractor::extract(
+            &cleaned,
+            source,
+            &guardian.extraction,
+            &guardian.label_suggestion,
+            &guardian.importance_rating,
+            agent_context,
+        )? {
+            Some(e) => e,
+            None => {
+                tracing::info!(
+                    elapsed_ms = pipeline_start.elapsed().as_millis(),
+                    "Pipeline DROP at stage 2 — LLM skip or failure"
+                );
+                return Ok(None);
+            }
         }
     };
     tracing::info!(
@@ -271,6 +300,20 @@ pub fn process_prompt(
     }
 
     process_capture(conn, pending, "prompt", prompt, None, thread_quota, guardian)
+}
+
+/// Check if a source_type corresponds to a tool capture (vs human exchange).
+/// Tool captures use the toolextractor pipeline (single-pass summary).
+/// Human exchanges (prompt/response) use the full extractor pipeline.
+fn is_tool_source(source_type: &str) -> bool {
+    matches!(
+        source_type,
+        "Read" | "file_read" | "Write" | "file_write" | "Edit"
+            | "Bash" | "Command" | "command"
+            | "WebFetch" | "fetch" | "WebSearch"
+            | "Task" | "task"
+            | "NotebookEdit"
+    )
 }
 
 /// Gate LLM for short prompts (51-150 chars).

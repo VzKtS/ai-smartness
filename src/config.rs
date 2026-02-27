@@ -184,6 +184,9 @@ pub struct ExtractionConfig {
     /// TTL for pending context in the daemon processor (seconds).
     #[serde(default = "default_pending_context_ttl")]
     pub pending_context_ttl_secs: u64,      // default: 600
+    /// Max content chars sent to LLM for tool summary pipeline (truncation).
+    #[serde(default = "default_max_tool_content_chars")]
+    pub max_tool_content_chars: usize,      // default: 6000
 }
 
 impl Default for ExtractionConfig {
@@ -201,9 +204,12 @@ impl Default for ExtractionConfig {
             skip_tools: vec![],
             enable_skip_signal: true,
             pending_context_ttl_secs: default_pending_context_ttl(),
+            max_tool_content_chars: default_max_tool_content_chars(),
         }
     }
 }
+
+fn default_max_tool_content_chars() -> usize { 6000 }
 
 // ============================================================================
 // COHERENCE CONFIG
@@ -962,10 +968,6 @@ pub struct CaptureToolToggles {
     #[serde(default = "default_false")]
     pub bash: bool,
     #[serde(default = "default_false")]
-    pub grep: bool,
-    #[serde(default = "default_false")]
-    pub glob: bool,
-    #[serde(default = "default_false")]
     pub web_fetch: bool,
     #[serde(default = "default_false")]
     pub web_search: bool,
@@ -984,8 +986,6 @@ impl Default for CaptureToolToggles {
             edit: false,
             write: false,
             bash: false,
-            grep: false,
-            glob: false,
             web_fetch: false,
             web_search: false,
             task: false,
@@ -1003,8 +1003,6 @@ impl CaptureToolToggles {
             "Edit" => self.edit,
             "Write" => self.write,
             "Bash" => self.bash,
-            "Grep" => self.grep,
-            "Glob" => self.glob,
             "WebFetch" => self.web_fetch,
             "WebSearch" => self.web_search,
             "Task" => self.task,
@@ -1524,8 +1522,6 @@ mod tests {
         assert!(!toggles.is_enabled("Task"));
         assert!(!toggles.is_enabled("NotebookEdit"));
         assert!(!toggles.is_enabled("Bash"));
-        assert!(!toggles.is_enabled("Grep"));
-        assert!(!toggles.is_enabled("Glob"));
         assert!(!toggles.is_enabled("WebFetch"));
         assert!(!toggles.is_enabled("WebSearch"));
         // Unknown tools still default to enabled

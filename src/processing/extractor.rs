@@ -478,6 +478,12 @@ fn repair_truncated_json(raw: &str) -> Option<String> {
     Some(result)
 }
 
+/// Parse LLM extraction response JSON into ExtractionResult.
+/// Public for reuse by toolextractor.rs (same JSON format + repair logic).
+pub fn parse_tool_extraction_response(response: &str) -> AiResult<ExtractionResult> {
+    parse_extraction_response(response)
+}
+
 fn parse_extraction_response(response: &str) -> AiResult<ExtractionResult> {
     // Extract the first complete JSON object by tracking brace depth.
     // Qwen sometimes appends trailing text or extra JSON after the main object,
