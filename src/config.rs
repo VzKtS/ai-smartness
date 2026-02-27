@@ -185,9 +185,11 @@ pub struct ExtractionConfig {
     #[serde(default = "default_pending_context_ttl")]
     pub pending_context_ttl_secs: u64,      // default: 600
     /// Max content chars sent to LLM for tool summary pipeline (truncation).
-    /// Kept low to leave room for complete JSON output (confidence/importance).
+    /// Kept low to avoid Vulkan VRAM exhaustion on prompt decode (GTX 1650).
+    /// 2000 chars ≈ 600 tokens content + ~300 tokens template = ~900 total.
+    /// Crash observed at 1520 tokens (4000 chars), safe zone < 500 tokens.
     #[serde(default = "default_max_tool_content_chars")]
-    pub max_tool_content_chars: usize,      // default: 4000
+    pub max_tool_content_chars: usize,      // default: 2000
 }
 
 impl Default for ExtractionConfig {
@@ -205,12 +207,12 @@ impl Default for ExtractionConfig {
             skip_tools: vec![],
             enable_skip_signal: true,
             pending_context_ttl_secs: default_pending_context_ttl(),
-            max_tool_content_chars: 4000,
+            max_tool_content_chars: 2000,
         }
     }
 }
 
-fn default_max_tool_content_chars() -> usize { 4000 }
+fn default_max_tool_content_chars() -> usize { 2000 }
 
 // ============================================================================
 // COHERENCE CONFIG
