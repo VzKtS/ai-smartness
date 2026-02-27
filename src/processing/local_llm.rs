@@ -19,9 +19,10 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
-/// Context size (tokens). 6144 fits extraction prompts (~3600 tok) with 768
-/// output tokens. KV cache with Phi-4-mini GQA (8 heads): ~576 MB → total ~3.1 GB VRAM.
-const DEFAULT_CTX_SIZE: u32 = 6144;
+/// Context size (tokens). 4096 keeps KV cache under ~384 MB on Phi-4-mini GQA,
+/// total VRAM ~2.9 GB — safe margin on GTX 1650 (4 GB) even with Vulkan overhead.
+/// Prompts exceeding (ctx - max_tokens) are truncated automatically.
+const DEFAULT_CTX_SIZE: u32 = 4096;
 
 /// Default max output tokens for generation.
 /// 768 gives enough room for full extraction JSON (title, subjects, labels,
@@ -195,8 +196,38 @@ impl LocalLlm {
             .with_n_batch(DEFAULT_CTX_SIZE)
             .with_n_threads(INFERENCE_THREADS)
             .with_n_threads_batch(INFERENCE_THREADS);
-        let mut ctx = inner.model.new_context(&inner.backend, ctx_params)
-            .map_err(|e| AiError::Provider(format!("Failed to create LLM context: {:?}", e)))?;
+
+        // Try context creation with retry — Vulkan may not free VRAM instantly
+        // after the previous context is dropped, causing NullReturn on rapid
+        // consecutive calls (e.g. chunked pool processing).
+        let make_ctx_params = || {
+            LlamaContextParams::default()
+                .with_n_ctx(std::num::NonZeroU32::new(DEFAULT_CTX_SIZE))
+                .with_n_batch(DEFAULT_CTX_SIZE)
+                .with_n_threads(INFERENCE_THREADS)
+                .with_n_threads_batch(INFERENCE_THREADS)
+        };
+        let mut ctx = match inner.model.new_context(&inner.backend, ctx_params) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    "LLM context creation failed — retrying after 1s (Vulkan VRAM delay)"
+                );
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                match inner.model.new_context(&inner.backend, make_ctx_params()) {
+                    Ok(c) => {
+                        tracing::info!("LLM context creation succeeded on retry");
+                        c
+                    }
+                    Err(e2) => {
+                        return Err(AiError::Provider(
+                            format!("Failed to create LLM context after retry: {:?}", e2),
+                        ));
+                    }
+                }
+            }
+        };
         tracing::debug!(elapsed_ms = gen_start.elapsed().as_millis(), "LLM context created");
 
         // Tokenize prompt (using chat-template-wrapped version)

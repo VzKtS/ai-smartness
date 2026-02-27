@@ -23,7 +23,7 @@ pub fn call_llm(prompt: &str) -> AiResult<String> {
         model = %local.model_path().display(),
         "LLM routing → local llama.cpp"
     );
-    let result = local.generate(prompt, 512);
+    let result = local.generate(prompt, 0);
     tracing::info!(
         success = result.is_ok(),
         elapsed_ms = start.elapsed().as_millis(),
