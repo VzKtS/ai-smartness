@@ -118,6 +118,15 @@ pub fn extract(
             Ok(None)
         }
         Ok(ExtractionResult::Extracted(mut extraction)) => {
+            // Gate: detect degenerate extraction (LLM returned placeholders like "...").
+            if is_degenerate_extraction(&extraction) {
+                tracing::warn!(
+                    title = %extraction.title,
+                    summary = %extraction.summary,
+                    "Extraction: degenerate output detected — dropping"
+                );
+                return Ok(None);
+            }
             // Prompt and Response: use verbatim fallback ONLY if LLM didn't produce a summary.
             // When the LLM succeeds, its summary (max 250 chars per prompt spec) is better
             // than raw content for agent consumption (Engram scanning).
@@ -496,6 +505,30 @@ pub fn parse_tool_extraction_response(response: &str) -> AiResult<ExtractionResu
     parse_extraction_response(response)
 }
 
+/// Detect degenerate LLM extraction (placeholder values, empty metadata).
+/// Returns true if the extraction is garbage and should be dropped.
+///
+/// Two detection modes:
+/// 1. Both title AND summary are placeholders ("...", empty, etc.)
+/// 2. Both subjects AND labels are empty — the LLM may have echoed a doc comment
+///    as title but failed to extract any real metadata from the content.
+pub fn is_degenerate_extraction(ext: &Extraction) -> bool {
+    let both_placeholder = is_placeholder(&ext.title) && is_placeholder(&ext.summary);
+    let no_metadata = ext.subjects.is_empty() && ext.labels.is_empty();
+    both_placeholder || no_metadata
+}
+
+/// Check if a string is a placeholder (LLM couldn't produce real content).
+fn is_placeholder(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed.len() < 3 {
+        return true;
+    }
+    // Common LLM placeholder patterns
+    let placeholders = ["...", "…", "n/a", "N/A", "none", "None", "null", "undefined"];
+    placeholders.iter().any(|p| trimmed == *p)
+}
+
 fn parse_extraction_response(response: &str) -> AiResult<ExtractionResult> {
     // Extract the first complete JSON object by tracking brace depth.
     // Qwen sometimes appends trailing text or extra JSON after the main object,
@@ -782,5 +815,122 @@ mod tests {
             }
             ExtractionResult::Skip => panic!("Expected Extracted"),
         }
+    }
+
+    // --- is_degenerate_extraction / is_placeholder ---
+
+    #[test]
+    fn test_degenerate_both_placeholder() {
+        let ext = Extraction {
+            title: "...".into(),
+            summary: "...".into(),
+            subjects: vec!["...".into()],
+            labels: vec!["...".into()],
+            concepts: vec![],
+            confidence: 0.3,
+            importance: 0.3,
+            extraction_mode: ExtractionMode::Summary,
+            from_partial: true,
+        };
+        assert!(is_degenerate_extraction(&ext));
+    }
+
+    #[test]
+    fn test_degenerate_empty_title_and_summary() {
+        let ext = Extraction {
+            title: "".into(),
+            summary: "  ".into(),
+            subjects: vec![],
+            labels: vec![],
+            concepts: vec![],
+            confidence: 0.5,
+            importance: 0.5,
+            extraction_mode: ExtractionMode::Extract,
+            from_partial: false,
+        };
+        assert!(is_degenerate_extraction(&ext));
+    }
+
+    #[test]
+    fn test_not_degenerate_good_title_with_metadata() {
+        let ext = Extraction {
+            title: "Daemon IPC client implementation".into(),
+            summary: "...".into(),
+            subjects: vec!["IPC".into()],
+            labels: vec!["architecture".into()],
+            concepts: vec![],
+            confidence: 0.8,
+            importance: 0.7,
+            extraction_mode: ExtractionMode::Extract,
+            from_partial: false,
+        };
+        // title is good + has metadata — not degenerate
+        assert!(!is_degenerate_extraction(&ext));
+    }
+
+    #[test]
+    fn test_not_degenerate_good_summary_with_metadata() {
+        let ext = Extraction {
+            title: "...".into(),
+            summary: "Implements IPC communication for daemon captures".into(),
+            subjects: vec!["daemon".into()],
+            labels: vec![],
+            concepts: vec![],
+            confidence: 0.8,
+            importance: 0.7,
+            extraction_mode: ExtractionMode::Extract,
+            from_partial: false,
+        };
+        // summary is good + has subjects — not degenerate
+        assert!(!is_degenerate_extraction(&ext));
+    }
+
+    #[test]
+    fn test_degenerate_real_title_but_no_metadata() {
+        // LLM echoed doc comment as title but couldn't extract any real metadata
+        let ext = Extraction {
+            title: "Thread Manager -- thread lifecycle management.".into(),
+            summary: "Handles: NewThread / Continue / Fork / Reactivate decisions.".into(),
+            subjects: vec![],
+            labels: vec![],
+            concepts: vec![],
+            confidence: 0.3,
+            importance: 0.3,
+            extraction_mode: ExtractionMode::Summary,
+            from_partial: true,
+        };
+        assert!(is_degenerate_extraction(&ext));
+    }
+
+    #[test]
+    fn test_not_degenerate_placeholder_title_but_has_labels() {
+        // title is "..." but labels exist — partial success, keep it
+        let ext = Extraction {
+            title: "...".into(),
+            summary: "Some summary".into(),
+            subjects: vec![],
+            labels: vec!["config".into()],
+            concepts: vec![],
+            confidence: 0.5,
+            importance: 0.5,
+            extraction_mode: ExtractionMode::Extract,
+            from_partial: false,
+        };
+        assert!(!is_degenerate_extraction(&ext));
+    }
+
+    #[test]
+    fn test_placeholder_patterns() {
+        assert!(is_placeholder("..."));
+        assert!(is_placeholder("…"));
+        assert!(is_placeholder("n/a"));
+        assert!(is_placeholder("N/A"));
+        assert!(is_placeholder("none"));
+        assert!(is_placeholder("null"));
+        assert!(is_placeholder(""));
+        assert!(is_placeholder("  "));
+        assert!(is_placeholder("ab")); // < 3 chars
+        assert!(!is_placeholder("abc")); // 3 chars, not a placeholder
+        assert!(!is_placeholder("Real title here"));
     }
 }

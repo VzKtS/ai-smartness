@@ -57,7 +57,7 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str) {
         content_len = response_text.len(),
         "Response: sending to daemon"
     );
-    let _ = daemon_ipc_client::send_capture(project_hash, agent_id, "Response", response_text);
+    let _ = daemon_ipc_client::send_capture(project_hash, agent_id, "Response", response_text, None);
 }
 
 /// Check if agent response capture is enabled in global config.

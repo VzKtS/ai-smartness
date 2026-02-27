@@ -62,13 +62,17 @@ pub fn send_capture(
     agent_id: &str,
     source_type: &str,
     content: &str,
+    file_path: Option<&str>,
 ) -> AiResult<serde_json::Value> {
-    let params = serde_json::json!({
+    let mut params = serde_json::json!({
         "project_hash": project_hash,
         "agent_id": agent_id,
         "source_type": source_type,
         "content": content,
     });
+    if let Some(fp) = file_path {
+        params["file_path"] = serde_json::Value::String(fp.to_string());
+    }
 
     call_daemon("tool_capture", params)
 }

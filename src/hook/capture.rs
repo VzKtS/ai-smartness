@@ -105,14 +105,20 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str) {
         return;
     }
 
-    // 6. Send to daemon via IPC (fire-and-forget, non-blocking)
-    tracing::info!(tool = %tool_name, content_len = cleaned.len(), "Capture sending to daemon");
-    let _ = daemon_ipc_client::send_capture(project_hash, agent_id, tool_name, &cleaned);
+    // 6. Extract file_path from tool_input (for Read/Edit/Write → stored as thread reference)
+    let file_path = data
+        .get("tool_input")
+        .and_then(|i| i.get("file_path"))
+        .and_then(|v| v.as_str());
 
-    // 7. Update session state (tool history + file modifications)
+    // 7. Send to daemon via IPC (fire-and-forget, non-blocking)
+    tracing::info!(tool = %tool_name, content_len = cleaned.len(), file_path = ?file_path, "Capture sending to daemon");
+    let _ = daemon_ipc_client::send_capture(project_hash, agent_id, tool_name, &cleaned, file_path);
+
+    // 8. Update session state (tool history + file modifications)
     update_session_state(project_hash, agent_id, tool_name, &data);
 
-    // 8. Always continue (hook must never block)
+    // 9. Always continue (hook must never block)
     print_continue();
 }
 

@@ -71,7 +71,18 @@ pub fn summarize_tool_output(
             // Force Summary mode for all tool extractions
             ext.extraction_mode = ExtractionMode::Summary;
 
-            // Post-processing: detect truncated JSON (both fields at serde default 0.0).
+            // Gate 1: detect degenerate extraction (LLM returned placeholders like "...").
+            // Must run BEFORE from_partial rescue — no point rescuing garbage.
+            if extractor::is_degenerate_extraction(&ext) {
+                tracing::warn!(
+                    title = %ext.title,
+                    summary = %ext.summary,
+                    "Tool extraction: degenerate output detected — dropping"
+                );
+                return Ok(None);
+            }
+
+            // Gate 2: detect truncated JSON (both fields at serde default 0.0).
             // Pattern is impossible from real LLM output — assign reduced scores
             // so the thread exists but with lower engram weight.
             if ext.confidence == 0.0 && ext.importance == 0.0 {
