@@ -127,19 +127,22 @@ fn build_tool_prompt(
         None => "Reference: none".to_string(),
     };
 
-    // PROCEDURAL ORDER: content FIRST, agent context LAST.
-    // The LLM must analyze raw content without bias, then use context
-    // only for importance scoring. Same principle as extractor.rs.
-    let context_section = match agent_context {
+    // PROCEDURAL ORDER — same principle as extractor.rs:
+    // Step 1: classify content WITHOUT agent context (unbiased)
+    // Step 2: score importance WITH agent context
+    // This prevents context from biasing classification for Engram validity.
+    let context_block = match agent_context {
         Some(ctx) if !ctx.is_empty() => format!(
-            "\n\nAgent recent context (use ONLY for importance scoring):\n---\n{}\n---",
+            "The agent was recently working on:\n---\n{}\n---\nScore importance based on alignment with agent's current activity.",
             crate::constants::truncate_safe(ctx, 500)
         ),
-        _ => String::new(),
+        _ => String::from("No agent context available. Score based on content richness alone."),
     };
 
     format!(
-        r#"You are a memory assistant. Summarize the following tool output for long-term agent memory storage.
+        r#"You are a memory assistant. Summarize the following tool output.
+
+## Step 1 — Classification (analyze content below, NO external context)
 
 Tool: {source_type} ({tool_desc})
 {ref_line}
@@ -149,19 +152,21 @@ Content:
 {content}
 ---
 
-Output a single JSON object with these fields:
-{{"title":"...","summary":"...","subjects":[...],"labels":[...],"concepts":[...],"importance":0.0,"confidence":0.0}}
-
-Rules:
-- title: max 50 chars, descriptive title of what this content is
-- summary: max 300 chars, concise summary of what this content contains and why it matters
-- subjects: 2-3 key subjects covered
+- title: max 50 chars, descriptive
+- summary: max 250 chars, what it contains and why it matters
+- subjects: 2-3 key subjects
 - labels: 1-3 classification labels (e.g. "architecture", "config", "test-output")
-- concepts: 5-15 associative concepts (synonyms, related domains, technologies mentioned)
-- importance: 0.0 to 1.0 — how important is this for the agent's long-term memory
+- concepts: 5-15 associative concepts (synonyms, related domains, hyponym, technologies)
 - confidence: 0.0 to 1.0 — how well you understood the content
 
-Output ONLY the JSON object, nothing else.{context_section}"#
+## Step 2 — Importance scoring
+
+{context_block}
+
+- importance: 0.0 to 1.0 — how important is this for the agent
+
+Output ONLY a single JSON object, nothing else:
+{{"title":"...","summary":"...","subjects":[...],"labels":[...],"concepts":[...],"confidence":0.0,"importance":0.0}}"#
     )
 }
 
@@ -197,7 +202,7 @@ mod tests {
             None,
             Some("Working on refactoring the config module"),
         );
-        assert!(prompt.contains("Agent recent context"));
+        assert!(prompt.contains("agent was recently working on"));
         assert!(prompt.contains("refactoring the config module"));
     }
 
