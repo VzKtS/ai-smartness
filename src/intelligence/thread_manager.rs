@@ -266,10 +266,14 @@ impl ThreadManager {
         tracing::info!(thread_id = %thread_id, title = %extraction.title, topics = ?extraction.subjects, "Thread created");
 
         // Add initial message
-        // For Summary mode: store the LLM summary (not raw logs/code)
+        // For Summary mode: store file_path reference (summary already in thread.summary)
         // For Extract mode: store the original content (meaningful human text)
         let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary {
-            ("summary".to_string(), extraction.summary.clone(), false)
+            if let Some(fp) = file_path {
+                ("reference".to_string(), fp.to_string(), false)
+            } else {
+                ("summary".to_string(), extraction.summary.clone(), false)
+            }
         } else {
             let limit = match source_type {
                 "prompt" | "response" => CONTENT_LIMIT_CONVERSATION,
@@ -337,9 +341,13 @@ impl ThreadManager {
             None => return Ok(()),
         };
 
-        // For Summary mode: store the LLM summary (not raw logs/code)
+        // For Summary mode: store file_path reference (summary already in thread.summary)
         let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary {
-            ("summary".to_string(), extraction.summary.clone(), false)
+            if let Some(fp) = file_path {
+                ("reference".to_string(), fp.to_string(), false)
+            } else {
+                ("summary".to_string(), extraction.summary.clone(), false)
+            }
         } else {
             let limit = match source_type {
                 "prompt" | "response" => CONTENT_LIMIT_CONVERSATION,
