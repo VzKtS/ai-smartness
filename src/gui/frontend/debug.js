@@ -265,18 +265,14 @@ async function pollLogs() {
 // ─── Queue stats polling ─────────────────────────────────────
 async function pollQueueStats() {
     try {
-        const status = await invoke('daemon_status');
-        if (status && status.running) {
-            // daemon_status IPC returns capture_queue in the status response
-            // We poll via get_system_resources which includes daemon info
-            const res = await invoke('get_system_resources');
-            const q = res?.daemon?.capture_queue;
-            if (q && queueStatsEl) {
-                queueStatsEl.textContent = `Queue: ${q.pending}/${q.workers}w | Done: ${q.processed} | Err: ${q.errors}`;
-            }
+        const res = await invoke('get_system_resources');
+        const q = res?.daemon?.capture_queue;
+        if (q && queueStatsEl) {
+            queueStatsEl.textContent = `Queue: ${q.pending}/${q.workers}w | Done: ${q.processed} | Err: ${q.errors}`;
+        } else if (queueStatsEl) {
+            queueStatsEl.textContent = '';
         }
     } catch (e) {
-        // daemon offline
         if (queueStatsEl) queueStatsEl.textContent = '';
     }
 }

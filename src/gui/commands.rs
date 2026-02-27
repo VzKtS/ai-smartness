@@ -138,16 +138,39 @@ pub fn daemon_start() -> Result<serde_json::Value, String> {
         .spawn()
         .map_err(|e| e.to_string())?;
 
-    Ok(serde_json::json!({ "started": true, "pid": child.id() }))
+    let spawn_pid = child.id();
+
+    // Give the daemon a moment to bind its IPC socket, then verify
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let (running, pid) = check_daemon_inner(true); // bypass cache
+
+    Ok(serde_json::json!({ "started": true, "pid": spawn_pid, "verified_running": running, "verified_pid": pid }))
 }
 
 #[tauri::command]
 pub fn daemon_stop() -> Result<serde_json::Value, String> {
     tracing::info!("GUI: daemon_stop");
-    match daemon_ipc_client::shutdown() {
-        Ok(_) => Ok(serde_json::json!({ "stopped": true })),
-        Err(e) => Ok(serde_json::json!({ "stopped": false, "error": e.to_string() })),
-    }
+    let result = match daemon_ipc_client::shutdown() {
+        Ok(_) => serde_json::json!({ "stopped": true }),
+        Err(e) => serde_json::json!({ "stopped": false, "error": e.to_string() }),
+    };
+
+    // Give daemon time to shut down, then verify with cache bypass
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let (running, pid) = check_daemon_inner(true);
+
+    Ok(serde_json::json!({
+        "stopped": result["stopped"],
+        "verified_running": running,
+        "verified_pid": pid,
+    }))
+}
+
+#[tauri::command]
+pub fn pool_flush() -> Result<serde_json::Value, String> {
+    tracing::info!("GUI: pool_flush");
+    daemon_ipc_client::send_method("pool_flush", serde_json::json!({}))
+        .map_err(|e| e.to_string())
 }
 
 // ─── Projects ────────────────────────────────────────────────
@@ -1703,15 +1726,22 @@ fn expand_tilde(path: &str) -> String {
 }
 
 fn check_daemon() -> (bool, Option<u32>) {
+    check_daemon_inner(false)
+}
+
+/// Check daemon status, optionally bypassing cache (used after start/stop).
+fn check_daemon_inner(bypass_cache: bool) -> (bool, Option<u32>) {
     use std::sync::Mutex;
     use std::time::Instant;
     static CACHE: Mutex<Option<(Instant, (bool, Option<u32>))>> = Mutex::new(None);
 
-    // Return cached result if fresh (< 2 seconds)
-    if let Ok(guard) = CACHE.lock() {
-        if let Some((ts, result)) = guard.as_ref() {
-            if ts.elapsed().as_secs() < 2 {
-                return *result;
+    // Return cached result if fresh (< 2 seconds) and not bypassing
+    if !bypass_cache {
+        if let Ok(guard) = CACHE.lock() {
+            if let Some((ts, result)) = guard.as_ref() {
+                if ts.elapsed().as_secs() < 2 {
+                    return *result;
+                }
             }
         }
     }

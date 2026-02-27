@@ -391,6 +391,80 @@ pub fn run_pool_consumer_loop(
     tracing::info!("Pool consumer loop stopped");
 }
 
+/// Force-process all pending pool files across all agents. Used by IPC pool_flush.
+/// Returns (total_processed, errors).
+pub fn flush_all_pools(pool: &ConnectionPool) -> (usize, Vec<String>) {
+    let keys = discover_agents_with_pools();
+    let mut total = 0;
+    let mut errors = Vec::new();
+
+    for key in &keys {
+        if pool.is_locked(key) {
+            continue;
+        }
+
+        let agent_data = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
+        let pool_dir = agent_data.join("pool");
+        if !pool_dir.exists() {
+            continue;
+        }
+
+        let conn = match pool.get_or_open(key) {
+            Ok(c) => c,
+            Err(e) => {
+                errors.push(format!("{}: {}", key.agent_id, e));
+                continue;
+            }
+        };
+        let conn_guard = match conn.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                pool.force_evict(key);
+                errors.push(format!("{}: connection mutex poisoned", key.agent_id));
+                continue;
+            }
+        };
+        let pending_arc = match pool.get_pending(key) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let mut pending_guard = match pending_arc.lock() {
+            Ok(g) => g,
+            Err(poison) => poison.into_inner(),
+        };
+
+        let guardian = {
+            let cfg_path = path_utils::data_dir().join("config.json");
+            std::fs::read_to_string(&cfg_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<GuardianConfig>(&s).ok())
+                .unwrap_or_default()
+        };
+        let thread_quota = pool.get_thread_quota(key);
+
+        match pool_processor::process_pending_files(
+            &pool_dir,
+            &conn_guard,
+            &mut pending_guard,
+            thread_quota,
+            &guardian,
+        ) {
+            Ok(n) => {
+                total += n;
+                if n > 0 {
+                    clear_backpressure(key);
+                }
+            }
+            Err(e) => {
+                errors.push(format!("{}: {}", key.agent_id, e));
+                set_backpressure(key);
+            }
+        }
+    }
+
+    (total, errors)
+}
+
 /// Discover all agents that have a pool/ directory by scanning the filesystem.
 /// This is necessary because non-prompt captures write to pool/ without opening
 /// a DB connection, so pool.active_keys() misses them entirely.

@@ -12,13 +12,13 @@ en: {
     'stab.guardcode':'GuardCode','stab.network':'Network','stab.updates':'Updates',
     'dash.daemon':'Daemon','dash.active':'Active Threads','dash.suspended':'Suspended',
     'dash.archived':'Archived','dash.bridges':'Bridges','dash.version':'Version',
-    'dash.cpu':'CPU','dash.memory':'Memory','dash.pool':'Pool',
+    'dash.cpu':'CPU','dash.memory':'Memory','dash.pool':'Pool','dash.queue':'Queue',
     'stab.daemon':'Daemon','sec.daemonpool':'Connection Pool',
     'daemon.autostart':'Auto-start Daemon','daemon.maxconn':'Max Connections',
     'daemon.idletimeout':'Idle Timeout (secs)','daemon.pruneinterval':'Prune Interval (secs)',
     'daemon.crossgossip':'Cross-project Gossip',
     'cfg.mode':'Mode','cfg.theme':'Theme',
-    'btn.start':'Start','btn.stop':'Stop','btn.debug':'Debug','btn.search':'Search','btn.save':'Save',
+    'btn.start':'Start','btn.stop':'Stop','btn.flush':'Flush','btn.debug':'Debug','btn.search':'Search','btn.save':'Save',
     'btn.reset':'Reset Defaults','btn.add':'Add','btn.cancel':'Cancel','btn.remove':'Remove',
     'btn.addagent':'+ Add Agent',
     'sec.global':'Global Settings','sec.extraction':'Extraction','sec.coherence':'Coherence',
@@ -62,13 +62,13 @@ fr: {
     'stab.guardcode':'GuardCode','stab.network':'Reseau','stab.updates':'Mises a jour',
     'dash.daemon':'Daemon','dash.active':'Threads actifs','dash.suspended':'Suspendus',
     'dash.archived':'Archives','dash.bridges':'Ponts','dash.version':'Version',
-    'dash.cpu':'CPU','dash.memory':'Memoire','dash.pool':'Pool',
+    'dash.cpu':'CPU','dash.memory':'Memoire','dash.pool':'Pool','dash.queue':'File',
     'stab.daemon':'Daemon','sec.daemonpool':'Pool de connexions',
     'daemon.autostart':'Demarrage auto du daemon','daemon.maxconn':'Connexions max',
     'daemon.idletimeout':'Timeout inactivite (sec)','daemon.pruneinterval':'Intervalle nettoyage (sec)',
     'daemon.crossgossip':'Gossip inter-projets',
     'cfg.mode':'Mode','cfg.theme':'Theme',
-    'btn.start':'Demarrer','btn.stop':'Arreter','btn.debug':'Debug','btn.search':'Rechercher','btn.save':'Enregistrer',
+    'btn.start':'Demarrer','btn.stop':'Arreter','btn.flush':'Vider','btn.debug':'Debug','btn.search':'Rechercher','btn.save':'Enregistrer',
     'btn.reset':'Reinitialiser','btn.add':'Ajouter','btn.cancel':'Annuler','btn.remove':'Supprimer',
     'btn.addagent':'+ Ajouter Agent',
     'sec.global':'Parametres globaux','sec.extraction':'Extraction','sec.coherence':'Coherence',
@@ -112,13 +112,13 @@ es: {
     'stab.guardcode':'GuardCode','stab.network':'Red','stab.updates':'Actualizaciones',
     'dash.daemon':'Daemon','dash.active':'Hilos activos','dash.suspended':'Suspendidos',
     'dash.archived':'Archivados','dash.bridges':'Puentes','dash.version':'Version',
-    'dash.cpu':'CPU','dash.memory':'Memoria','dash.pool':'Pool',
+    'dash.cpu':'CPU','dash.memory':'Memoria','dash.pool':'Pool','dash.queue':'Cola',
     'stab.daemon':'Daemon','sec.daemonpool':'Pool de conexiones',
     'daemon.autostart':'Auto-inicio del daemon','daemon.maxconn':'Conexiones max',
     'daemon.idletimeout':'Timeout inactividad (seg)','daemon.pruneinterval':'Intervalo limpieza (seg)',
     'daemon.crossgossip':'Gossip entre proyectos',
     'cfg.mode':'Modo','cfg.theme':'Tema',
-    'btn.start':'Iniciar','btn.stop':'Detener','btn.debug':'Debug','btn.search':'Buscar','btn.save':'Guardar',
+    'btn.start':'Iniciar','btn.stop':'Detener','btn.flush':'Vaciar','btn.debug':'Debug','btn.search':'Buscar','btn.save':'Guardar',
     'btn.reset':'Restablecer','btn.add':'Agregar','btn.cancel':'Cancelar','btn.remove':'Eliminar',
     'btn.addagent':'+ Agregar Agente',
     'sec.global':'Configuracion global','sec.extraction':'Extraccion','sec.coherence':'Coherencia',
@@ -295,16 +295,42 @@ document.getElementById('project-select').addEventListener('change', (e) => {
 // ─── Daemon controls ─────────────────────────────────────────
 document.getElementById('btn-daemon-start').addEventListener('click', async () => {
     try {
-        await invoke('daemon_start');
-        setTimeout(loadDashboard, 1500);
+        document.getElementById('daemon-status').textContent = 'Starting…';
+        await invoke('daemon_start');  // backend waits + verifies
+        await loadDashboard();
     } catch (e) { console.error('Daemon start error:', e); }
 });
 
 document.getElementById('btn-daemon-stop').addEventListener('click', async () => {
     try {
-        await invoke('daemon_stop');
-        setTimeout(loadDashboard, 1000);
+        document.getElementById('daemon-status').textContent = 'Stopping…';
+        await invoke('daemon_stop');  // backend waits + verifies
+        await loadDashboard();
     } catch (e) { console.error('Daemon stop error:', e); }
+});
+
+document.getElementById('btn-pool-flush').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-pool-flush');
+    try {
+        btn.disabled = true;
+        btn.textContent = 'Flushing…';
+        const result = await invoke('pool_flush');
+        btn.textContent = `Done (${result.processed || 0})`;
+        setTimeout(() => {
+            const dict = T[currentLang] || T.en;
+            btn.textContent = dict['btn.flush'] || 'Flush';
+            btn.disabled = false;
+        }, 2000);
+        await loadResources();
+    } catch (e) {
+        console.error('Pool flush error:', e);
+        btn.textContent = 'Error';
+        setTimeout(() => {
+            const dict = T[currentLang] || T.en;
+            btn.textContent = dict['btn.flush'] || 'Flush';
+            btn.disabled = false;
+        }, 2000);
+    }
 });
 
 // ─── Debug window ───────────────────────────────────────────
@@ -643,7 +669,7 @@ async function saveProjectEdit(panel, original) {
 
         if (daemonWasRunning && isActiveProject) {
             await invoke('daemon_start');
-            setTimeout(loadDashboard, 1500);
+            await loadDashboard();
         }
     } catch (e) {
         errEl.textContent = String(e);
@@ -696,11 +722,13 @@ async function loadDashboard() {
             el.className = 'status running';
             document.getElementById('btn-daemon-start').disabled = true;
             document.getElementById('btn-daemon-stop').disabled = false;
+            document.getElementById('btn-pool-flush').disabled = false;
         } else {
             el.textContent = T[currentLang]?.['status.stopped'] || 'Stopped';
             el.className = 'status stopped';
             document.getElementById('btn-daemon-start').disabled = false;
             document.getElementById('btn-daemon-stop').disabled = true;
+            document.getElementById('btn-pool-flush').disabled = true;
         }
         document.getElementById('daemon-version').textContent = ds.version || '-';
         const versionEl = document.getElementById('version');
@@ -1390,10 +1418,21 @@ async function loadResources() {
             memEl.textContent = res.memory.percent != null ? res.memory.percent.toFixed(1) + '%' : '-';
             memEl.title = `${res.memory.used_mb || 0} / ${res.memory.total_mb || 0} MB`;
         }
-        if (poolEl && res.daemon) {
-            poolEl.textContent = `${res.daemon.pool_active || 0} active`;
+        const pool = res.daemon?.pool;
+        if (poolEl && pool) {
+            poolEl.textContent = `${pool.active || 0}/${pool.idle || 0} idle`;
+            poolEl.title = `Active: ${pool.active} | Idle: ${pool.idle} | Locked: ${pool.locked} | Max: ${pool.max_connections}`;
         } else if (poolEl) {
             poolEl.textContent = '-';
+        }
+
+        const queueEl = document.getElementById('resource-queue');
+        const q = res.daemon?.capture_queue;
+        if (queueEl && q) {
+            queueEl.textContent = `${q.pending}p ${q.processed}d ${q.errors}e`;
+            queueEl.title = `Pending: ${q.pending} | Workers: ${q.workers} | Processed: ${q.processed} | Errors: ${q.errors}`;
+        } else if (queueEl) {
+            queueEl.textContent = '-';
         }
     } catch (_) {
         // silently ignore — daemon may not be running

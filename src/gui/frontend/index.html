@@ -36,6 +36,7 @@
                     <div class="card-actions">
                         <button id="btn-daemon-start" class="btn-sm btn-success" data-i18n="btn.start">Start</button>
                         <button id="btn-daemon-stop" class="btn-sm btn-danger" data-i18n="btn.stop">Stop</button>
+                        <button id="btn-pool-flush" class="btn-sm" data-i18n="btn.flush" title="Force process pending pool files">Flush</button>
                     </div>
                 </div>
                 <div class="card">
@@ -69,6 +70,10 @@
                 <div class="card">
                     <h3 data-i18n="dash.pool">Pool</h3>
                     <div id="resource-pool" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.queue">Queue</h3>
+                    <div id="resource-queue" class="metric">-</div>
                 </div>
             </div>
 

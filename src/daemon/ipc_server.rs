@@ -378,6 +378,16 @@ fn dispatch(
             Ok(capture_queue.queue_stats())
         }
 
+        "pool_flush" => {
+            tracing::info!("IPC: pool_flush requested");
+            let (processed, errors) = super::periodic_tasks::flush_all_pools(pool);
+            Ok(serde_json::json!({
+                "flushed": true,
+                "processed": processed,
+                "errors": errors,
+            }))
+        }
+
         "set_thread_mode" => {
             let key = extract_agent_key(params)?;
             let mode_str = params

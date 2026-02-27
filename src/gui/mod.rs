@@ -21,6 +21,7 @@ pub fn launch() {
                 commands::daemon_status,
                 commands::daemon_start,
                 commands::daemon_stop,
+                commands::pool_flush,
                 commands::search_threads,
                 commands::search_threads_by_label,
                 commands::search_threads_by_topic,
