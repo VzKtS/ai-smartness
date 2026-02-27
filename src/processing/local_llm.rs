@@ -189,19 +189,30 @@ impl LocalLlm {
         // This eliminates Vulkan VRAM dealloc/realloc between calls — the KV cache
         // memory stays allocated, only its contents are cleared.
         if ctx_guard.is_none() {
-            let ctx_params = LlamaContextParams::default()
-                .with_n_ctx(std::num::NonZeroU32::new(DEFAULT_CTX_SIZE))
-                .with_n_batch(DEFAULT_CTX_SIZE)
-                .with_n_threads(INFERENCE_THREADS)
-                .with_n_threads_batch(INFERENCE_THREADS);
+            let make_ctx_params = || {
+                LlamaContextParams::default()
+                    .with_n_ctx(std::num::NonZeroU32::new(DEFAULT_CTX_SIZE))
+                    .with_n_batch(DEFAULT_CTX_SIZE)
+                    .with_n_threads(INFERENCE_THREADS)
+                    .with_n_threads_batch(INFERENCE_THREADS)
+            };
             tracing::info!(
                 ctx_size = DEFAULT_CTX_SIZE,
                 n_batch = DEFAULT_CTX_SIZE,
                 n_threads = INFERENCE_THREADS,
                 "Creating persistent LLM context (Vulkan VRAM allocated once)"
             );
-            let ctx = inner.model.new_context(&inner.backend, ctx_params)
-                .map_err(|e| AiError::Provider(format!("Failed to create LLM context: {:?}", e)))?;
+            // Retry once on NullReturn — Vulkan driver may need a moment after model load.
+            // This only fires on first call; subsequent calls reuse the persistent context.
+            let ctx = match inner.model.new_context(&inner.backend, make_ctx_params()) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = ?e, "Context creation failed — retrying after 1s (Vulkan init delay)");
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    inner.model.new_context(&inner.backend, make_ctx_params())
+                        .map_err(|e2| AiError::Provider(format!("Failed to create LLM context after retry: {:?}", e2)))?
+                }
+            };
             // Safety: model lives in 'static OnceLock (GLOBAL) — it is never dropped,
             // so the context's borrow of model is valid for 'static lifetime.
             let ctx: LlamaContext<'static> = unsafe { std::mem::transmute(ctx) };
