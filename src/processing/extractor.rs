@@ -33,14 +33,22 @@ pub struct Extraction {
     pub subjects: Vec<String>,
     #[serde(default)]
     pub summary: String,
+    #[serde(default = "default_truncated_score")]
     pub confidence: f64,
     pub labels: Vec<String>,
     #[serde(default)]
     pub concepts: Vec<String>,
+    #[serde(default = "default_truncated_score")]
     pub importance: f64,
     /// How the LLM processed this content.
     #[serde(default)]
     pub extraction_mode: ExtractionMode,
+}
+
+/// Default score for truncated LLM output (missing confidence/importance fields).
+/// 0.5 = moderate — enough to pass the confidence gate, not overvalued.
+fn default_truncated_score() -> f64 {
+    0.5
 }
 
 /// Source type for extraction prompts.
