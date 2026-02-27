@@ -19,8 +19,9 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
-/// Context size (tokens). 4096 for extraction prompts (reduces KV cache memory).
-const DEFAULT_CTX_SIZE: u32 = 4096;
+/// Context size (tokens). 6144 fits extraction prompts (~3600 tok) with 768
+/// output tokens. KV cache with Phi-4-mini GQA (8 heads): ~576 MB → total ~3.1 GB VRAM.
+const DEFAULT_CTX_SIZE: u32 = 6144;
 
 /// Default max output tokens for generation.
 /// 768 gives enough room for full extraction JSON (title, subjects, labels,
@@ -210,14 +211,15 @@ impl LocalLlm {
 
         // Reserve space for generation (prompt + max_tokens must fit in context)
         let max_input_tokens = DEFAULT_CTX_SIZE.saturating_sub(max_tokens) as usize;
+        let mut tokens = tokens;
         if tokens.len() >= max_input_tokens {
-            return Err(AiError::Provider(format!(
-                "Prompt too long: {} tokens (ctx={}, reserved for output={}, max input={})",
-                tokens.len(),
-                DEFAULT_CTX_SIZE,
-                max_tokens,
-                max_input_tokens
-            )));
+            tracing::warn!(
+                prompt_tokens = tokens.len(),
+                max_input = max_input_tokens,
+                truncated_to = max_input_tokens,
+                "Prompt exceeds context — truncating tokens to fit"
+            );
+            tokens.truncate(max_input_tokens);
         }
 
         // Create batch and add prompt tokens
