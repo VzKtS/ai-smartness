@@ -12,6 +12,7 @@ use crate::{AiError, AiResult};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -45,9 +46,11 @@ pub struct LocalLlm {
     model_path: PathBuf,
     /// Which model variant is loaded (needed for chat template wrapping).
     model_size: LocalModelSize,
-    /// Serialize all generate() calls — llama.cpp context creation from a shared
-    /// model can have thread-safety issues. One inference at a time.
-    inference_lock: Mutex<()>,
+    /// Persistent GPU context — reused across generate() calls via kv_cache_clear().
+    /// Prevents Vulkan VRAM dealloc/realloc race condition on consecutive calls
+    /// (GTX 1650: second new_context() hangs when previous VRAM not yet freed).
+    /// Mutex serializes access — one inference at a time.
+    persistent_ctx: Mutex<Option<LlamaContext<'static>>>,
 }
 
 struct LlmInner {
@@ -56,8 +59,8 @@ struct LlmInner {
 }
 
 // Safety: LlamaBackend and LlamaModel are thread-safe for read operations.
-// Each generate() call creates its own mutable LlamaContext, so no shared
-// mutable state. llama.cpp guarantees model reads are thread-safe.
+// LlamaContext is guarded by Mutex (exclusive access during generate()).
+// The 'static lifetime on LlamaContext is sound: model lives in 'static OnceLock.
 unsafe impl Send for LocalLlm {}
 unsafe impl Sync for LocalLlm {}
 unsafe impl Send for LlmInner {}
@@ -84,7 +87,7 @@ impl LocalLlm {
             inner: None,
             model_path,
             model_size: size,
-            inference_lock: Mutex::new(()),
+            persistent_ctx: Mutex::new(None),
         };
 
         // Initialize llama.cpp backend
@@ -143,7 +146,7 @@ impl LocalLlm {
             inner: Some(LlmInner { backend, model }),
             model_path,
             model_size: size,
-            inference_lock: Mutex::new(()),
+            persistent_ctx: Mutex::new(None),
         }
     }
 
@@ -154,8 +157,8 @@ impl LocalLlm {
 
     /// Generate a response from a prompt.
     ///
-    /// Creates a fresh context for each call (stateless — no conversation history).
-    /// Thread-safe: each call creates its own LlamaContext from the shared model.
+    /// Reuses a persistent GPU context (kv_cache_clear between calls).
+    /// Thread-safe: Mutex serializes access — one inference at a time.
     pub fn generate(&self, prompt: &str, max_tokens: u32) -> AiResult<String> {
         let gen_start = std::time::Instant::now();
 
@@ -177,58 +180,41 @@ impl LocalLlm {
             AiError::Provider("Local LLM model not loaded".into())
         })?;
 
-        // Serialize all inference — llama.cpp model access is NOT thread-safe
-        // for concurrent context creation + decode from the same model.
-        let _lock = self.inference_lock.lock().unwrap_or_else(|e| e.into_inner());
-        tracing::debug!("Inference lock acquired");
+        // Serialize all inference via persistent context lock
+        let mut ctx_guard = self.persistent_ctx.lock().unwrap_or_else(|e| e.into_inner());
 
         let max_tokens = if max_tokens == 0 { DEFAULT_MAX_TOKENS } else { max_tokens };
 
-        // Create context with explicit thread count to avoid over-subscription
-        tracing::debug!(
-            ctx_size = DEFAULT_CTX_SIZE,
-            n_batch = DEFAULT_CTX_SIZE,
-            n_threads = INFERENCE_THREADS,
-            "Creating LLM context"
-        );
-        let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(std::num::NonZeroU32::new(DEFAULT_CTX_SIZE))
-            .with_n_batch(DEFAULT_CTX_SIZE)
-            .with_n_threads(INFERENCE_THREADS)
-            .with_n_threads_batch(INFERENCE_THREADS);
-
-        // Try context creation with retry — Vulkan may not free VRAM instantly
-        // after the previous context is dropped, causing NullReturn on rapid
-        // consecutive calls (e.g. chunked pool processing).
-        let make_ctx_params = || {
-            LlamaContextParams::default()
+        // Lazy-create persistent context on first call, reuse on subsequent calls.
+        // This eliminates Vulkan VRAM dealloc/realloc between calls — the KV cache
+        // memory stays allocated, only its contents are cleared.
+        if ctx_guard.is_none() {
+            let ctx_params = LlamaContextParams::default()
                 .with_n_ctx(std::num::NonZeroU32::new(DEFAULT_CTX_SIZE))
                 .with_n_batch(DEFAULT_CTX_SIZE)
                 .with_n_threads(INFERENCE_THREADS)
-                .with_n_threads_batch(INFERENCE_THREADS)
-        };
-        let mut ctx = match inner.model.new_context(&inner.backend, ctx_params) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(
-                    error = ?e,
-                    "LLM context creation failed — retrying after 1s (Vulkan VRAM delay)"
-                );
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                match inner.model.new_context(&inner.backend, make_ctx_params()) {
-                    Ok(c) => {
-                        tracing::info!("LLM context creation succeeded on retry");
-                        c
-                    }
-                    Err(e2) => {
-                        return Err(AiError::Provider(
-                            format!("Failed to create LLM context after retry: {:?}", e2),
-                        ));
-                    }
-                }
-            }
-        };
-        tracing::debug!(elapsed_ms = gen_start.elapsed().as_millis(), "LLM context created");
+                .with_n_threads_batch(INFERENCE_THREADS);
+            tracing::info!(
+                ctx_size = DEFAULT_CTX_SIZE,
+                n_batch = DEFAULT_CTX_SIZE,
+                n_threads = INFERENCE_THREADS,
+                "Creating persistent LLM context (Vulkan VRAM allocated once)"
+            );
+            let ctx = inner.model.new_context(&inner.backend, ctx_params)
+                .map_err(|e| AiError::Provider(format!("Failed to create LLM context: {:?}", e)))?;
+            // Safety: model lives in 'static OnceLock (GLOBAL) — it is never dropped,
+            // so the context's borrow of model is valid for 'static lifetime.
+            let ctx: LlamaContext<'static> = unsafe { std::mem::transmute(ctx) };
+            *ctx_guard = Some(ctx);
+        } else {
+            // Reuse existing context — clear KV cache to reset state.
+            // Lightweight GPU op: no VRAM dealloc/realloc, just zeroes the cache.
+            ctx_guard.as_mut().unwrap().clear_kv_cache();
+            tracing::debug!("KV cache cleared — reusing persistent GPU context");
+        }
+
+        let ctx = ctx_guard.as_mut().unwrap();
+        tracing::debug!(elapsed_ms = gen_start.elapsed().as_millis(), "LLM context ready");
 
         // Tokenize prompt (using chat-template-wrapped version)
         tracing::debug!("Tokenizing prompt...");
@@ -302,7 +288,7 @@ impl LocalLlm {
         let mut json_started = false;
 
         for i in 0..max_tokens {
-            let token = sampler.sample(&ctx, -1);
+            let token = sampler.sample(ctx, -1);
 
             // Check end-of-sequence
             if token == eos {
