@@ -126,8 +126,10 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     session.save(&agent_data);
 
     // Send prompt to daemon for extraction (fire-and-forget)
-    // Phase A: skip capture for short prompts (< MIN_PROMPT_LENGTH chars)
-    if message.chars().count() < ai_smartness::constants::MIN_PROMPT_LENGTH {
+    // Check config toggle first, then length gate
+    if !is_prompt_capture_enabled() {
+        tracing::info!("Prompt capture disabled in config, skipping");
+    } else if message.chars().count() < ai_smartness::constants::MIN_PROMPT_LENGTH {
         tracing::debug!(
             chars = message.chars().count(),
             min = ai_smartness::constants::MIN_PROMPT_LENGTH,
@@ -370,6 +372,19 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
         print!("{}\n\n{}", injection, message);
     }
     tracing::info!("inject::run() completed");
+}
+
+/// Check if user prompt capture is enabled in global config.
+fn is_prompt_capture_enabled() -> bool {
+    let config_path = path_utils::data_dir().join("config.json");
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(tools) = v.get("capture").and_then(|c| c.get("tools")) {
+                return tools.get("user_prompt").and_then(|v| v.as_bool()).unwrap_or(true);
+            }
+        }
+    }
+    true // default: enabled
 }
 
 /// E1: Update context tokens from Claude Code transcript JSONL.

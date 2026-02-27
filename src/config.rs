@@ -947,6 +947,12 @@ impl Default for PoolConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureToolToggles {
+    /// Capture user prompts (UserPromptSubmit hook).
+    #[serde(default = "default_true")]
+    pub user_prompt: bool,
+    /// Capture agent responses (Stop hook).
+    #[serde(default = "default_true")]
+    pub agent_response: bool,
     #[serde(default = "default_false")]
     pub read: bool,
     #[serde(default = "default_false")]
@@ -972,6 +978,8 @@ pub struct CaptureToolToggles {
 impl Default for CaptureToolToggles {
     fn default() -> Self {
         Self {
+            user_prompt: true,
+            agent_response: true,
             read: false,
             edit: false,
             write: false,
@@ -989,6 +997,8 @@ impl Default for CaptureToolToggles {
 impl CaptureToolToggles {
     pub fn is_enabled(&self, tool_name: &str) -> bool {
         match tool_name {
+            "UserPrompt" => self.user_prompt,
+            "Response" => self.agent_response,
             "Read" => self.read,
             "Edit" => self.edit,
             "Write" => self.write,
@@ -1504,6 +1514,9 @@ mod tests {
     #[test]
     fn test_capture_tool_toggles_noisy_disabled_by_default() {
         let toggles = CaptureToolToggles::default();
+        // User prompt and agent response enabled by default
+        assert!(toggles.is_enabled("UserPrompt"));
+        assert!(toggles.is_enabled("Response"));
         // All tool captures disabled by default (prompt-only mode)
         assert!(!toggles.is_enabled("Read"));
         assert!(!toggles.is_enabled("Edit"));

@@ -688,6 +688,10 @@
                     <div id="section-cap-tools" class="section-body open">
                         <p class="hint" title="Control which tool outputs are sent to the daemon for LLM extraction and memory processing. Disabled tools are silently skipped.">Select which tools have their outputs captured and processed into memory threads.</p>
                         <div class="form-grid">
+                            <label title="Capture user prompts submitted to the agent. Primary source of high-quality memory threads."><b>User Prompt</b>
+                                <input type="checkbox" data-path="capture.tools.user_prompt" checked></label>
+                            <label title="Capture agent responses. Useful for tracking what the agent produces."><b>Agent Response</b>
+                                <input type="checkbox" data-path="capture.tools.agent_response" checked></label>
                             <label title="Capture file contents when the agent reads files. High volume but provides context about what the agent is looking at.">Read
                                 <input type="checkbox" data-path="capture.tools.read" checked></label>
                             <label title="Capture edit diffs when the agent modifies files. Important for tracking code changes.">Edit
