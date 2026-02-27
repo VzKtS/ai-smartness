@@ -27,7 +27,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -79,6 +79,7 @@ pub fn run(
     tracing::info!("IPC listening on {:?} (multi-threaded)", socket_path);
 
     let start_time = Arc::new(Instant::now());
+    let active_conns = Arc::new(AtomicUsize::new(0));
 
     while running.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -86,12 +87,26 @@ pub fn run(
                 if !running.load(Ordering::Relaxed) {
                     break;
                 }
+                // Thread limiting: reject connections beyond MAX_IPC_THREADS
+                let current = active_conns.load(Ordering::Relaxed);
+                if current >= ai_smartness::constants::MAX_IPC_THREADS {
+                    tracing::warn!(
+                        active = current,
+                        max = ai_smartness::constants::MAX_IPC_THREADS,
+                        "IPC connection rejected — thread limit reached"
+                    );
+                    drop(stream);
+                    continue;
+                }
+                active_conns.fetch_add(1, Ordering::Relaxed);
                 let pool = pool.clone();
                 let queue = capture_queue.clone();
                 let running = running.clone();
                 let start = start_time.clone();
+                let counter = active_conns.clone();
                 std::thread::spawn(move || {
                     handle_connection(stream, &pool, &queue, &running, &start);
+                    counter.fetch_sub(1, Ordering::Relaxed);
                 });
             }
             Err(e) => {
@@ -201,7 +216,10 @@ fn handle_connection(
     };
 
     if let Ok(json) = serde_json::to_string(&response) {
-        let _ = stream.write_all(json.as_bytes());
+        if let Err(e) = stream.write_all(json.as_bytes()) {
+            tracing::debug!(error = %e, "IPC write failed — client disconnected?");
+            return;
+        }
         let _ = stream.write_all(b"\n");
         let _ = stream.flush();
     }

@@ -6,6 +6,7 @@ pub mod periodic_tasks;
 pub mod pool_processor;
 pub mod pool_writer;
 pub mod processor;
+pub mod watchdog;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

@@ -49,11 +49,13 @@ pub fn process_pending_files(
                 // Rename .pending → .done
                 let done_path = path.with_extension("done");
                 if let Err(e) = std::fs::rename(&path, &done_path) {
-                    tracing::warn!(
+                    tracing::error!(
                         path = %path.display(),
                         error = %e,
-                        "Failed to rename .pending → .done"
+                        "CRITICAL: Failed to rename .pending → .done — file may be reprocessed"
                     );
+                    // Don't count as processed — will be retried next cycle
+                    continue;
                 }
                 total_processed += count;
                 tracing::info!(

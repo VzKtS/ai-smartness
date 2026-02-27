@@ -159,7 +159,43 @@ impl LocalLlm {
     ///
     /// Reuses a persistent GPU context (kv_cache_clear between calls).
     /// Thread-safe: Mutex serializes access — one inference at a time.
+    ///
+    /// GPU Recovery: if generate_inner() returns a GPU error (context/decode/batch),
+    /// the persistent context is dropped so the next call recreates it fresh.
     pub fn generate(&self, prompt: &str, max_tokens: u32) -> AiResult<String> {
+        let result = self.generate_inner(prompt, max_tokens);
+
+        // GPU context recovery: on GPU error, drop the persistent context
+        // so next call creates a fresh one instead of reusing a broken state.
+        if let Err(ref e) = result {
+            if Self::is_gpu_error(e) {
+                tracing::warn!(
+                    error = %e,
+                    "GPU error detected — dropping persistent context for recovery"
+                );
+                if let Ok(mut ctx_guard) = self.persistent_ctx.lock() {
+                    *ctx_guard = None;
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Check if an error is GPU-related (context creation, decode, batch).
+    fn is_gpu_error(e: &AiError) -> bool {
+        match e {
+            AiError::Provider(msg) => {
+                msg.contains("context") || msg.contains("decode")
+                    || msg.contains("NullReturn") || msg.contains("batch")
+                    || msg.contains("Batch") || msg.contains("Decode")
+            }
+            _ => false,
+        }
+    }
+
+    /// Inner generate — the actual inference pipeline.
+    fn generate_inner(&self, prompt: &str, max_tokens: u32) -> AiResult<String> {
         let gen_start = std::time::Instant::now();
 
         // Wrap raw prompt in model-specific chat template

@@ -74,6 +74,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const DAEMON_WAL_AUTOCHECKPOINT: u32 = 1_000;
 pub const HOOK_WAL_AUTOCHECKPOINT: u32 = 100;
 pub const PRUNE_INTERVAL_SECS: u64 = 300; // 5 min — all periodic tasks
+pub const MAX_IPC_THREADS: usize = 32;    // max concurrent IPC handler threads
 
 // === Connection Pool (global daemon) ===
 pub const POOL_MAX_IDLE_SECS: u64 = 1800;           // 30 min before eviction

@@ -59,6 +59,31 @@ pub fn run_prune_loop(
             break;
         }
 
+        // System watchdog — collect once per cycle (shared across all agents)
+        let system_metrics = super::watchdog::collect();
+        if system_metrics.cpu_usage_percent > 90.0 {
+            tracing::warn!(
+                cpu = system_metrics.cpu_usage_percent,
+                "HIGH CPU usage detected by watchdog"
+            );
+        }
+        if let (Some(vram_used), Some(vram_total)) = (system_metrics.gpu_vram_used_mb, system_metrics.gpu_vram_total_mb) {
+            if vram_total > 0 {
+                let pct = (vram_used as f64 / vram_total as f64) * 100.0;
+                if pct > 90.0 {
+                    tracing::warn!(vram_used, vram_total, pct = format!("{:.0}", pct), "HIGH GPU VRAM usage");
+                }
+            }
+        }
+        tracing::debug!(
+            cpu = format!("{:.1}", system_metrics.cpu_usage_percent),
+            ram_used_mb = system_metrics.ram_used_mb,
+            ram_available_mb = system_metrics.ram_available_mb,
+            gpu_vram_used = ?system_metrics.gpu_vram_used_mb,
+            threads = ?system_metrics.thread_count,
+            "Watchdog metrics collected"
+        );
+
         let keys = pool.active_keys();
         let agent_count = keys.len();
 
@@ -83,11 +108,14 @@ pub fn run_prune_loop(
                     continue;
                 }
 
-                // 0. Beat increment + backpressure auto-clear (no DB needed — filesystem only)
+                // 0. Beat increment + watchdog metrics + backpressure auto-clear
+                let metrics_clone = system_metrics.clone();
                 run_task("beat", || {
                     let data_dir = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
                     let mut beat = BeatState::load(&data_dir);
                     beat.increment();
+                    // Write system watchdog metrics into beat.json
+                    beat.system_metrics = Some(metrics_clone);
                     // Auto-clear backpressure if stale (> 10 min safety timeout)
                     if beat.processing_backpressure {
                         if let Some(ref since) = beat.backpressure_since {

@@ -102,6 +102,33 @@ pub struct BeatState {
     /// Timestamp of last backpressure signal.
     #[serde(default)]
     pub backpressure_since: Option<String>,
+    /// System watchdog metrics (updated each prune cycle by daemon).
+    /// Agents read this for situational awareness (CPU/RAM/GPU state).
+    #[serde(default)]
+    pub system_metrics: Option<SystemMetrics>,
+}
+
+/// System resource snapshot — written to beat.json each prune cycle by the daemon watchdog.
+/// Agents can read this via MCP tools for proactive decision-making
+/// (sleep on beat when GPU busy, wake when resources free).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SystemMetrics {
+    /// Daemon process CPU usage (0.0 - 100.0+, can exceed 100 on multi-core).
+    pub cpu_usage_percent: f64,
+    /// Daemon process RSS (resident set size) in MB.
+    pub ram_used_mb: u64,
+    /// System total physical RAM in MB.
+    pub ram_total_mb: u64,
+    /// System available RAM in MB (free + reclaimable caches).
+    pub ram_available_mb: u64,
+    /// GPU VRAM currently used in MB (nvidia-smi, None if no NVIDIA GPU).
+    pub gpu_vram_used_mb: Option<u64>,
+    /// GPU VRAM total in MB (nvidia-smi, None if no NVIDIA GPU).
+    pub gpu_vram_total_mb: Option<u64>,
+    /// Number of open file descriptors (Linux /proc/self/fd).
+    pub open_fds: Option<u64>,
+    /// Number of threads in daemon process (Linux /proc/self/status).
+    pub thread_count: Option<u64>,
 }
 
 fn default_quota() -> usize { 50 }
@@ -144,6 +171,7 @@ impl Default for BeatState {
             git_dirty: false,
             processing_backpressure: false,
             backpressure_since: None,
+            system_metrics: None,
         }
     }
 }

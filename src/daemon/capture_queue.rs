@@ -84,14 +84,23 @@ impl CaptureQueue {
             let pool = pool.clone();
             let stats = stats.clone();
 
-            let handle = std::thread::Builder::new()
+            let handle = match std::thread::Builder::new()
                 .name(format!("capture-worker-{}", worker_id))
                 .spawn(move || {
                     tracing::info!(worker_id, "Capture worker started");
                     worker_loop(worker_id, rx, pool, stats);
                     tracing::info!(worker_id, "Capture worker stopped");
-                })
-                .expect("Failed to spawn capture worker thread");
+                }) {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::error!(
+                        worker_id,
+                        error = %e,
+                        "Failed to spawn capture worker — continuing with fewer workers"
+                    );
+                    continue;
+                }
+            };
 
             handles.push(handle);
         }
