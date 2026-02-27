@@ -36,7 +36,6 @@
                     <div class="card-actions">
                         <button id="btn-daemon-start" class="btn-sm btn-success" data-i18n="btn.start">Start</button>
                         <button id="btn-daemon-stop" class="btn-sm btn-danger" data-i18n="btn.stop">Stop</button>
-                        <button id="btn-pool-flush" class="btn-sm" data-i18n="btn.flush" title="Force process pending pool files">Flush</button>
                     </div>
                 </div>
                 <div class="card">
@@ -58,6 +57,9 @@
                 <div class="card">
                     <h3 data-i18n="dash.version">Version</h3>
                     <div id="daemon-version" class="status">-</div>
+                    <div class="card-actions">
+                        <button id="btn-pool-flush" class="btn-sm" data-i18n="btn.flush" title="Clear pending pool files (daemon must be stopped)">Flush</button>
+                    </div>
                 </div>
                 <div class="card">
                     <h3 data-i18n="dash.cpu">CPU</h3>

@@ -283,6 +283,8 @@ main { padding: 24px; padding-bottom: 60px; }
 .status { font-size: 14px; }
 .status.running { color: var(--success); }
 .status.stopped { color: var(--accent); }
+.status.loading { color: var(--warning); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 .card-actions { margin-top: 10px; display: flex; gap: 6px; }
 
 /* ─── Buttons ─── */

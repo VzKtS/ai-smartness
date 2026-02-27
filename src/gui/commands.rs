@@ -129,6 +129,13 @@ pub fn daemon_status() -> Result<serde_json::Value, String> {
 #[tauri::command]
 pub fn daemon_start() -> Result<serde_json::Value, String> {
     tracing::info!("GUI: daemon_start");
+
+    // Check if already running BEFORE spawning — prevents double daemon
+    let (already_running, _) = check_daemon_inner(true);
+    if already_running {
+        return Ok(serde_json::json!({ "started": false, "already_running": true }));
+    }
+
     let self_bin = std::env::current_exe().map_err(|e| e.to_string())?;
     let child = std::process::Command::new(&self_bin)
         .args(["daemon", "run-foreground"])
@@ -138,39 +145,72 @@ pub fn daemon_start() -> Result<serde_json::Value, String> {
         .spawn()
         .map_err(|e| e.to_string())?;
 
-    let spawn_pid = child.id();
-
-    // Give the daemon a moment to bind its IPC socket, then verify
-    std::thread::sleep(std::time::Duration::from_millis(800));
-    let (running, pid) = check_daemon_inner(true); // bypass cache
-
-    Ok(serde_json::json!({ "started": true, "pid": spawn_pid, "verified_running": running, "verified_pid": pid }))
+    // Return immediately — frontend will poll daemon_status for readiness
+    Ok(serde_json::json!({ "started": true, "pid": child.id() }))
 }
 
 #[tauri::command]
 pub fn daemon_stop() -> Result<serde_json::Value, String> {
     tracing::info!("GUI: daemon_stop");
-    let result = match daemon_ipc_client::shutdown() {
-        Ok(_) => serde_json::json!({ "stopped": true }),
-        Err(e) => serde_json::json!({ "stopped": false, "error": e.to_string() }),
-    };
-
-    // Give daemon time to shut down, then verify with cache bypass
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let (running, pid) = check_daemon_inner(true);
-
-    Ok(serde_json::json!({
-        "stopped": result["stopped"],
-        "verified_running": running,
-        "verified_pid": pid,
-    }))
+    match daemon_ipc_client::shutdown() {
+        Ok(_) => Ok(serde_json::json!({ "stopped": true })),
+        Err(e) => Ok(serde_json::json!({ "stopped": false, "error": e.to_string() })),
+    }
 }
 
+/// Flush pool files — only when daemon is DOWN.
+/// Deletes .pending and .jsonl files from all agent pool directories.
 #[tauri::command]
 pub fn pool_flush() -> Result<serde_json::Value, String> {
     tracing::info!("GUI: pool_flush");
-    daemon_ipc_client::send_method("pool_flush", serde_json::json!({}))
-        .map_err(|e| e.to_string())
+
+    // Safety: refuse if daemon is running — pool files are actively used
+    let (running, _) = check_daemon_inner(true);
+    if running {
+        return Err("Cannot flush while daemon is running. Stop it first.".into());
+    }
+
+    let projects_dir = path_utils::projects_dir();
+    let mut files_removed: usize = 0;
+    let mut errors = Vec::new();
+
+    let project_entries = std::fs::read_dir(&projects_dir).map_err(|e| e.to_string())?;
+    for project_entry in project_entries.flatten() {
+        let agents_dir = project_entry.path().join("agents");
+        if !agents_dir.exists() {
+            continue;
+        }
+        let agent_entries = match std::fs::read_dir(&agents_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for agent_entry in agent_entries.flatten() {
+            let pool_dir = agent_entry.path().join("pool");
+            if !pool_dir.is_dir() {
+                continue;
+            }
+            let entries = match std::fs::read_dir(&pool_dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for file in entries.flatten() {
+                let path = file.path();
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext == "pending" || ext == "jsonl" {
+                    match std::fs::remove_file(&path) {
+                        Ok(_) => files_removed += 1,
+                        Err(e) => errors.push(format!("{}: {}", path.display(), e)),
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "flushed": true,
+        "files_removed": files_removed,
+        "errors": errors,
+    }))
 }
 
 // ─── Projects ────────────────────────────────────────────────

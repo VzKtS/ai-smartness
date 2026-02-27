@@ -20,6 +20,7 @@ en: {
     'cfg.mode':'Mode','cfg.theme':'Theme',
     'btn.start':'Start','btn.stop':'Stop','btn.flush':'Flush','btn.debug':'Debug','btn.search':'Search','btn.save':'Save',
     'btn.reset':'Reset Defaults','btn.add':'Add','btn.cancel':'Cancel','btn.remove':'Remove',
+    'flush.confirm':'Flush all pending pool files? This cannot be undone.',
     'btn.addagent':'+ Add Agent',
     'sec.global':'Global Settings','sec.extraction':'Extraction','sec.coherence':'Coherence',
     'sec.reactivation':'Reactivation','sec.synthesis':'Synthesis','sec.labels':'Label Suggestion',
@@ -70,6 +71,7 @@ fr: {
     'cfg.mode':'Mode','cfg.theme':'Theme',
     'btn.start':'Demarrer','btn.stop':'Arreter','btn.flush':'Vider','btn.debug':'Debug','btn.search':'Rechercher','btn.save':'Enregistrer',
     'btn.reset':'Reinitialiser','btn.add':'Ajouter','btn.cancel':'Annuler','btn.remove':'Supprimer',
+    'flush.confirm':'Vider tous les fichiers pool en attente ? Cette action est irreversible.',
     'btn.addagent':'+ Ajouter Agent',
     'sec.global':'Parametres globaux','sec.extraction':'Extraction','sec.coherence':'Coherence',
     'sec.reactivation':'Reactivation','sec.synthesis':'Synthese','sec.labels':'Suggestion de labels',
@@ -120,6 +122,7 @@ es: {
     'cfg.mode':'Modo','cfg.theme':'Tema',
     'btn.start':'Iniciar','btn.stop':'Detener','btn.flush':'Vaciar','btn.debug':'Debug','btn.search':'Buscar','btn.save':'Guardar',
     'btn.reset':'Restablecer','btn.add':'Agregar','btn.cancel':'Cancelar','btn.remove':'Eliminar',
+    'flush.confirm':'Vaciar todos los archivos de pool pendientes? Esta accion es irreversible.',
     'btn.addagent':'+ Agregar Agente',
     'sec.global':'Configuracion global','sec.extraction':'Extraccion','sec.coherence':'Coherencia',
     'sec.reactivation':'Reactivacion','sec.synthesis':'Sintesis','sec.labels':'Sugerencia de etiquetas',
@@ -293,43 +296,102 @@ document.getElementById('project-select').addEventListener('change', (e) => {
 });
 
 // ─── Daemon controls ─────────────────────────────────────────
+
+// Poll daemon_status until condition is met (or timeout)
+async function pollDaemonUntil(conditionFn, maxMs = 15000, intervalMs = 500) {
+    const start = Date.now();
+    while (Date.now() - start < maxMs) {
+        try {
+            const st = await invoke('daemon_status');
+            if (conditionFn(st)) return st;
+        } catch (_) {}
+        await new Promise(r => setTimeout(r, intervalMs));
+    }
+    return null;
+}
+
 document.getElementById('btn-daemon-start').addEventListener('click', async () => {
+    const startBtn = document.getElementById('btn-daemon-start');
+    const stopBtn = document.getElementById('btn-daemon-stop');
+    const statusEl = document.getElementById('daemon-status');
     try {
-        document.getElementById('daemon-status').textContent = 'Starting…';
-        await invoke('daemon_start');  // backend waits + verifies
+        // Lock buttons immediately — prevent double click
+        startBtn.disabled = true;
+        stopBtn.disabled = true;
+        statusEl.textContent = 'Starting…';
+        statusEl.className = 'status loading';
+
+        const res = await invoke('daemon_start');
+        if (res.already_running) {
+            await loadDashboard();
+            return;
+        }
+
+        // Poll until daemon responds (non-blocking, fast feedback)
+        const st = await pollDaemonUntil(s => s && s.running);
+        if (st) {
+            statusEl.textContent = `Running (PID ${st.pid || '?'})`;
+            statusEl.className = 'status running';
+        } else {
+            statusEl.textContent = 'Start timeout — check logs';
+            statusEl.className = 'status stopped';
+        }
         await loadDashboard();
-    } catch (e) { console.error('Daemon start error:', e); }
+    } catch (e) {
+        console.error('Daemon start error:', e);
+        statusEl.textContent = 'Start error';
+        startBtn.disabled = false;
+    }
 });
 
 document.getElementById('btn-daemon-stop').addEventListener('click', async () => {
+    const startBtn = document.getElementById('btn-daemon-start');
+    const stopBtn = document.getElementById('btn-daemon-stop');
+    const statusEl = document.getElementById('daemon-status');
     try {
-        document.getElementById('daemon-status').textContent = 'Stopping…';
-        await invoke('daemon_stop');  // backend waits + verifies
+        startBtn.disabled = true;
+        stopBtn.disabled = true;
+        statusEl.textContent = 'Stopping…';
+        statusEl.className = 'status loading';
+
+        await invoke('daemon_stop');
+
+        // Poll until daemon is gone
+        const st = await pollDaemonUntil(s => s && !s.running, 10000);
         await loadDashboard();
-    } catch (e) { console.error('Daemon stop error:', e); }
+    } catch (e) {
+        console.error('Daemon stop error:', e);
+        stopBtn.disabled = false;
+    }
 });
 
 document.getElementById('btn-pool-flush').addEventListener('click', async () => {
     const btn = document.getElementById('btn-pool-flush');
+    const dict = T[currentLang] || T.en;
+
+    // Confirmation
+    if (!confirm(dict['flush.confirm'] || 'Flush all pending pool files? This cannot be undone.')) {
+        return;
+    }
+
     try {
         btn.disabled = true;
         btn.textContent = 'Flushing…';
         const result = await invoke('pool_flush');
-        btn.textContent = `Done (${result.processed || 0})`;
+        btn.textContent = `Done (${result.files_removed || 0} files)`;
         setTimeout(() => {
-            const dict = T[currentLang] || T.en;
             btn.textContent = dict['btn.flush'] || 'Flush';
             btn.disabled = false;
         }, 2000);
-        await loadResources();
     } catch (e) {
         console.error('Pool flush error:', e);
         btn.textContent = 'Error';
+        btn.title = String(e);
         setTimeout(() => {
-            const dict = T[currentLang] || T.en;
             btn.textContent = dict['btn.flush'] || 'Flush';
             btn.disabled = false;
-        }, 2000);
+            btn.title = '';
+        }, 3000);
     }
 });
 
@@ -722,13 +784,13 @@ async function loadDashboard() {
             el.className = 'status running';
             document.getElementById('btn-daemon-start').disabled = true;
             document.getElementById('btn-daemon-stop').disabled = false;
-            document.getElementById('btn-pool-flush').disabled = false;
+            document.getElementById('btn-pool-flush').disabled = true;  // no flush while running
         } else {
             el.textContent = T[currentLang]?.['status.stopped'] || 'Stopped';
             el.className = 'status stopped';
             document.getElementById('btn-daemon-start').disabled = false;
             document.getElementById('btn-daemon-stop').disabled = true;
-            document.getElementById('btn-pool-flush').disabled = true;
+            document.getElementById('btn-pool-flush').disabled = false;  // flush OK when stopped
         }
         document.getElementById('daemon-version').textContent = ds.version || '-';
         const versionEl = document.getElementById('version');
