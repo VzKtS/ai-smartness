@@ -46,9 +46,9 @@ pub struct Extraction {
 }
 
 /// Default score for truncated LLM output (missing confidence/importance fields).
-/// 0.5 = moderate — enough to pass the confidence gate, not overvalued.
+/// 0.0 = pipeline will drop at confidence gate — better than polluting engram with fake scores.
 fn default_truncated_score() -> f64 {
-    0.5
+    0.0
 }
 
 /// Source type for extraction prompts.

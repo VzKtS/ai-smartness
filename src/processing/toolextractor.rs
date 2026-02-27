@@ -113,9 +113,12 @@ fn build_tool_prompt(
         None => "Reference: none".to_string(),
     };
 
+    // PROCEDURAL ORDER: content FIRST, agent context LAST.
+    // The LLM must analyze raw content without bias, then use context
+    // only for importance scoring. Same principle as extractor.rs.
     let context_section = match agent_context {
         Some(ctx) if !ctx.is_empty() => format!(
-            "\nAgent recent context (for importance scoring only):\n{}\n",
+            "\n\nAgent recent context (use ONLY for importance scoring):\n---\n{}\n---",
             crate::constants::truncate_safe(ctx, 500)
         ),
         _ => String::new(),
@@ -126,7 +129,7 @@ fn build_tool_prompt(
 
 Tool: {source_type} ({tool_desc})
 {ref_line}
-{context_section}
+
 Content:
 ---
 {content}
@@ -144,7 +147,7 @@ Rules:
 - importance: 0.0 to 1.0 — how important is this for the agent's long-term memory
 - confidence: 0.0 to 1.0 — how well you understood the content
 
-Output ONLY the JSON object, nothing else."#
+Output ONLY the JSON object, nothing else.{context_section}"#
     )
 }
 
