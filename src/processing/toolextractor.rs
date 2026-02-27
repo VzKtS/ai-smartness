@@ -70,6 +70,20 @@ pub fn summarize_tool_output(
         Ok(ExtractionResult::Extracted(mut ext)) => {
             // Force Summary mode for all tool extractions
             ext.extraction_mode = ExtractionMode::Summary;
+
+            // Post-processing: detect truncated JSON (both fields at serde default 0.0).
+            // Pattern is impossible from real LLM output — assign reduced scores
+            // so the thread exists but with lower engram weight.
+            if ext.confidence == 0.0 && ext.importance == 0.0 {
+                ext.confidence = 0.3;
+                ext.importance = 0.3;
+                ext.from_partial = true;
+                tracing::warn!(
+                    title = %ext.title,
+                    "Tool extraction: truncated output detected — from_partial=true, scores set to 0.3"
+                );
+            }
+
             tracing::info!(
                 title = %ext.title,
                 confidence = ext.confidence,

@@ -43,6 +43,10 @@ pub struct Extraction {
     /// How the LLM processed this content.
     #[serde(default)]
     pub extraction_mode: ExtractionMode,
+    /// True if extraction came from truncated LLM output (missing fields).
+    /// Used by Engram v10 for weighted scoring of partial extractions.
+    #[serde(default)]
+    pub from_partial: bool,
 }
 
 /// Default score for truncated LLM output (missing confidence/importance fields).
