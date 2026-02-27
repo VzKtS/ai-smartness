@@ -5,7 +5,7 @@
 use chrono::{DateTime, Duration, Utc};
 use crate::bridge::{BridgeStatus, BridgeType, ThinkBridge};
 use crate::processing::extractor::ExtractionMode;
-use crate::thread::{Thread, ThreadMessage, ThreadStatus, OriginType, InjectionStats};
+use crate::thread::{Thread, ThreadMessage, ThreadStatus, OriginType, InjectionStats, WorkContext};
 
 // ============================================================================
 // ThreadBuilder
@@ -116,6 +116,16 @@ impl ThreadBuilder {
 
     pub fn extraction_mode(mut self, mode: ExtractionMode) -> Self {
         self.thread.extraction_mode = mode;
+        self
+    }
+
+    pub fn work_context(mut self, files: Vec<&str>, actions: Vec<&str>) -> Self {
+        self.thread.work_context = Some(WorkContext {
+            files: files.into_iter().map(String::from).collect(),
+            actions: actions.into_iter().map(String::from).collect(),
+            goal: None,
+            updated_at: Utc::now(),
+        });
         self
     }
 

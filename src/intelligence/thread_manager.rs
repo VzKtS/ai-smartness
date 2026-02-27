@@ -33,6 +33,16 @@ use crate::config::ThreadMatchingConfig;
 
 // LABEL_BLOCKLIST and filter_blocked_labels imported via `use crate::constants::*`
 
+/// Compute short content hash (16 hex chars) for file versioning.
+/// Uses SipHash (std DefaultHasher) — CPU-only, ~1μs, no GPU.
+fn content_hash(content: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 /// Build enriched embedding text from extraction: title 2x + subjects + labels + concepts (8 max).
 fn build_enriched_embed_text(extraction: &Extraction) -> String {
     let concepts_limited: Vec<&str> = extraction.concepts.iter()
@@ -649,6 +659,129 @@ impl ThreadManager {
         ThreadStorage::update_status(conn, id, ThreadStatus::Archived)
     }
 
+    /// Add a lightweight changelog message to a thread — skips LLM entirely.
+    /// Used when a file is already tracked by an existing thread (Read/Write/Edit shortcut).
+    /// Returns Some(thread_id) on success, None if thread not found.
+    pub fn add_changelog(
+        conn: &Connection,
+        thread_id: &str,
+        file_path: &str,
+        source_type: &str,
+        content: &str,
+    ) -> AiResult<Option<String>> {
+        let mut thread = match ThreadStorage::get(conn, thread_id)? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        // Reactivate if suspended/archived — a revisited file is back in focus
+        if thread.status != ThreadStatus::Active {
+            tracing::info!(
+                thread_id = %thread_id,
+                old_status = %thread.status,
+                "Changelog: reactivating thread"
+            );
+            Self::reactivate_thread(conn, thread_id)?;
+            // Re-fetch after reactivation
+            thread = match ThreadStorage::get(conn, thread_id)? {
+                Some(t) => t,
+                None => return Ok(None),
+            };
+        }
+
+        // Compute content hash for versioning
+        let current_hash = content_hash(content);
+        let line_count = content.lines().count();
+
+        // Find previous hash from last changelog/reference message
+        let messages = ThreadStorage::get_messages(conn, thread_id)?;
+        let previous_hash = messages
+            .iter()
+            .rev()
+            .find(|m| m.source == "changelog" || m.source == "reference")
+            .and_then(|m| m.metadata.get("content_hash").and_then(|v| v.as_str()))
+            .map(String::from);
+
+        let changed = previous_hash
+            .as_ref()
+            .map(|prev| prev != &current_hash)
+            .unwrap_or(true); // First changelog = always "changed"
+
+        // Build changelog text
+        let action = match source_type {
+            "Read" | "file_read" => {
+                if changed {
+                    format!("[changelog] Read {} (modified, {} lines)", file_path, line_count)
+                } else {
+                    format!("[changelog] Read {} (unchanged)", file_path)
+                }
+            }
+            "Write" | "file_write" => {
+                format!("[changelog] Write {} ({} lines)", file_path, line_count)
+            }
+            "Edit" => {
+                format!("[changelog] Edit {}", file_path)
+            }
+            _ => {
+                format!("[changelog] {} {}", source_type, file_path)
+            }
+        };
+
+        // Build metadata
+        let metadata = serde_json::json!({
+            "file_path": file_path,
+            "content_hash": current_hash,
+            "line_count": line_count,
+            "action": source_type,
+            "changed": changed,
+            "previous_hash": previous_hash,
+        });
+
+        // Insert changelog message
+        let msg = ThreadMessage {
+            thread_id: thread_id.to_string(),
+            msg_id: id_gen::message_id(),
+            content: action,
+            source: "changelog".to_string(),
+            source_type: source_type.to_string(),
+            timestamp: time_utils::now(),
+            metadata,
+            is_truncated: false,
+        };
+        ThreadStorage::add_message(conn, &msg)?;
+
+        // Half weight boost — gradual growth, weight > 0.6 signals frequent access
+        thread.weight = (thread.weight + THREAD_USE_BOOST * 0.5).min(1.0);
+
+        // Update work_context
+        let wc = thread.work_context.get_or_insert_with(|| WorkContext {
+            files: vec![],
+            actions: vec![],
+            goal: None,
+            updated_at: Utc::now(),
+        });
+        if !wc.files.contains(&file_path.to_string()) {
+            wc.files.push(file_path.to_string());
+        }
+        if !wc.actions.contains(&source_type.to_string()) {
+            wc.actions.push(source_type.to_string());
+        }
+        wc.updated_at = Utc::now();
+
+        ThreadStorage::update(conn, &thread)?;
+
+        tracing::info!(
+            thread_id = %thread_id,
+            file_path = %file_path,
+            action = %source_type,
+            changed = changed,
+            hash = %current_hash,
+            "Changelog added (LLM skipped)"
+        );
+
+        Ok(Some(thread_id.to_string()))
+    }
+
     /// Create birth bridges: immediate concept-based connections at thread creation.
     /// Connects the new/updated thread to existing threads sharing concepts.
     /// Returns the number of bridges created.
@@ -740,5 +873,173 @@ impl ThreadManager {
         }
 
         Ok(created)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{setup_agent_db, ThreadBuilder};
+
+    #[test]
+    fn test_content_hash_deterministic() {
+        let h1 = content_hash("hello world");
+        let h2 = content_hash("hello world");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 16, "Hash should be 16 hex chars");
+    }
+
+    #[test]
+    fn test_content_hash_different_for_different_content() {
+        let h1 = content_hash("hello world");
+        let h2 = content_hash("hello world!");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_add_changelog_to_active_thread() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("cl-active")
+            .title("Config module")
+            .weight(0.5)
+            .work_context(vec!["src/config.rs"], vec!["Read"])
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        let result = ThreadManager::add_changelog(
+            &conn, "cl-active", "src/config.rs", "Read", "fn main() {}\n",
+        ).unwrap();
+
+        assert_eq!(result, Some("cl-active".to_string()));
+
+        // Check message was inserted
+        let messages = ThreadStorage::get_messages(&conn, "cl-active").unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].source, "changelog");
+        assert!(messages[0].content.contains("[changelog] Read src/config.rs"));
+        assert!(messages[0].metadata.get("content_hash").is_some());
+        assert_eq!(messages[0].metadata["changed"], true);
+
+        // Check weight was boosted
+        let updated = ThreadStorage::get(&conn, "cl-active").unwrap().unwrap();
+        assert!(updated.weight > 0.5, "Weight should be boosted");
+    }
+
+    #[test]
+    fn test_add_changelog_reactivates_suspended_thread() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("cl-suspended")
+            .title("Suspended file")
+            .status(ThreadStatus::Suspended)
+            .weight(0.1)
+            .work_context(vec!["src/lib.rs"], vec!["Write"])
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        let result = ThreadManager::add_changelog(
+            &conn, "cl-suspended", "src/lib.rs", "Write", "pub mod config;\n",
+        ).unwrap();
+
+        assert_eq!(result, Some("cl-suspended".to_string()));
+
+        let updated = ThreadStorage::get(&conn, "cl-suspended").unwrap().unwrap();
+        assert_eq!(updated.status, ThreadStatus::Active, "Thread should be reactivated");
+        assert!(updated.weight >= 0.3, "Reactivated thread should have min weight 0.3");
+    }
+
+    #[test]
+    fn test_add_changelog_reactivates_archived_thread() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("cl-archived")
+            .title("Archived file")
+            .status(ThreadStatus::Archived)
+            .weight(0.05)
+            .work_context(vec!["src/old.rs"], vec!["Read"])
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        let result = ThreadManager::add_changelog(
+            &conn, "cl-archived", "src/old.rs", "Read", "// old code\n",
+        ).unwrap();
+
+        assert_eq!(result, Some("cl-archived".to_string()));
+
+        let updated = ThreadStorage::get(&conn, "cl-archived").unwrap().unwrap();
+        assert_eq!(updated.status, ThreadStatus::Active);
+    }
+
+    #[test]
+    fn test_add_changelog_unchanged_detection() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("cl-unchanged")
+            .title("Stable file")
+            .work_context(vec!["src/stable.rs"], vec!["Read"])
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        let content = "fn stable() { 42 }\n";
+
+        // First read — always "changed" (no previous hash)
+        ThreadManager::add_changelog(&conn, "cl-unchanged", "src/stable.rs", "Read", content).unwrap();
+        let msgs = ThreadStorage::get_messages(&conn, "cl-unchanged").unwrap();
+        assert_eq!(msgs[0].metadata["changed"], true);
+
+        // Second read with same content — "unchanged"
+        ThreadManager::add_changelog(&conn, "cl-unchanged", "src/stable.rs", "Read", content).unwrap();
+        let msgs = ThreadStorage::get_messages(&conn, "cl-unchanged").unwrap();
+        assert_eq!(msgs[1].metadata["changed"], false);
+        assert!(msgs[1].content.contains("unchanged"));
+    }
+
+    #[test]
+    fn test_add_changelog_changed_detection() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("cl-changed")
+            .title("Changing file")
+            .work_context(vec!["src/evolve.rs"], vec!["Write"])
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        // First write
+        ThreadManager::add_changelog(&conn, "cl-changed", "src/evolve.rs", "Write", "v1\n").unwrap();
+
+        // Second write with different content
+        ThreadManager::add_changelog(&conn, "cl-changed", "src/evolve.rs", "Write", "v2\n").unwrap();
+        let msgs = ThreadStorage::get_messages(&conn, "cl-changed").unwrap();
+        assert_eq!(msgs[1].metadata["changed"], true);
+        assert!(msgs[1].content.contains("[changelog] Write"));
+    }
+
+    #[test]
+    fn test_add_changelog_nonexistent_thread() {
+        let conn = setup_agent_db();
+        let result = ThreadManager::add_changelog(
+            &conn, "nonexistent", "src/main.rs", "Read", "content",
+        ).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_add_changelog_updates_work_context_actions() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("cl-actions")
+            .title("Action tracking")
+            .work_context(vec!["src/main.rs"], vec!["Read"])
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        // Edit action should be added to work_context.actions
+        ThreadManager::add_changelog(&conn, "cl-actions", "src/main.rs", "Edit", "diff here").unwrap();
+
+        let updated = ThreadStorage::get(&conn, "cl-actions").unwrap().unwrap();
+        let wc = updated.work_context.unwrap();
+        assert!(wc.actions.contains(&"Read".to_string()));
+        assert!(wc.actions.contains(&"Edit".to_string()));
     }
 }

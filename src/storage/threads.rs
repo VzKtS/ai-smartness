@@ -502,6 +502,32 @@ impl ThreadStorage {
         Ok(threads)
     }
 
+    /// Find threads that track a given file_path in their work_context.
+    /// Searches ALL statuses (active, suspended, archived) — archive is long-term memory.
+    /// Returns up to 5 matches, ordered by most recently active first.
+    pub fn find_by_file_path(conn: &Connection, file_path: &str) -> AiResult<Vec<Thread>> {
+        // Escape SQL LIKE wildcards in the file_path
+        let escaped = file_path.replace('%', "\\%").replace('_', "\\_");
+        // work_context JSON contains: {"files":["src/main.rs", ...], ...}
+        let pattern = format!("%\"{}\"%" , escaped);
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM threads
+                 WHERE work_context IS NOT NULL AND work_context LIKE ?1 ESCAPE '\\'
+                 ORDER BY last_active DESC LIMIT 5",
+            )
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+
+        let threads: Vec<Thread> = stmt
+            .query_map(params![pattern], thread_from_row)
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(threads)
+    }
+
     /// List all distinct labels across active threads.
     pub fn list_all_labels(conn: &Connection) -> AiResult<Vec<String>> {
         let mut stmt = conn
@@ -1041,5 +1067,99 @@ mod tests {
 
         let got = ThreadStorage::get(&conn, "em-update").unwrap().unwrap();
         assert_eq!(got.extraction_mode, ExtractionMode::Summary);
+    }
+
+    // ── find_by_file_path tests ──
+
+    #[test]
+    fn test_find_by_file_path_returns_matching_thread() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("fp1")
+            .title("Main module")
+            .work_context(vec!["src/main.rs"], vec!["Read"])
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        let results = ThreadStorage::find_by_file_path(&conn, "src/main.rs").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "fp1");
+    }
+
+    #[test]
+    fn test_find_by_file_path_no_match() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("fp2")
+            .title("Other module")
+            .work_context(vec!["src/lib.rs"], vec!["Read"])
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        let results = ThreadStorage::find_by_file_path(&conn, "src/main.rs").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_find_by_file_path_searches_all_statuses() {
+        let conn = setup_agent_db();
+
+        // Active thread
+        let t1 = ThreadBuilder::new()
+            .id("fp-active")
+            .title("Active file")
+            .work_context(vec!["src/config.rs"], vec!["Write"])
+            .build();
+        ThreadStorage::insert(&conn, &t1).unwrap();
+
+        // Suspended thread
+        let t2 = ThreadBuilder::new()
+            .id("fp-suspended")
+            .title("Suspended file")
+            .status(ThreadStatus::Suspended)
+            .work_context(vec!["src/config.rs"], vec!["Read"])
+            .build();
+        ThreadStorage::insert(&conn, &t2).unwrap();
+
+        // Archived thread
+        let t3 = ThreadBuilder::new()
+            .id("fp-archived")
+            .title("Archived file")
+            .status(ThreadStatus::Archived)
+            .work_context(vec!["src/config.rs"], vec!["Edit"])
+            .build();
+        ThreadStorage::insert(&conn, &t3).unwrap();
+
+        let results = ThreadStorage::find_by_file_path(&conn, "src/config.rs").unwrap();
+        assert_eq!(results.len(), 3, "Should find threads across all statuses");
+    }
+
+    #[test]
+    fn test_find_by_file_path_no_work_context() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("fp-no-wc")
+            .title("No work context")
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        let results = ThreadStorage::find_by_file_path(&conn, "src/main.rs").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_find_by_file_path_multiple_files_in_context() {
+        let conn = setup_agent_db();
+        let thread = ThreadBuilder::new()
+            .id("fp-multi")
+            .title("Multi-file thread")
+            .work_context(vec!["src/main.rs", "src/lib.rs", "src/config.rs"], vec!["Read", "Write"])
+            .build();
+        ThreadStorage::insert(&conn, &thread).unwrap();
+
+        // Should match any file in the list
+        assert_eq!(ThreadStorage::find_by_file_path(&conn, "src/lib.rs").unwrap().len(), 1);
+        assert_eq!(ThreadStorage::find_by_file_path(&conn, "src/config.rs").unwrap().len(), 1);
+        assert!(ThreadStorage::find_by_file_path(&conn, "src/other.rs").unwrap().is_empty());
     }
 }

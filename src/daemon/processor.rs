@@ -72,6 +72,35 @@ pub fn process_capture(
         return Ok(None);
     }
 
+    // Stage 1.5: Changelog shortcut for known files (Read/Write/Edit)
+    // If the file_path is already tracked by an existing thread, skip LLM entirely
+    // and append a lightweight changelog message with content hash for versioning.
+    if let Some(fp) = file_path {
+        if is_file_tool_source(source_type) {
+            match try_changelog_shortcut(conn, pending, source_type, fp, &cleaned, guardian) {
+                Ok(Some(thread_id)) => {
+                    tracing::info!(
+                        thread_id = %thread_id,
+                        file_path = %fp,
+                        total_ms = pipeline_start.elapsed().as_millis(),
+                        "Pipeline SHORTCUT — changelog appended (skipped LLM)"
+                    );
+                    return Ok(Some(thread_id));
+                }
+                Ok(None) => {
+                    // No existing thread for this file → fall through to full pipeline
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        file_path = %fp,
+                        "Changelog shortcut failed, falling through to full pipeline"
+                    );
+                }
+            }
+        }
+    }
+
     // Build agent context from PendingContext (recent activity) for importance scoring
     let ttl = guardian.extraction.pending_context_ttl_secs;
     let agent_context = pending
@@ -365,4 +394,57 @@ Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", 
 
     // Parse failure → fail-open (treat as relevant)
     Ok(true)
+}
+
+/// Check if a source_type is a file tool (Read/Write/Edit) eligible for changelog shortcut.
+fn is_file_tool_source(source_type: &str) -> bool {
+    matches!(
+        source_type,
+        "Read" | "file_read" | "Write" | "file_write" | "Edit"
+    )
+}
+
+/// Try the changelog shortcut: if a thread already tracks this file_path,
+/// append a changelog message and skip LLM extraction entirely.
+/// Returns Some(thread_id) if shortcut applied, None if no matching thread found.
+fn try_changelog_shortcut(
+    conn: &Connection,
+    pending: &mut Option<PendingContext>,
+    source_type: &str,
+    file_path: &str,
+    content: &str,
+    _guardian: &GuardianConfig,
+) -> AiResult<Option<String>> {
+    let matches = ThreadStorage::find_by_file_path(conn, file_path)?;
+    if matches.is_empty() {
+        return Ok(None);
+    }
+
+    // Take the most recently active thread that tracks this file
+    let target = &matches[0];
+    tracing::info!(
+        thread_id = %target.id,
+        thread_title = %target.title,
+        thread_status = %target.status,
+        file_path = %file_path,
+        "Changelog shortcut: found existing thread for file"
+    );
+
+    // add_changelog handles reactivation internally
+    let result = ThreadManager::add_changelog(conn, &target.id, file_path, source_type, content)?;
+
+    // Update PendingContext to preserve coherence chain
+    if let Some(ref tid) = result {
+        let labels = ThreadStorage::get(conn, tid)?
+            .map(|t| t.labels)
+            .unwrap_or_default();
+        *pending = Some(PendingContext {
+            content: truncate_safe(content, 4000).to_string(),
+            thread_id: tid.clone(),
+            labels,
+            timestamp: Instant::now(),
+        });
+    }
+
+    Ok(result)
 }
