@@ -15,7 +15,7 @@ use rusqlite::Connection;
 
 /// Find threads sharing concepts via direct DB query (no in-memory index needed).
 /// Returns Vec<(thread_id, shared_concepts, total_concepts_count)> sorted by shared_count DESC.
-/// Used by birth bridges — works at thread creation time without building ConceptIndex.
+/// Used by thinkbridges — works at thread creation time without building ConceptIndex.
 pub fn find_threads_sharing_concepts_db(
     conn: &Connection,
     query_concepts: &[String],

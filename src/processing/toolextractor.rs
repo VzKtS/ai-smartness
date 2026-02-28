@@ -167,7 +167,7 @@ Content:
 - summary: max 250 chars, what it contains and why it matters
 - subjects: 2-3 key subjects
 - labels: 1-3 classification labels (e.g. "architecture", "config", "test-output")
-- concepts: 5-15 associative concepts (synonyms, related domains, hyponym, technologies)
+- concepts: 5-15 associative concepts (synonyms, related domains, hyponyms, technologies). Prefer single words. Good: "rust", "memory", "config". Bad: "database connection pooling".
 - confidence: 0.0 to 1.0 — how well you understood the content
 
 ## Step 2 — Importance scoring

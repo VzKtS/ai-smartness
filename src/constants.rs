@@ -133,6 +133,59 @@ pub fn filter_blocked_labels(labels: &[String]) -> Vec<String> {
         .collect()
 }
 
+// === Concept Normalization ===
+/// Stopwords filtered from concepts: Rust stdlib noise, generic English glue words.
+pub const CONCEPT_STOPWORDS: &[&str] = &[
+    // Rust stdlib / common crate noise
+    "std", "self", "super", "crate", "pub", "use", "impl", "trait",
+    "enum", "struct", "type", "where", "async", "await", "unsafe", "dyn",
+    "box", "ref", "mut", "let", "const", "static", "move", "return",
+    "panic", "unwrap", "expect", "clone", "copy", "drop", "send", "sync",
+    "hashmap", "vec", "string", "option", "result", "arc", "mutex",
+    "rwlock", "cell", "refcell", "atomicbool", "atomicu64", "atomicusize",
+    "stdin", "stdout", "stderr", "println", "eprintln", "format",
+    "serde", "tokio", "tracing", "instant",
+    // Generic English glue (>= 3 chars)
+    "the", "and", "for", "are", "but", "not", "you", "all", "can",
+    "had", "her", "was", "one", "our", "out", "has", "his", "how",
+    "its", "may", "new", "now", "old", "see", "way", "who", "did",
+    "get", "got", "say", "she", "too", "with", "from",
+    "that", "this", "will", "have", "been", "some", "than", "them",
+    "then", "into", "only", "over", "such", "also", "more", "other",
+    "about", "which", "their", "would", "could", "should", "these",
+    "those", "being", "through",
+];
+
+/// Maximum concepts per thread after normalization.
+pub const MAX_CONCEPTS_PER_THREAD: usize = 25;
+
+/// Normalize concepts: split multi-word phrases into single words, lowercase,
+/// deduplicate, filter stopwords, cap at MAX_CONCEPTS_PER_THREAD.
+pub fn normalize_concepts(raw: &[String]) -> Vec<String> {
+    let stopwords: std::collections::HashSet<&str> =
+        CONCEPT_STOPWORDS.iter().copied().collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    for phrase in raw {
+        for token in phrase.split(|c: char| c.is_whitespace() || c == ':' || c == '_' || c == '-') {
+            let word = token.trim().to_lowercase();
+            if word.len() < 3 {
+                continue;
+            }
+            if stopwords.contains(word.as_str()) {
+                continue;
+            }
+            if seen.insert(word.clone()) {
+                result.push(word);
+            }
+        }
+    }
+
+    result.truncate(MAX_CONCEPTS_PER_THREAD);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +246,56 @@ mod tests {
     #[test]
     fn test_min_response_length_default() {
         assert_eq!(MIN_RESPONSE_LENGTH, 50);
+    }
+
+    #[test]
+    fn test_normalize_concepts_splits_multiword() {
+        let raw = vec![
+            "machine learning".to_string(),
+            "web development".to_string(),
+        ];
+        let result = normalize_concepts(&raw);
+        assert_eq!(result, vec!["machine", "learning", "web", "development"]);
+    }
+
+    #[test]
+    fn test_normalize_concepts_filters_stopwords() {
+        let raw = vec![
+            "std::panic::catch_unwind".to_string(),
+            "hashmap".to_string(),
+            "rust".to_string(),
+        ];
+        let result = normalize_concepts(&raw);
+        assert_eq!(result, vec!["catch", "unwind", "rust"]);
+    }
+
+    #[test]
+    fn test_normalize_concepts_deduplicates() {
+        let raw = vec![
+            "config management".to_string(),
+            "configuration config".to_string(),
+        ];
+        let result = normalize_concepts(&raw);
+        assert_eq!(result, vec!["config", "management", "configuration"]);
+    }
+
+    #[test]
+    fn test_normalize_concepts_caps_at_max() {
+        let raw: Vec<String> = (0..30).map(|i| format!("concept{}", i)).collect();
+        let result = normalize_concepts(&raw);
+        assert_eq!(result.len(), MAX_CONCEPTS_PER_THREAD);
+    }
+
+    #[test]
+    fn test_normalize_concepts_filters_short() {
+        let raw = vec!["a b of in to".to_string(), "rust".to_string()];
+        let result = normalize_concepts(&raw);
+        assert_eq!(result, vec!["rust"]);
+    }
+
+    #[test]
+    fn test_normalize_concepts_empty() {
+        let result = normalize_concepts(&[]);
+        assert!(result.is_empty());
     }
 }

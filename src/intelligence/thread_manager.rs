@@ -145,10 +145,11 @@ impl ThreadManager {
                 let id = Self::create_thread(
                     conn, extraction, content, source_type, None, file_path, embed_mode,
                 )?;
-                // Birth bridges: immediate concept connections
-                let birth = Self::create_birth_bridges(conn, &id, &extraction.concepts, &guardian.gossip)?;
-                if birth > 0 {
-                    tracing::info!(thread_id = %id, bridges = birth, "Birth bridges");
+                // Thinkbridges: immediate concept connections
+                let normalized = normalize_concepts(&extraction.concepts);
+                let thinkbridges = Self::create_thinkbridges(conn, &id, &normalized, &guardian.gossip)?;
+                if thinkbridges > 0 {
+                    tracing::info!(thread_id = %id, bridges = thinkbridges, "Thinkbridges");
                 }
                 Ok(Some(id))
             }
@@ -159,15 +160,15 @@ impl ThreadManager {
                     .map(|t| t.concepts.into_iter().collect())
                     .unwrap_or_default();
                 Self::update_thread(conn, &thread_id, extraction, content, source_type, file_path, embed_mode)?;
-                // Birth bridges for NEW concepts only
-                let new_concepts: Vec<String> = extraction.concepts.iter()
-                    .filter(|c| !old_concepts.contains(*c))
-                    .cloned()
+                // Thinkbridges for NEW concepts only
+                let new_concepts: Vec<String> = normalize_concepts(&extraction.concepts)
+                    .into_iter()
+                    .filter(|c| !old_concepts.contains(c))
                     .collect();
                 if !new_concepts.is_empty() {
-                    let birth = Self::create_birth_bridges(conn, &thread_id, &new_concepts, &guardian.gossip)?;
-                    if birth > 0 {
-                        tracing::info!(thread_id = %thread_id, bridges = birth, "Incremental birth bridges");
+                    let thinkbridges = Self::create_thinkbridges(conn, &thread_id, &new_concepts, &guardian.gossip)?;
+                    if thinkbridges > 0 {
+                        tracing::info!(thread_id = %thread_id, bridges = thinkbridges, "Incremental thinkbridges");
                     }
                 }
                 Ok(Some(thread_id))
@@ -184,10 +185,11 @@ impl ThreadManager {
                     file_path,
                     embed_mode,
                 )?;
-                // Birth bridges: immediate concept connections
-                let birth = Self::create_birth_bridges(conn, &id, &extraction.concepts, &guardian.gossip)?;
-                if birth > 0 {
-                    tracing::info!(thread_id = %id, bridges = birth, "Birth bridges (fork)");
+                // Thinkbridges: immediate concept connections
+                let normalized = normalize_concepts(&extraction.concepts);
+                let thinkbridges = Self::create_thinkbridges(conn, &id, &normalized, &guardian.gossip)?;
+                if thinkbridges > 0 {
+                    tracing::info!(thread_id = %id, bridges = thinkbridges, "Thinkbridges (fork)");
                 }
                 Ok(Some(id))
             }
@@ -262,7 +264,7 @@ impl ThreadManager {
                 l.truncate(MAX_LABELS);
                 l
             },
-            concepts: extraction.concepts.clone(),
+            concepts: normalize_concepts(&extraction.concepts),
             embedding,
             relevance_score,
             ratings: vec![],
@@ -796,10 +798,10 @@ impl ThreadManager {
         Ok(Some(thread_id.to_string()))
     }
 
-    /// Create birth bridges: immediate concept-based connections at thread creation.
+    /// Create thinkbridges: immediate concept-based connections at thread creation.
     /// Connects the new/updated thread to existing threads sharing concepts.
     /// Returns the number of bridges created.
-    fn create_birth_bridges(
+    fn create_thinkbridges(
         conn: &Connection,
         thread_id: &str,
         concepts: &[String],
@@ -826,7 +828,7 @@ impl ThreadManager {
                 break;
             }
 
-            // Dedup: skip if non-Invalid bridge already exists (allows rebirth of decayed connections)
+            // Dedup: skip if non-Invalid bridge already exists (allows recreation of decayed connections)
             let existing = BridgeStorage::list_for_thread(conn, thread_id)?;
             let already_linked = existing.iter().any(|b| {
                 (b.source_id == *candidate_id || b.target_id == *candidate_id)
@@ -852,7 +854,7 @@ impl ThreadManager {
             let richness = (shared_count as f64 / 5.0).min(1.0);
             let weight = overlap_ratio * 0.5 + richness * 0.5;
 
-            if weight < 0.20 {
+            if weight < 0.15 {
                 continue;
             }
 
@@ -861,14 +863,14 @@ impl ThreadManager {
                 source_id: thread_id.to_string(),
                 target_id: candidate_id.clone(),
                 relation_type: BridgeType::Sibling,
-                reason: format!("birth:concept_overlap({},ratio={:.2})", shared_count, overlap_ratio),
+                reason: format!("thinkbridge:concept_overlap({},ratio={:.2})", shared_count, overlap_ratio),
                 shared_concepts: shared_concepts.clone(),
                 weight,
                 confidence: weight,
                 status: BridgeStatus::Active,
                 propagated_from: None,
                 propagation_depth: 0,
-                created_by: "birth".to_string(),
+                created_by: "thinkbridge".to_string(),
                 use_count: 0,
                 created_at: time_utils::now(),
                 last_reinforced: None,
@@ -880,7 +882,7 @@ impl ThreadManager {
                     target = %&candidate_id[..8.min(candidate_id.len())],
                     shared = shared_count,
                     weight = format!("{:.3}", weight).as_str(),
-                    "Birth bridge created"
+                    "Thinkbridge created"
                 );
                 created += 1;
             }

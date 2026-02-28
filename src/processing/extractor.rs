@@ -292,6 +292,9 @@ Describe WHAT the content covers. Must reflect the subject matter.{label_hint}
 From the topics and labels you produced in Step 1, generate an associative concept cloud.
 Include: synonyms, related domains, hypernyms, hyponyms, adjacent concepts.
 Single lowercase words only, **in English only**. No duplicates. Do NOT repeat subjects or labels.
+IMPORTANT: prefer single generic words over multi-word phrases.
+Good: "rust", "memory", "config", "daemon", "gui", "bridge", "extraction", "testing".
+Bad: "database connection pooling", "software development lifecycle".
 Between 5 and 25 items.
 
 ## Content to classify ({source_type}: {source_desc}):

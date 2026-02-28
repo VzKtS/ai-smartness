@@ -1,4 +1,5 @@
 use ai_smartness::{id_gen, time_utils};
+use ai_smartness::constants::normalize_concepts;
 use ai_smartness::thread::{OriginType, Thread, ThreadMessage, ThreadStatus};
 use ai_smartness::AiResult;
 use ai_smartness::registry::registry::AgentRegistry;
@@ -276,20 +277,11 @@ pub fn handle_concepts(
     let mut thread = ThreadStorage::get(ctx.agent_conn, &id)?
         .ok_or_else(|| ai_smartness::AiError::ThreadNotFound(id.clone()))?;
 
-    // Normalize: lowercase, deduplicate
-    let normalize = |v: Vec<String>| -> Vec<String> {
-        let mut seen = std::collections::HashSet::new();
-        v.into_iter()
-            .map(|c| c.to_lowercase())
-            .filter(|c| seen.insert(c.clone()))
-            .collect()
-    };
-
     match mode.as_str() {
         "add" => {
             let mut all = thread.concepts.clone();
             all.extend(concepts);
-            thread.concepts = normalize(all);
+            thread.concepts = normalize_concepts(&all);
         }
         "remove" => {
             let to_remove: std::collections::HashSet<String> =
@@ -298,7 +290,7 @@ pub fn handle_concepts(
         }
         _ => {
             // "set" (default) — replace entirely
-            thread.concepts = normalize(concepts);
+            thread.concepts = normalize_concepts(&concepts);
         }
     }
     ThreadStorage::update(ctx.agent_conn, &thread)?;
@@ -359,6 +351,8 @@ Summary: {}
 Rules:
 - Include: synonyms, related domains, hypernyms, hyponyms, adjacent technologies/tools
 - Single lowercase words only, in English only
+- IMPORTANT: prefer single generic words over multi-word phrases
+- Good: "rust", "memory", "config", "daemon". Bad: "database connection pooling"
 - No duplicates, do NOT repeat topics or labels
 - Between 5 and 25 items
 
@@ -377,9 +371,10 @@ Output JSON only: {{"concepts":["word1","word2",...]}}"#,
                         let json_str = &response[start..=end];
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
                             if let Some(concepts) = parsed.get("concepts").and_then(|v| v.as_array()) {
-                                let concept_vec: Vec<String> = concepts.iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                                let raw: Vec<String> = concepts.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
                                     .collect();
+                                let concept_vec = normalize_concepts(&raw);
                                 if !concept_vec.is_empty() {
                                     let mut t = (*thread).clone();
                                     t.concepts = concept_vec.clone();

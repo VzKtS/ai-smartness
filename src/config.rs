@@ -463,8 +463,8 @@ pub struct GossipConfig {
     pub propagation_min_weight: f64,             // default: 0.10
 }
 
-fn default_concept_overlap_min_shared() -> usize { 2 }
-fn default_concept_min_bridge_weight() -> f64 { 0.20 }
+fn default_concept_overlap_min_shared() -> usize { 1 }
+fn default_concept_min_bridge_weight() -> f64 { 0.15 }
 fn default_merge_evaluation_threshold() -> f64 { 0.60 }
 fn default_merge_auto_threshold() -> f64 { 0.85 }
 fn default_propagation_max_depth() -> u32 { 2 }
@@ -479,8 +479,8 @@ impl Default for GossipConfig {
                 onnx_threshold: 0.75,
                 tfidf_threshold: 0.55,
             },
-            concept_overlap_min_shared: 2,
-            concept_min_bridge_weight: 0.20,
+            concept_overlap_min_shared: 1,
+            concept_min_bridge_weight: 0.15,
             merge_evaluation_threshold: 0.60,
             merge_auto_threshold: 0.85,
             concept_gossip_enabled: true,
