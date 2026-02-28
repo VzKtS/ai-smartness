@@ -8,7 +8,7 @@
 //!
 //! Threshold tiers:
 //!   - score >= 0.85 → auto merge (daemon, no user intervention)
-//!   - score 0.60-0.85 → stored for HealthGuard suggestion (future)
+//!   - score 0.60-0.85 → stored for manual review (future)
 //!
 //! Atomicity: merge is wrapped in transaction (conn.transaction()).
 

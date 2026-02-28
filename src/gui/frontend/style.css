@@ -855,43 +855,6 @@ select option:checked {
     border-top: 1px solid var(--border);
 }
 
-/* ─── GuardCode pattern list ─── */
-.pattern-list { margin-bottom: 12px; }
-.pattern-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin-bottom: 6px;
-}
-.pattern-row input {
-    flex: 1;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 5px 10px;
-    border-radius: 4px;
-    font-size: 13px;
-}
-.pattern-row input:focus {
-    outline: none;
-    border-color: var(--accent);
-}
-.btn-remove-pattern {
-    background: var(--danger-bg);
-    border: 1px solid var(--border);
-    color: var(--danger);
-    width: 28px;
-    height: 28px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 16px;
-    line-height: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.btn-remove-pattern:hover { background: var(--danger-bg-hover); }
-
 /* ─── Placeholder panels (Network, Updates) ─── */
 .placeholder-panel {
     padding: 24px;

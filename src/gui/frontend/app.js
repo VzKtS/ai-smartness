@@ -9,7 +9,7 @@ en: {
     'tab.dashboard':'Dashboard','tab.threads':'Threads','tab.agents':'Agents','tab.graph':'Graph','tab.settings':'Settings',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Thread Matching',
     'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decay & Lifecycle','stab.alerts':'Alerts',
-    'stab.guardcode':'GuardCode','stab.network':'Network','stab.updates':'Updates',
+    'stab.network':'Network','stab.updates':'Updates',
     'dash.daemon':'Daemon','dash.active':'Active Threads','dash.suspended':'Suspended',
     'dash.archived':'Archived','dash.bridges':'Bridges','dash.version':'Version',
     'dash.cpu':'CPU','dash.memory':'Memory','dash.pool':'Pool','dash.queue':'Queue',
@@ -60,7 +60,7 @@ fr: {
     'tab.dashboard':'Tableau de bord','tab.threads':'Threads','tab.agents':'Agents','tab.graph':'Graphe','tab.settings':'Parametres',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Correspondance',
     'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decroissance & Cycle de vie','stab.alerts':'Alertes',
-    'stab.guardcode':'GuardCode','stab.network':'Reseau','stab.updates':'Mises a jour',
+    'stab.network':'Reseau','stab.updates':'Mises a jour',
     'dash.daemon':'Daemon','dash.active':'Threads actifs','dash.suspended':'Suspendus',
     'dash.archived':'Archives','dash.bridges':'Ponts','dash.version':'Version',
     'dash.cpu':'CPU','dash.memory':'Memoire','dash.pool':'Pool','dash.queue':'File',
@@ -111,7 +111,7 @@ es: {
     'tab.dashboard':'Panel','tab.threads':'Hilos','tab.agents':'Agentes','tab.graph':'Grafo','tab.settings':'Configuracion',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Correspondencia',
     'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decaimiento & Ciclo de vida','stab.alerts':'Alertas',
-    'stab.guardcode':'GuardCode','stab.network':'Red','stab.updates':'Actualizaciones',
+    'stab.network':'Red','stab.updates':'Actualizaciones',
     'dash.daemon':'Daemon','dash.active':'Hilos activos','dash.suspended':'Suspendidos',
     'dash.archived':'Archivados','dash.bridges':'Puentes','dash.version':'Version',
     'dash.cpu':'CPU','dash.memory':'Memoria','dash.pool':'Pool','dash.queue':'Cola',
@@ -1346,8 +1346,6 @@ function populateForm(obj) {
             el.value = val || '';
         }
     });
-    // Render blocked patterns list
-    renderBlockedPatterns(obj.guardcode?.blocked_patterns || []);
 }
 
 function collectForm() {
@@ -1373,15 +1371,6 @@ function collectForm() {
             val = el.value;
         }
         setNestedValue(obj, el.dataset.path, val);
-    });
-
-    // Collect blocked patterns from dynamic list
-    if (!obj.guardcode) obj.guardcode = {};
-    const patternInputs = document.querySelectorAll('#blocked-patterns-list .pattern-input');
-    obj.guardcode.blocked_patterns = [];
-    patternInputs.forEach(input => {
-        const v = input.value.trim();
-        if (v) obj.guardcode.blocked_patterns.push(v);
     });
 
     return obj;
@@ -1412,31 +1401,6 @@ function showSaveStatus(msg, isError) {
 // ═══════════════════════════════════════════════════════════════
 // GUARDCODE — blocked patterns dynamic list
 // ═══════════════════════════════════════════════════════════════
-
-function renderBlockedPatterns(patterns) {
-    const list = document.getElementById('blocked-patterns-list');
-    if (!list) return;
-    list.innerHTML = '';
-    for (const p of patterns) {
-        addPatternRow(list, p);
-    }
-}
-
-function addPatternRow(list, value) {
-    const row = document.createElement('div');
-    row.className = 'pattern-row';
-    row.innerHTML = `<input type="text" class="pattern-input" value="${esc(value || '')}" placeholder="e.g. password, secret_key">
-        <button class="btn-sm btn-danger btn-remove-pattern" type="button">&times;</button>`;
-    row.querySelector('.btn-remove-pattern').addEventListener('click', () => row.remove());
-    list.appendChild(row);
-    if (!value) row.querySelector('.pattern-input').focus();
-}
-
-document.getElementById('btn-add-pattern')?.addEventListener('click', () => {
-    const list = document.getElementById('blocked-patterns-list');
-    if (list) addPatternRow(list, '');
-});
-
 
 // ═══════════════════════════════════════════════════════════════
 // UTILITY

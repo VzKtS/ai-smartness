@@ -1,7 +1,7 @@
 //! AI Smartness — Persistent cognitive memory for AI agents.
 //!
 //! Single-crate library providing storage, processing, intelligence,
-//! agent registry, and guardcode for autonomous AI memory management.
+//! and agent registry for autonomous AI memory management.
 
 // Foundation types (from ai-common)
 pub mod id_gen;
@@ -16,7 +16,6 @@ pub mod constants;
 pub mod error;
 pub mod message;
 pub mod provider;
-pub mod session;
 pub mod shared;
 pub mod thread;
 pub mod user_profile;
@@ -25,8 +24,6 @@ pub mod user_profile;
 pub mod storage;
 pub mod processing;
 pub mod intelligence;
-pub mod guardcode;
-pub mod healthguard;
 pub mod registry;
 pub mod admin;
 pub mod network;

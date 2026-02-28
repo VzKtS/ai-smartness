@@ -64,10 +64,6 @@ pub const ARCHIVE_AFTER_HOURS: i64 = 72;
 pub const HEALTH_CHECK_BUDGET_MS: u64 = 2;
 pub const HEALTH_REPAIR_BUDGET_MS: u64 = 50;
 
-// === HealthGuard defaults (user-overridable via config.json) ===
-pub const HEALTHGUARD_COOLDOWN_SECS: u64 = 1800;    // 30 min between injections
-pub const HEALTHGUARD_MAX_SUGGESTIONS: usize = 3;
-
 // === Schema ===
 pub const SCHEMA_VERSION: u32 = 1;
 pub const PROTOCOL_VERSION: u32 = 1;

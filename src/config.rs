@@ -319,7 +319,7 @@ impl Default for SynthesisConfig {
 /// Label suggestion configuration.
 /// LLM suggests labels for unlabeled threads.
 ///
-/// Frequency: LOW — triggered by HealthGuard or on-demand via MCP tool.
+/// Frequency: LOW — on-demand via MCP tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabelSuggestionConfig {
     pub llm: TaskLlmConfig,
@@ -685,69 +685,6 @@ impl Default for ThreadMatchingConfig {
 }
 
 // ============================================================================
-// GUARDCODE CONFIG (content validation rules)
-// ============================================================================
-
-/// Action taken when content is blocked by a GuardCode rule.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub enum BlockAction {
-    /// Reject content entirely (not stored).
-    #[default]
-    Reject,
-    /// Store content but log a warning.
-    WarnOnly,
-    /// Truncate content to max_content_bytes.
-    Truncate,
-}
-
-/// GuardCode configuration — content validation rules.
-/// Controls MaxLengthRule and BlockedPatternRule enforcement.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GuardCodeConfig {
-    /// Enable GuardCode content validation.
-    pub enabled: bool,
-    /// Maximum content size in bytes (MaxLengthRule).
-    pub max_content_bytes: usize,
-    /// Blocked substring patterns (BlockedPatternRule).
-    pub blocked_patterns: Vec<String>,
-    /// Log warning when content is blocked.
-    pub warn_on_block: bool,
-    /// Action to take when content is blocked.
-    pub action_on_block: BlockAction,
-    /// Custom messages (editable from GUI). Empty strings use defaults.
-    #[serde(default)]
-    pub messages: GuardCodeMessages,
-}
-
-/// Custom messages for GuardCode. Empty strings use defaults.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct GuardCodeMessages {
-    /// General reject message. Default: "Content blocked by validation rules."
-    #[serde(default)]
-    pub reject: String,
-    /// Max length warning. Placeholders: {size}, {max}. Default: "Content exceeds max length: {size} > {max}"
-    #[serde(default)]
-    pub max_length: String,
-    /// Pattern match warning. Placeholder: {pattern}. Default: "Blocked pattern found: {pattern}"
-    #[serde(default)]
-    pub pattern_match: String,
-}
-
-impl Default for GuardCodeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            max_content_bytes: 50_000,
-            blocked_patterns: vec![],
-            warn_on_block: true,
-            action_on_block: BlockAction::Reject,
-            messages: GuardCodeMessages::default(),
-        }
-    }
-}
-
-
-// ============================================================================
 // DECAY & LIFECYCLE CONFIG
 // ============================================================================
 
@@ -839,13 +776,6 @@ pub struct GuardianConfig {
     // --- Engram retrieval (multi-validator consensus) ---
     pub engram: EngramConfig,
 
-    // --- GuardCode (content validation) ---
-    pub guardcode: GuardCodeConfig,
-
-    // --- HealthGuard (proactive memory monitoring) ---
-    #[serde(default)]
-    pub healthguard: crate::healthguard::HealthGuardConfig,
-
     // --- Heartbeat (agent liveness thresholds) ---
     #[serde(default)]
     pub heartbeat: crate::registry::heartbeat::HeartbeatConfig,
@@ -886,8 +816,6 @@ impl Default for GuardianConfig {
             gossip: GossipConfig::default(),
             recall: RecallConfig::default(),
             engram: EngramConfig::default(),
-            guardcode: GuardCodeConfig::default(),
-            healthguard: crate::healthguard::HealthGuardConfig::default(),
             heartbeat: crate::registry::heartbeat::HeartbeatConfig::default(),
             hooks: HooksConfig::default(),
             capture: CaptureConfig::default(),
@@ -1532,7 +1460,6 @@ mod tests {
         assert_eq!(gc.coherence.child_threshold, 0.6);
         assert_eq!(gc.decay.thread_suspend_threshold, 0.1);
         assert_eq!(gc.engram.strong_inject_min_votes, 5);
-        assert!(gc.guardcode.enabled);
         assert_eq!(gc.llm_backend, LlmBackend::Local);
         assert_eq!(gc.local_model_size, LocalModelSize::Phi4Mini);
     }

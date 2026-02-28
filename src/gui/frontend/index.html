@@ -261,8 +261,6 @@
                 <button class="sub-tab" data-stab="stab-gossip" data-i18n="stab.gossip">Gossip</button>
                 <button class="sub-tab" data-stab="stab-engram" data-i18n="stab.engram">Engram</button>
                 <button class="sub-tab" data-stab="stab-decay">Decay & Lifecycle</button>
-                <button class="sub-tab" data-stab="stab-guardcode" data-i18n="stab.guardcode">GuardCode</button>
-                <button class="sub-tab" data-stab="stab-healthguard">HealthGuard</button>
                 <button class="sub-tab" data-stab="stab-heartbeat">Heartbeat</button>
                 <button class="sub-tab" data-stab="stab-hooks">Hooks</button>
                 <button class="sub-tab" data-stab="stab-capture">Capture</button>
@@ -531,124 +529,6 @@
                     <div id="section-decay-archive" class="section-body">
                         <div class="form-grid">
                             <label title="Hours after suspension before a thread is archived. Archived threads retain data but are lower priority for recall. Default: 72 hours (3 days).">Archive After (hours) <input type="number" data-path="decay.archive_after_hours" min="1" max="720" step="1"></label>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ── GuardCode ── -->
-            <div id="stab-guardcode" class="sub-panel">
-                <div class="form-grid">
-                    <label data-i18n="gc.enabled" title="Enable content validation rules (max length, blocked patterns). Protects agent memory from oversized or sensitive content. Default: on.">Enabled <input type="checkbox" data-path="guardcode.enabled"></label>
-                    <label data-i18n="gc.maxbytes" title="Maximum content size in bytes before the MaxLengthRule triggers. Prevents storage of huge tool outputs (e.g., large file dumps). Default: 50000 (50 KB).">Max Content Bytes <input type="number" data-path="guardcode.max_content_bytes" min="1000" step="1000"></label>
-                    <label data-i18n="gc.warnonblock" title="Log a warning when content is blocked by a validation rule. Useful for debugging false positives. Default: on.">Warn on Block <input type="checkbox" data-path="guardcode.warn_on_block"></label>
-                    <label data-i18n="gc.action" title="What happens when content is blocked. Reject: discard entirely. WarnOnly: store but log warning. Truncate: cut to max_content_bytes. SanitizeLlm: send to LLM for cleanup then re-validate.">Action on Block <select id="gc-action-select" data-path="guardcode.action_on_block">
-                        <option value="Reject">Reject</option>
-                        <option value="WarnOnly">WarnOnly</option>
-                        <option value="Truncate">Truncate</option>
-                    </select></label>
-                </div>
-                <h4 data-i18n="gc.blockedpatterns">Blocked Patterns</h4>
-                <div class="pattern-list" id="blocked-patterns-list"></div>
-                <button class="btn-sm btn-success" id="btn-add-pattern" data-i18n="gc.addpattern">+ Add Pattern</button>
-                <div class="config-section" style="margin-top:12px">
-                    <h3 class="section-toggle" data-section="gc-messages">Custom Messages</h3>
-                    <div id="section-gc-messages" class="section-body">
-                        <div class="prompt-fields">
-                            <label title="Message shown when content is rejected by GuardCode. Default: 'Content blocked by validation rules.'">
-                                <span class="prompt-label">Reject Message</span>
-                                <textarea data-path="guardcode.messages.reject" rows="3" placeholder="Content blocked by validation rules."></textarea>
-                            </label>
-                            <label title="Message shown when content exceeds max length. Use {size} and {max} placeholders.">
-                                <span class="prompt-label">Max Length Warning</span>
-                                <textarea data-path="guardcode.messages.max_length" rows="3" placeholder="Content exceeds max length: {size} > {max}"></textarea>
-                            </label>
-                            <label title="Message shown when a blocked pattern is detected. Use {pattern} placeholder.">
-                                <span class="prompt-label">Pattern Match Warning</span>
-                                <textarea data-path="guardcode.messages.pattern_match" rows="3" placeholder="Blocked pattern found: {pattern}"></textarea>
-                            </label>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ── HealthGuard ── -->
-            <div id="stab-healthguard" class="sub-panel">
-                <div class="config-section">
-                    <h3 class="section-toggle open" data-section="hg-general">General</h3>
-                    <div id="section-hg-general" class="section-body open">
-                        <div class="form-grid">
-                            <label title="Enable proactive memory health monitoring. Runs 9 diagnostic checks: capacity, fragmentation, unlabeled threads, weak bridges, stale threads, merge candidates, poor titles, disk usage, and guardian alerts. Default: on.">Enabled <input type="checkbox" data-path="healthguard.enabled"></label>
-                            <label title="Minimum seconds between health analyses per agent. Prevents excessive health checks during high-activity periods. Default: 1800 (30 min).">Cooldown (secs) <input type="number" data-path="healthguard.cooldown_secs" min="0"></label>
-                            <label title="Maximum number of health findings returned per analysis, sorted by priority (critical first). Default: 3.">Max Suggestions <input type="number" data-path="healthguard.max_suggestions" min="1" max="10"></label>
-                            <label title="Thread quota for capacity calculation. Capacity warning fires at warning_percent of this value. Default: 50.">Thread Quota <input type="number" data-path="healthguard.thread_quota" min="10" max="500"></label>
-                            <label title="Maximum merge candidates evaluated per gossip cycle. Higher values find more merges but increase LLM cost. Default: 3.">Max Merge Candidates <input type="number" data-path="healthguard.max_merge_candidates" min="1" max="10"></label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle open" data-section="hg-capacity">Capacity Thresholds</h3>
-                    <div id="section-hg-capacity" class="section-body open">
-                        <div class="form-grid">
-                            <label title="Alert when active thread count reaches this percentage of the agent's thread quota. Example: 0.75 with quota 50 = warning at 38 threads. Default: 0.75 (75%).">Warning (%) <input type="number" data-path="healthguard.capacity_warning_percent" min="0" max="1" step="0.05"></label>
-                            <label title="Critical alert when active thread count reaches this percentage of quota. At this level, HealthGuard may recommend switching to a higher thread mode. Default: 0.90 (90%).">Critical (%) <input type="number" data-path="healthguard.capacity_critical_percent" min="0" max="1" step="0.05"></label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle open" data-section="hg-fragmentation">Fragmentation</h3>
-                    <div id="section-hg-fragmentation" class="section-body open">
-                        <div class="form-grid">
-                            <label title="Alert if this fraction of active threads have only 1 message (fragmented). Indicates threads are being created but not consolidated. Default: 0.30 (30%).">Ratio Threshold <input type="number" data-path="healthguard.fragmentation_ratio_threshold" min="0" max="1" step="0.05"></label>
-                            <label title="Minimum number of active threads before fragmentation check is evaluated. Avoids false positives when there are few threads. Default: 8.">Min Threads <input type="number" data-path="healthguard.fragmentation_min_threads" min="1"></label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle open" data-section="hg-labels">Unlabeled Threads</h3>
-                    <div id="section-hg-labels" class="section-body open">
-                        <div class="form-grid">
-                            <label title="Alert if this fraction of active threads have no labels. Unlabeled threads reduce Engram V7 validator effectiveness. Default: 0.40 (40%).">Ratio Threshold <input type="number" data-path="healthguard.unlabeled_ratio_threshold" min="0" max="1" step="0.05"></label>
-                            <label title="Minimum number of active threads before unlabeled check is evaluated. Default: 10.">Min Threads <input type="number" data-path="healthguard.unlabeled_min_threads" min="1"></label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle open" data-section="hg-bridges">Bridges & Staleness</h3>
-                    <div id="section-hg-bridges" class="section-body open">
-                        <div class="form-grid">
-                            <label title="Alert if there are this many or more weak bridges (weight < 0.1). Weak bridges consume storage but provide little recall value. Gossip pruning should clean them naturally. Default: 50.">Weak Bridges Threshold <input type="number" data-path="healthguard.weak_bridges_threshold" min="0"></label>
-                            <label title="Number of hours of inactivity after which an active thread is considered stale. Stale threads should be reviewed for suspension or archival. Default: 168 (7 days).">Stale Thread Hours <input type="number" data-path="healthguard.stale_thread_hours" min="1"></label>
-                            <label title="Minimum number of stale threads before raising an alert. Default: 5.">Stale Count Threshold <input type="number" data-path="healthguard.stale_thread_count_threshold" min="1"></label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle open" data-section="hg-misc">Titles & Disk</h3>
-                    <div id="section-hg-misc" class="section-body open">
-                        <div class="form-grid">
-                            <label title="Alert if this many threads have poor/generic titles (e.g., 'Untitled', very short, or auto-generated). Poor titles reduce search and recall quality. Default: 5.">Poor Titles Threshold <input type="number" data-path="healthguard.poor_titles_threshold" min="0"></label>
-                            <label title="Alert when the agent's SQLite database exceeds this size in bytes. Large databases may slow down queries. Consider purging or archiving. Default: 50000000 (50 MB).">Disk Warning (bytes) <input type="number" data-path="healthguard.disk_warning_bytes" min="1000000" step="1000000"></label>
-                        </div>
-                    </div>
-                </div>
-                <div class="config-section">
-                    <h3 class="section-toggle" data-section="hg-prompts">Injection Prompts</h3>
-                    <div id="section-hg-prompts" class="section-body">
-                        <p class="hint" title="Customize the messages injected into agent context when health issues are found. Leave empty to use defaults.">Custom prompts injected by HealthGuard when issues are detected.</p>
-                        <div class="prompt-fields">
-                            <label title="Prompt prepended to all health findings. Default: 'Memory health alerts:'">
-                                <span class="prompt-label">Header Prompt</span>
-                                <textarea data-path="healthguard.prompts.header" rows="2" placeholder="Memory health alerts:"></textarea>
-                            </label>
-                            <label title="Template for capacity warnings. Use {percent} and {quota} placeholders.">
-                                <span class="prompt-label">Capacity Warning</span>
-                                <textarea data-path="healthguard.prompts.capacity_warning" rows="4" placeholder="Memory at {percent}% capacity ({quota} threads max). Consider archiving or merging threads to free space."></textarea>
-                            </label>
-                            <label title="Prompt injected at first session to introduce the memory system. Leave empty to use built-in onboarding.">
-                                <span class="prompt-label">Onboarding Prompt</span>
-                                <textarea class="prompt-lg" data-path="healthguard.prompts.onboarding" rows="8" placeholder="AI Smartness Memory System — Quick Reference&#10;You have access to these MCP tools for managing your persistent memory:&#10;- ai_status: Check daemon health and thread counts&#10;- ai_search <query>: Search through memory threads&#10;- ai_recall <query>: Active memory recall&#10;- ai_pin <content>: Pin important content&#10;..."></textarea>
-                            </label>
                         </div>
                     </div>
                 </div>

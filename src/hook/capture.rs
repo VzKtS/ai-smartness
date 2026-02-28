@@ -7,7 +7,6 @@
 
 use ai_smartness::processing::cleaner;
 use ai_smartness::processing::daemon_ipc_client;
-use ai_smartness::session::SessionState;
 use ai_smartness::storage::path_utils;
 
 /// Run the capture hook.
@@ -115,10 +114,7 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str) {
     tracing::info!(tool = %tool_name, content_len = cleaned.len(), file_path = ?file_path, "Capture sending to daemon");
     let _ = daemon_ipc_client::send_capture(project_hash, agent_id, tool_name, &cleaned, file_path);
 
-    // 8. Update session state (tool history + file modifications)
-    update_session_state(project_hash, agent_id, tool_name, &data);
-
-    // 9. Always continue (hook must never block)
+    // 8. Always continue (hook must never block)
     print_continue();
 }
 
@@ -221,48 +217,4 @@ fn is_tool_capture_enabled(_project_hash: &str, tool_name: &str) -> bool {
         }
     }
     false
-}
-
-/// Update session state with tool call info and file modifications.
-fn update_session_state(
-    project_hash: &str,
-    agent_id: &str,
-    tool_name: &str,
-    data: &serde_json::Value,
-) {
-    let agent_data = path_utils::agent_data_dir(project_hash, agent_id);
-    let mut session = SessionState::load(&agent_data, agent_id, project_hash);
-
-    // Extract target (file_path for file tools, command for Bash, etc.)
-    let target = data
-        .get("tool_input")
-        .and_then(|i| {
-            i.get("file_path")
-                .or_else(|| i.get("command"))
-                .or_else(|| i.get("pattern"))
-                .and_then(|v| v.as_str())
-        })
-        .unwrap_or("");
-
-    // Record tool call
-    session.record_tool_call(tool_name, target);
-
-    // Track file modifications for Edit/Write/Read
-    if let Some(file_path) = data
-        .get("tool_input")
-        .and_then(|i| i.get("file_path"))
-        .and_then(|v| v.as_str())
-    {
-        let action = match tool_name {
-            "Edit" => "edit",
-            "Write" => "write",
-            "Read" => "read",
-            _ => "",
-        };
-        if !action.is_empty() {
-            session.record_file_modification(file_path, action, "");
-        }
-    }
-
-    session.save(&agent_data);
 }
