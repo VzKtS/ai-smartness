@@ -1,13 +1,28 @@
 //! Injection hook — UserPromptSubmit handler.
 //!
-//! Pure pass-through: extracts the user message and outputs it unchanged.
+//! Pass-through with beat tracking: records session_id, prompt_count,
+//! and context tokens from Claude Code transcript JSONL.
+
+use ai_smartness::storage::{beat::BeatState, path_utils, transcript};
 
 /// Run the inject hook.
 /// `input` is the raw stdin already read by hook/mod.rs.
 /// `session_id` is extracted from the hook JSON (per-session isolation).
-pub fn run(_project_hash: &str, _agent_id: &str, input: &str, _session_id: Option<&str>) {
+pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&str>) {
     let message = extract_message(input);
 
+    // Record interaction in BeatState (session_id, prompt_count, context_tokens)
+    let agent_data = path_utils::agent_data_dir(project_hash, agent_id);
+    let mut beat = BeatState::load(&agent_data);
+    beat.record_interaction(session_id, None);
+
+    if let Some(sid) = session_id {
+        update_context_from_transcript(&mut beat, sid);
+    }
+
+    beat.save(&agent_data);
+
+    // Pass-through: output the user message unchanged
     if message.trim().is_empty() {
         print!("{}", input);
     } else {
@@ -15,8 +30,26 @@ pub fn run(_project_hash: &str, _agent_id: &str, input: &str, _session_id: Optio
     }
 }
 
+/// Update context tokens from Claude Code transcript JSONL.
+fn update_context_from_transcript(beat: &mut BeatState, session_id: &str) {
+    let transcript_path = match transcript::find_transcript(session_id) {
+        Some(p) => p,
+        None => return,
+    };
+
+    let info = match transcript::read_last_usage(&transcript_path) {
+        Some(i) => i,
+        None => return,
+    };
+
+    if !beat.should_update_context(info.percent) {
+        return;
+    }
+
+    beat.update_context(info.total_tokens, info.percent, "transcript", info.model);
+}
+
 fn extract_message(input: &str) -> String {
-    // Try parsing as JSON first
     if let Ok(data) = serde_json::from_str::<serde_json::Value>(input) {
         if let Some(msg) = data
             .get("prompt")
@@ -26,6 +59,5 @@ fn extract_message(input: &str) -> String {
             return msg.to_string();
         }
     }
-    // Fallback: treat entire input as the message
     input.to_string()
 }
