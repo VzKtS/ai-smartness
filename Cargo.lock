@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "ai-smartness"
-version = "4.3.2-alpha"
+version = "4.3.3-alpha"
 dependencies = [
  "anyhow",
  "chrono",

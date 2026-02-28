@@ -690,24 +690,8 @@ impl ThreadManager {
             None => return Ok(None),
         };
 
-        // Reactivate if suspended/archived — a revisited file is back in focus
-        if thread.status != ThreadStatus::Active {
-            tracing::info!(
-                thread_id = %thread_id,
-                old_status = %thread.status,
-                "Changelog: reactivating thread"
-            );
-            Self::reactivate_thread(conn, thread_id)?;
-            // Re-fetch after reactivation
-            thread = match ThreadStorage::get(conn, thread_id)? {
-                Some(t) => t,
-                None => return Ok(None),
-            };
-        }
-
-        // Compute content hash for versioning
+        // Compute content hash BEFORE any side-effects
         let current_hash = content_hash(content);
-        let line_count = content.lines().count();
 
         // Find previous hash from last changelog/reference message
         let messages = ThreadStorage::get_messages(conn, thread_id)?;
@@ -723,14 +707,39 @@ impl ThreadManager {
             .map(|prev| prev != &current_hash)
             .unwrap_or(true); // First changelog = always "changed"
 
-        // Build changelog text
+        // Case 2: Same hash → skip total (no changelog, no reactivation, no GPU)
+        if !changed {
+            tracing::debug!(
+                thread_id = %thread_id,
+                file_path = %file_path,
+                hash = %current_hash,
+                "Changelog skip: content unchanged"
+            );
+            return Ok(Some(thread_id.to_string()));
+        }
+
+        // Case 3: Hash differs → append changelog
+        // Reactivate if suspended/archived — a modified file is back in focus
+        if thread.status != ThreadStatus::Active {
+            tracing::info!(
+                thread_id = %thread_id,
+                old_status = %thread.status,
+                "Changelog: reactivating thread"
+            );
+            Self::reactivate_thread(conn, thread_id)?;
+            // Re-fetch after reactivation
+            thread = match ThreadStorage::get(conn, thread_id)? {
+                Some(t) => t,
+                None => return Ok(None),
+            };
+        }
+
+        let line_count = content.lines().count();
+
+        // Build changelog text (always modified — unchanged files skip above)
         let action = match source_type {
             "Read" | "file_read" => {
-                if changed {
-                    format!("[changelog] Read {} (modified, {} lines)", file_path, line_count)
-                } else {
-                    format!("[changelog] Read {} (unchanged)", file_path)
-                }
+                format!("[changelog] Read {} (modified, {} lines)", file_path, line_count)
             }
             "Write" | "file_write" => {
                 format!("[changelog] Write {} ({} lines)", file_path, line_count)
@@ -1004,11 +1013,11 @@ mod tests {
         let msgs = ThreadStorage::get_messages(&conn, "cl-unchanged").unwrap();
         assert_eq!(msgs[0].metadata["changed"], true);
 
-        // Second read with same content — "unchanged"
-        ThreadManager::add_changelog(&conn, "cl-unchanged", "src/stable.rs", "Read", content).unwrap();
+        // Second read with same content — skip total (no new message)
+        let result = ThreadManager::add_changelog(&conn, "cl-unchanged", "src/stable.rs", "Read", content).unwrap();
+        assert_eq!(result, Some("cl-unchanged".to_string())); // still returns thread_id
         let msgs = ThreadStorage::get_messages(&conn, "cl-unchanged").unwrap();
-        assert_eq!(msgs[1].metadata["changed"], false);
-        assert!(msgs[1].content.contains("unchanged"));
+        assert_eq!(msgs.len(), 1); // no second message — content unchanged
     }
 
     #[test]

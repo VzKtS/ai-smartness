@@ -73,8 +73,7 @@ pub fn process_capture(
     }
 
     // Stage 1.5: Changelog shortcut for known files (Read/Write/Edit)
-    // If the file_path is already tracked by an existing thread, skip LLM entirely
-    // and append a lightweight changelog message with content hash for versioning.
+    // 3-case logic:  1) no file_path → full LLM   2) same hash → skip total   3) diff hash → changelog
     if let Some(fp) = file_path {
         if is_file_tool_source(source_type) {
             match try_changelog_shortcut(conn, pending, source_type, fp, &cleaned, guardian) {
@@ -83,7 +82,7 @@ pub fn process_capture(
                         thread_id = %thread_id,
                         file_path = %fp,
                         total_ms = pipeline_start.elapsed().as_millis(),
-                        "Pipeline SHORTCUT — changelog appended (skipped LLM)"
+                        "Pipeline SHORTCUT — file tracked (skipped LLM)"
                     );
                     return Ok(Some(thread_id));
                 }
