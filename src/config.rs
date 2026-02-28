@@ -664,9 +664,9 @@ pub struct ThreadMatchingConfig {
 
 fn default_pending_context_ttl() -> u64 { 600 }
 
-fn default_continue_threshold() -> f64 { 0.25 }
-fn default_reactivate_threshold() -> f64 { 0.50 }
-fn default_capacity_suspend_threshold() -> f64 { 0.85 }
+fn default_continue_threshold() -> f64 { 0.75 }
+fn default_reactivate_threshold() -> f64 { 0.90 }
+fn default_capacity_suspend_threshold() -> f64 { 0.95 }
 
 impl Default for ThreadMatchingConfig {
     fn default() -> Self {
@@ -677,8 +677,8 @@ impl Default for ThreadMatchingConfig {
                 onnx_threshold: 0.60,
                 tfidf_threshold: 0.45,
             },
-            continue_threshold: default_continue_threshold(),
-            reactivate_threshold: default_reactivate_threshold(),
+            continue_threshold: 0.75,
+            reactivate_threshold: 0.90,
             capacity_suspend_threshold: default_capacity_suspend_threshold(),
         }
     }
@@ -1479,7 +1479,7 @@ mod tests {
         assert_eq!(gc.decay.thread_max_half_life, 7.0);
         assert_eq!(gc.engram.strong_inject_min_votes, 5);
         assert_eq!(gc.engram.weak_inject_min_votes, 3);
-        assert_eq!(gc.thread_matching.continue_threshold, 0.25);
+        assert_eq!(gc.thread_matching.continue_threshold, 0.75);
     }
 
     #[test]
