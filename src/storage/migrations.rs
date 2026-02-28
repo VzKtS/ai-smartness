@@ -191,6 +191,14 @@ pub fn migrate_agent_db(conn: &Connection) -> AiResult<()> {
         set_schema_version(conn, 6)?;
     }
 
+    // V7: add has_truncated_origin column to threads (V10 TruncationPenaltyValidator)
+    if version < 7 {
+        conn.execute_batch(
+            "ALTER TABLE threads ADD COLUMN has_truncated_origin BOOLEAN DEFAULT 0;"
+        ).map_err(|e| AiError::Storage(format!("Agent DB V7 migration failed: {}", e)))?;
+        set_schema_version(conn, 7)?;
+    }
+
     Ok(())
 }
 

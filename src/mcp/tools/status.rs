@@ -151,13 +151,73 @@ pub fn handle_shared_status(
 
 pub fn handle_profile(
     params: &serde_json::Value,
-    _ctx: &ToolContext,
+    ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
     let action = required_str(params, "action")?;
-    // Profile is stored as a file, simplified here
+    let data_dir = path_utils::agent_data_dir(ctx.project_hash, ctx.agent_id);
+    let mut profile = ai_smartness::user_profile::UserProfile::load(&data_dir);
+
     match action.as_str() {
-        "view" => Ok(serde_json::json!({"role": "developer", "preferences": {}})),
-        _ => Ok(serde_json::json!({"action": action, "status": "ok"})),
+        "view" => {
+            let rules: Vec<serde_json::Value> = profile.context_rules.iter().enumerate()
+                .map(|(i, r)| serde_json::json!({"index": i + 1, "rule": r}))
+                .collect();
+            Ok(serde_json::json!({
+                "identity": {
+                    "role": profile.identity.role,
+                    "relationship": profile.identity.relationship,
+                    "name": profile.identity.name,
+                },
+                "preferences": {
+                    "language": profile.preferences.language,
+                    "verbosity": profile.preferences.verbosity,
+                    "emoji_usage": profile.preferences.emoji_usage,
+                    "technical_level": profile.preferences.technical_level,
+                },
+                "rules": rules,
+                "rules_count": profile.context_rules.len(),
+            }))
+        }
+        "set_rule" => {
+            let value = required_str(params, "value")?;
+            let added = profile.add_rule(value.clone());
+            profile.save(&data_dir);
+            Ok(serde_json::json!({
+                "action": "set_rule",
+                "value": value,
+                "added": added,
+                "rules_count": profile.context_rules.len(),
+            }))
+        }
+        "remove_rule" => {
+            let key = required_str(params, "key")?;
+            let idx: usize = key.parse::<usize>()
+                .map_err(|_| ai_smartness::AiError::InvalidInput("key must be a number (1-based index)".into()))?
+                .saturating_sub(1);
+            let removed = profile.remove_rule(idx);
+            profile.save(&data_dir);
+            Ok(serde_json::json!({
+                "action": "remove_rule",
+                "index": key,
+                "removed": removed,
+                "rules_count": profile.context_rules.len(),
+            }))
+        }
+        "list" => {
+            let rules: Vec<serde_json::Value> = profile.context_rules.iter().enumerate()
+                .map(|(i, r)| serde_json::json!({"index": i + 1, "rule": r}))
+                .collect();
+            Ok(serde_json::json!({
+                "rules": rules,
+                "rules_count": profile.context_rules.len(),
+            }))
+        }
+        "clear_rules" => {
+            profile.clear_rules();
+            profile.save(&data_dir);
+            Ok(serde_json::json!({"action": "clear_rules", "rules_count": 0}))
+        }
+        _ => Ok(serde_json::json!({"action": action, "error": "unknown action — use view, set_rule, remove_rule, list, or clear_rules"})),
     }
 }
 

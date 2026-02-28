@@ -322,9 +322,9 @@ pub fn process_prompt(
 ) -> AiResult<Option<String>> {
     tracing::info!(prompt_len = prompt.len(), "Processing prompt capture");
 
-    // Phase A safety net: reject prompts < MIN_PROMPT_LENGTH chars (defence in depth)
-    if prompt.chars().count() < ai_smartness::constants::MIN_PROMPT_LENGTH {
-        tracing::debug!(chars = prompt.chars().count(), "Prompt too short, skipping");
+    // Phase A safety net: reject prompts below configured min length (defence in depth)
+    if prompt.chars().count() < guardian.capture.min_prompt_length {
+        tracing::debug!(chars = prompt.chars().count(), min = guardian.capture.min_prompt_length, "Prompt too short, skipping");
         return Ok(None);
     }
 

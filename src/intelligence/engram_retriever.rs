@@ -1,14 +1,14 @@
 //! Engram Retriever — multi-validator consensus for memory injection.
 //!
 //! Inspired by DeepSeek Engram (Conditional Memory via Scalable Lookup).
-//! Replaces single-signal cosine scoring with 9-validator voting.
+//! Replaces single-signal cosine scoring with 10-validator voting.
 //!
 //! Pipeline:
 //!   Phase 1: TopicIndex + ConceptIndex hash lookup O(1) → candidate pre-filter
-//!   Phase 2: 9 validators vote (pass/fail + confidence)
+//!   Phase 2: 10 validators vote (pass/fail + confidence)
 //!   Phase 3: Consensus → StrongInject / WeakInject / Skip
 //!
-//! 8/9 validators are zero-cost (memory lookup).
+//! 9/10 validators are zero-cost (memory lookup).
 //! Only V1 (SemanticSimilarity) costs compute.
 
 use std::collections::HashMap;
@@ -29,17 +29,17 @@ use crate::intelligence::validators::{
     TemporalProximityValidator, GraphConnectivityValidator,
     InjectionHistoryValidator, DecayedRelevanceValidator,
     LabelCoherenceValidator, FocusAlignmentValidator,
-    ConceptCoherenceValidator,
+    ConceptCoherenceValidator, TruncationPenaltyValidator,
 };
 
 /// Injection decision after multi-validator consensus.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InjectionDecision {
-    /// ≥5/9 validators pass → inject at top of context, full content.
+    /// ≥5/10 validators pass → inject at top of context, full content.
     StrongInject,
-    /// 3-4/9 validators pass → inject at bottom of context, condensed.
+    /// 3-4/10 validators pass → inject at bottom of context, condensed.
     WeakInject,
-    /// <3/9 validators pass → skip injection.
+    /// <3/10 validators pass → skip injection.
     Skip,
 }
 
@@ -53,9 +53,19 @@ pub struct EngramScore {
     pub decision: InjectionDecision,
 }
 
+/// Thread + Engram scoring metadata for injection pipeline.
+/// Exposes scores so the injection layer can display them in the reminder.
+#[derive(Debug, Clone)]
+pub struct ScoredThread {
+    pub thread: Thread,
+    pub weighted_score: f64,
+    pub pass_count: u8,
+    pub decision: InjectionDecision,
+}
+
 /// Engram Retriever — replaces MemoryRetriever.
 ///
-/// Uses TopicIndex + ConceptIndex (hash-based O(1) lookup) + 9 independent validators
+/// Uses TopicIndex + ConceptIndex (hash-based O(1) lookup) + 10 independent validators
 /// for multi-signal consensus on memory injection decisions.
 pub struct EngramRetriever {
     validators: Vec<Box<dyn Validator>>,
@@ -69,7 +79,7 @@ pub struct EngramRetriever {
 
 impl EngramRetriever {
     /// Create a new EngramRetriever from config.
-    /// Builds the TopicIndex + ConceptIndex from the database and initializes all 9 validators.
+    /// Builds the TopicIndex + ConceptIndex from the database and initializes all 10 validators.
     pub fn new(conn: &Connection, config: EngramConfig) -> AiResult<Self> {
         let topic_index = TopicIndex::build_from_db(conn)?;
         let concept_index = ConceptIndex::build_from_db(conn)?;
@@ -88,6 +98,7 @@ impl EngramRetriever {
             Box::new(LabelCoherenceValidator),
             Box::new(FocusAlignmentValidator),
             Box::new(ConceptCoherenceValidator { min_shared: 2 }),  // V9
+            Box::new(TruncationPenaltyValidator),                    // V10
         ];
 
         let validator_weights = config.validator_weights.to_vec();
@@ -134,14 +145,14 @@ impl EngramRetriever {
     /// Main retrieval — Engram-inspired 3-phase pipeline.
     ///
     /// Phase 1: TopicIndex + ConceptIndex hash lookup O(1) → candidate pre-filter
-    /// Phase 2: 9 validators vote on each candidate
+    /// Phase 2: 10 validators vote on each candidate
     /// Phase 3: Consensus → StrongInject / WeakInject / Skip
     pub fn get_relevant_context(
         &self,
         conn: &Connection,
         user_message: &str,
         limit: usize,
-    ) -> AiResult<Vec<Thread>> {
+    ) -> AiResult<Vec<ScoredThread>> {
         tracing::info!(query_len = user_message.len(), limit = limit, "Engram retrieval starting");
 
         // === Phase 1: Topic + concept extraction + hash index pre-filter ===
@@ -197,7 +208,7 @@ impl EngramRetriever {
             bridge_connections,
         };
 
-        // === Phase 2: Score each candidate with 9 validators ===
+        // === Phase 2: Score each candidate with 10 validators ===
         let mut scores: Vec<EngramScore> = candidates.iter()
             .filter_map(|t| self.score_thread_engram(t, &ctx))
             .collect();
@@ -206,10 +217,17 @@ impl EngramRetriever {
         scores.sort_by(|a, b| b.weighted_score.partial_cmp(&a.weighted_score)
             .unwrap_or(std::cmp::Ordering::Equal));
 
-        let result: Vec<Thread> = scores.iter()
+        let result: Vec<ScoredThread> = scores.iter()
             .filter(|s| s.decision != InjectionDecision::Skip)
             .take(limit)
-            .filter_map(|s| candidates.iter().find(|t| t.id == s.thread_id).cloned())
+            .filter_map(|s| {
+                candidates.iter().find(|t| t.id == s.thread_id).map(|t| ScoredThread {
+                    thread: t.clone(),
+                    weighted_score: s.weighted_score,
+                    pass_count: s.pass_count,
+                    decision: s.decision.clone(),
+                })
+            })
             .collect();
 
         tracing::info!(
@@ -224,13 +242,14 @@ impl EngramRetriever {
         // This breaks the death spiral: bridges used during retrieval get
         // last_reinforced updated → decay clock resets → bridge stays alive.
         if !result.is_empty() {
-            reinforce_used_bridges(conn, &result, &ctx.bridge_connections);
+            let threads_for_reinforce: Vec<&Thread> = result.iter().map(|st| &st.thread).collect();
+            reinforce_used_bridges(conn, &threads_for_reinforce, &ctx.bridge_connections);
         }
 
         Ok(result)
     }
 
-    /// Score a thread using all 9 validators.
+    /// Score a thread using all 10 validators.
     fn score_thread_engram(
         &self,
         thread: &Thread,
@@ -391,7 +410,8 @@ fn load_threads_by_ids(
         "SELECT id, title, status, weight, importance, importance_manually_set, \
          created_at, last_active, activation_count, split_locked, split_locked_until, \
          origin_type, drift_history, parent_id, child_ids, summary, topics, tags, labels, \
-         concepts, embedding, relevance_score, ratings, work_context, injection_stats \
+         concepts, embedding, relevance_score, ratings, work_context, injection_stats, \
+         has_truncated_origin \
          FROM threads WHERE id IN ({})",
         placeholders
     );
@@ -568,6 +588,7 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
         work_context,
         injection_stats,
         extraction_mode: crate::processing::extractor::ExtractionMode::default(),
+        has_truncated_origin: row.get::<_, i32>(25).unwrap_or(0) != 0,
     })
 }
 
@@ -576,7 +597,7 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
 /// This breaks the death spiral: bridges stay alive as long as they are useful.
 fn reinforce_used_bridges(
     conn: &Connection,
-    injected: &[Thread],
+    injected: &[&Thread],
     bridge_connections: &HashMap<String, f64>,
 ) {
     let mut reinforced = 0u32;
@@ -670,9 +691,18 @@ fn compute_query_embedding(text: &str, mode: &crate::config::EmbeddingMode) -> V
 }
 
 /// Load focus topics from the database.
-/// TODO: Implement focus storage — for now returns empty.
-fn load_focus_topics(_conn: &Connection) -> Vec<(String, f64)> {
-    Vec::new()
+/// Queries threads tagged __focus__ (created by ai_focus tool).
+fn load_focus_topics(conn: &Connection) -> Vec<(String, f64)> {
+    use crate::storage::threads::ThreadStorage;
+    ThreadStorage::search_by_labels(conn, &["focus".to_string()])
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.tags.contains(&"__focus__".to_string()))
+        .map(|t| {
+            let topic = t.topics.first().cloned().unwrap_or(t.title);
+            (topic, t.weight.clamp(0.0, 1.0))
+        })
+        .collect()
 }
 
 /// Full-text search fallback when topic/concept index finds nothing.
@@ -713,7 +743,8 @@ fn search_threads_by_text(
         "SELECT id, title, status, weight, importance, importance_manually_set, \
          created_at, last_active, activation_count, split_locked, split_locked_until, \
          origin_type, drift_history, parent_id, child_ids, summary, topics, tags, labels, \
-         concepts, embedding, relevance_score, ratings, work_context, injection_stats \
+         concepts, embedding, relevance_score, ratings, work_context, injection_stats, \
+         has_truncated_origin \
          FROM threads WHERE ({}) ORDER BY last_active DESC LIMIT {}",
         conditions.join(" OR "),
         limit
@@ -748,7 +779,7 @@ mod tests {
     #[test]
     fn test_engram_validator_count_matches_quorum() {
         let config = EngramConfig::default();
-        let num_validators: u8 = 9; // V1..V9
+        let num_validators: u8 = 10; // V1..V10
         let weights = config.validator_weights.to_vec();
 
         assert_eq!(

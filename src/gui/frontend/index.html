@@ -718,6 +718,22 @@
                         </div>
                     </div>
                 </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="cap-filters">Capture Filters</h3>
+                    <div id="section-cap-filters" class="section-body">
+                        <p class="hint">Minimum content length (in characters) required before a capture is sent to the daemon.</p>
+                        <div class="form-grid">
+                            <label title="Minimum user prompt length for capture. Shorter prompts are silently skipped. Default: 50.">
+                                Min Prompt Length
+                                <input type="number" data-path="capture.min_prompt_length" min="0" max="500" step="10">
+                            </label>
+                            <label title="Minimum agent response length for capture. Shorter responses are silently skipped. Default: 50.">
+                                Min Response Length
+                                <input type="number" data-path="capture.min_response_length" min="0" max="500" step="10">
+                            </label>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- ── Profile ── -->

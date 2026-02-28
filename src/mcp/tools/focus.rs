@@ -45,6 +45,7 @@ pub fn handle_focus(
             injection_stats: None,
             embedding: None,
             extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
+            has_truncated_origin: false,
             created_at: now,
             last_active: now,
         };
@@ -113,6 +114,7 @@ pub fn handle_pin(
         injection_stats: None,
         embedding: None,
         extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
+        has_truncated_origin: false,
         created_at: now,
         last_active: now,
     };

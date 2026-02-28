@@ -1574,9 +1574,13 @@ function renderProfileRules(rules) {
     list.innerHTML = '';
     rules.forEach((rule, idx) => {
         const item = document.createElement('div');
-        item.className = 'pattern-item';
-        item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0';
-        item.innerHTML = `<span style="flex:1;font-size:13px">${rule}</span><button class="btn-sm btn-danger" title="Remove this rule" data-idx="${idx}" style="padding:2px 8px;font-size:11px">&times;</button>`;
+        item.className = 'pattern-row';
+        item.innerHTML = `<span style="color:var(--text-dim);font-size:12px;min-width:20px">${idx + 1}.</span><input type="text" class="pattern-input rule-input" value="${esc(rule)}" data-idx="${idx}"><button class="btn-sm btn-danger btn-remove-pattern" title="Remove" data-idx="${idx}">&times;</button>`;
+        item.querySelector('.rule-input').addEventListener('change', (e) => {
+            if (currentProfile && currentProfile.context_rules) {
+                currentProfile.context_rules[idx] = e.target.value.trim();
+            }
+        });
         item.querySelector('button').addEventListener('click', () => {
             if (currentProfile && currentProfile.context_rules) {
                 currentProfile.context_rules.splice(idx, 1);

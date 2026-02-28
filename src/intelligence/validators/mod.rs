@@ -1,4 +1,4 @@
-//! Engram Validators — 9 independent signals for injection consensus.
+//! Engram Validators — 10 independent signals for injection consensus.
 //!
 //! Each validator implements the Validator trait, returning a binary vote
 //! (pass/fail) with a confidence score (0.0-1.0).
@@ -14,6 +14,7 @@
 //! | 7 | LabelCoherence        | Label matching (action→action)      | zero     |
 //! | 8 | FocusAlignment        | ai_focus weight boost               | zero     |
 //! | 9 | ConceptCoherence      | Shared concepts via ConceptIndex    | zero     |
+//! | 10| TruncationPenalty     | Penalize truncated-origin threads   | zero     |
 
 use std::collections::HashMap;
 use crate::thread::Thread;
@@ -253,6 +254,21 @@ impl Validator for ConceptCoherenceValidator {
         ValidatorVote {
             pass: shared >= self.min_shared,
             confidence: ratio.min(1.0),
+        }
+    }
+}
+
+// --- V10: Truncation Penalty (penalize threads created from truncated input) ---
+
+pub struct TruncationPenaltyValidator;
+
+impl Validator for TruncationPenaltyValidator {
+    fn name(&self) -> &'static str { "truncation_penalty" }
+    fn validate(&self, thread: &Thread, _ctx: &QueryContext) -> ValidatorVote {
+        if thread.has_truncated_origin {
+            ValidatorVote { pass: false, confidence: 0.2 }
+        } else {
+            ValidatorVote { pass: true, confidence: 0.8 }
         }
     }
 }

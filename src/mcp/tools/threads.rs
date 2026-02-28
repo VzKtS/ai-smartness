@@ -57,6 +57,7 @@ pub fn handle_thread_create(
         injection_stats: None,
         embedding: None,
         extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
+        has_truncated_origin: false,
         created_at: now,
         last_active: now,
     };

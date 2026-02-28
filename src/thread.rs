@@ -212,6 +212,9 @@ pub struct Thread {
     /// How this thread was extracted: verbatim or full LLM extract.
     #[serde(default)]
     pub extraction_mode: ExtractionMode,
+    /// True if any message was created from truncated input (sticky flag).
+    #[serde(default)]
+    pub has_truncated_origin: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

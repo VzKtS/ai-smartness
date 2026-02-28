@@ -48,10 +48,12 @@ pub const RETRIEVAL_STATUS_PENALTY_DEFAULT: f64 = 0.1;
 pub const REACTIVATION_HIGH_CONFIDENCE: f64 = 0.35;
 
 // === Hook ===
-pub const MIN_PROMPT_LENGTH: usize = 150;
+/// Legacy default — now configurable via config.json `capture.min_prompt_length`.
+pub const MIN_PROMPT_LENGTH: usize = 50;
 pub const PROMPT_RELEVANCE_GATE_MAX: usize = 150;
 pub const MIN_CAPTURE_LENGTH: usize = 20;
-pub const MIN_RESPONSE_LENGTH: usize = 150;
+/// Legacy default — now configurable via config.json `capture.min_response_length`.
+pub const MIN_RESPONSE_LENGTH: usize = 50;
 pub const MAX_CONTEXT_SIZE: usize = 15_000;
 pub const MAX_COGNITIVE_MESSAGES: usize = 5;
 
@@ -184,12 +186,12 @@ mod tests {
     }
 
     #[test]
-    fn test_min_prompt_length_is_150() {
-        assert_eq!(MIN_PROMPT_LENGTH, 150);
+    fn test_min_prompt_length_default() {
+        assert_eq!(MIN_PROMPT_LENGTH, 50);
     }
 
     #[test]
-    fn test_min_response_length_is_150() {
-        assert_eq!(MIN_RESPONSE_LENGTH, 150);
+    fn test_min_response_length_default() {
+        assert_eq!(MIN_RESPONSE_LENGTH, 50);
     }
 }

@@ -551,9 +551,12 @@ pub struct ValidatorWeights {
     pub focus_alignment: f64,        // V8 — ai_focus boost (default: 0.8)
     #[serde(default = "default_concept_coherence_weight")]
     pub concept_coherence: f64,      // V9 — concept overlap (default: 0.7)
+    #[serde(default = "default_truncation_penalty_weight")]
+    pub truncation_penalty: f64,     // V10 — truncated-origin penalty (default: 0.7)
 }
 
 fn default_concept_coherence_weight() -> f64 { 0.7 }
+fn default_truncation_penalty_weight() -> f64 { 0.7 }
 
 impl ValidatorWeights {
     /// Convert to Vec for indexed access by validator.
@@ -568,6 +571,7 @@ impl ValidatorWeights {
             self.label_coherence,
             self.focus_alignment,
             self.concept_coherence,
+            self.truncation_penalty,
         ]
     }
 }
@@ -584,6 +588,7 @@ impl Default for ValidatorWeights {
             label_coherence: 0.4,
             focus_alignment: 0.8,
             concept_coherence: 0.7,
+            truncation_penalty: 0.7,
         }
     }
 }
@@ -919,7 +924,6 @@ impl Default for HooksConfig {
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
 pub struct CaptureConfig {
     /// Per-tool capture toggles.
     #[serde(default)]
@@ -927,6 +931,26 @@ pub struct CaptureConfig {
     /// Pool batching configuration.
     #[serde(default)]
     pub pool: PoolConfig,
+    /// Minimum user prompt length (chars) for capture. Below = silently skipped.
+    #[serde(default = "default_min_prompt_length")]
+    pub min_prompt_length: usize,
+    /// Minimum agent response length (chars) for capture. Below = silently skipped.
+    #[serde(default = "default_min_response_length")]
+    pub min_response_length: usize,
+}
+
+fn default_min_prompt_length() -> usize { 50 }
+fn default_min_response_length() -> usize { 50 }
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            tools: CaptureToolToggles::default(),
+            pool: PoolConfig::default(),
+            min_prompt_length: default_min_prompt_length(),
+            min_response_length: default_min_response_length(),
+        }
+    }
 }
 
 /// Pool file system configuration — batching captures before processing.
@@ -1235,6 +1259,7 @@ impl GuardianConfig {
                     if let Some(v) = w.get("label_coherence").and_then(|v| v.as_f64()) { vw.label_coherence = v; }
                     if let Some(v) = w.get("focus_alignment").and_then(|v| v.as_f64()) { vw.focus_alignment = v; }
                     if let Some(v) = w.get("concept_coherence").and_then(|v| v.as_f64()) { vw.concept_coherence = v; }
+                    if let Some(v) = w.get("truncation_penalty").and_then(|v| v.as_f64()) { vw.truncation_penalty = v; }
                 }
             }
 
@@ -1376,8 +1401,8 @@ impl GuardianConfig {
 
     fn validate_engram(&mut self) {
         // Votes in [1..9]
-        self.engram.strong_inject_min_votes = self.engram.strong_inject_min_votes.clamp(1, 9);
-        self.engram.weak_inject_min_votes = self.engram.weak_inject_min_votes.clamp(1, 9);
+        self.engram.strong_inject_min_votes = self.engram.strong_inject_min_votes.clamp(1, 10);
+        self.engram.weak_inject_min_votes = self.engram.weak_inject_min_votes.clamp(1, 10);
 
         // weak < strong
         if self.engram.weak_inject_min_votes >= self.engram.strong_inject_min_votes {
@@ -1495,7 +1520,7 @@ mod tests {
         // Out of range
         gc.engram.strong_inject_min_votes = 20;
         gc.validate();
-        assert!(gc.engram.strong_inject_min_votes <= 9);
+        assert!(gc.engram.strong_inject_min_votes <= 10);
     }
 
     #[test]
@@ -1552,10 +1577,10 @@ mod tests {
     }
 
     #[test]
-    fn test_validator_weights_to_vec_returns_9_elements() {
+    fn test_validator_weights_to_vec_returns_10_elements() {
         let w = ValidatorWeights::default();
         let v = w.to_vec();
-        assert_eq!(v.len(), 9, "ValidatorWeights::to_vec must return exactly 9 elements");
+        assert_eq!(v.len(), 10, "ValidatorWeights::to_vec must return exactly 10 elements");
         // All defaults should be positive
         for (i, val) in v.iter().enumerate() {
             assert!(*val > 0.0, "Validator weight V{} should be > 0, got {}", i + 1, val);

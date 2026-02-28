@@ -64,6 +64,13 @@ pub fn run(path: Option<&str>) -> Result<()> {
         .context("Failed to migrate agent database")?;
     println!("  Initialized main agent database");
 
+    // 3b. Create default user profile for main agent
+    let agent_data_dir = path_utils::agent_data_dir(&hash, "main");
+    std::fs::create_dir_all(&agent_data_dir)
+        .context("Failed to create agent data directory")?;
+    ai_smartness::user_profile::UserProfile::default().save(&agent_data_dir);
+    println!("  Created default user profile");
+
     // 4. Initialize shared DB
     let shared_path = path_utils::shared_db_path(&hash);
     let shared_conn = open_connection(&shared_path, ConnectionRole::Cli)

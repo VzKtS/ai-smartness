@@ -5,7 +5,6 @@
 //!
 //! IMPORTANT: This hook never blocks — it only captures and lets Claude stop normally.
 
-use ai_smartness::constants::MIN_RESPONSE_LENGTH;
 use ai_smartness::processing::daemon_ipc_client;
 use ai_smartness::storage::path_utils;
 
@@ -43,10 +42,11 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str) {
     };
 
     // Filter short responses (noise protection)
-    if response_text.len() < MIN_RESPONSE_LENGTH {
+    let min_len = read_min_response_length();
+    if response_text.len() < min_len {
         tracing::info!(
             len = response_text.len(),
-            min = MIN_RESPONSE_LENGTH,
+            min = min_len,
             "Response: too short, skipping"
         );
         return;
@@ -71,4 +71,17 @@ fn is_response_capture_enabled() -> bool {
         }
     }
     true // default: enabled
+}
+
+/// Read minimum response length from config.json (capture.min_response_length).
+fn read_min_response_length() -> usize {
+    let config_path = path_utils::data_dir().join("config.json");
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(val) = v.get("capture").and_then(|c| c.get("min_response_length")).and_then(|v| v.as_u64()) {
+                return val as usize;
+            }
+        }
+    }
+    50 // default
 }

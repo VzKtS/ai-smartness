@@ -269,6 +269,7 @@ impl ThreadManager {
             work_context,
             injection_stats: None,
             extraction_mode: extraction.extraction_mode.clone(),
+            has_truncated_origin: false,
         };
 
         ThreadStorage::insert(conn, &thread)?;
@@ -310,6 +311,14 @@ impl ThreadManager {
             is_truncated: truncated,
         };
         ThreadStorage::add_message(conn, &msg)?;
+
+        // Propagate truncation flag to thread (sticky — once true, stays true)
+        if truncated {
+            if let Some(mut t) = ThreadStorage::get(conn, &thread_id)? {
+                t.has_truncated_origin = true;
+                ThreadStorage::update(conn, &t)?;
+            }
+        }
 
         // Create child_of bridge if forked
         if let Some(pid) = parent_id {
@@ -384,6 +393,11 @@ impl ThreadManager {
             is_truncated: truncated,
         };
         ThreadStorage::add_message(conn, &msg)?;
+
+        // Propagate truncation flag (sticky)
+        if truncated {
+            thread.has_truncated_origin = true;
+        }
 
         // Boost weight
         thread.weight = (thread.weight + THREAD_USE_BOOST).min(1.0);

@@ -70,6 +70,7 @@ fn thread_from_row(row: &Row) -> rusqlite::Result<Thread> {
             "summary" | "verbatim" => ExtractionMode::Summary,
             _ => ExtractionMode::Extract,
         },
+        has_truncated_origin: row.get::<_, i32>("has_truncated_origin").unwrap_or(0) != 0,
     })
 }
 
@@ -107,14 +108,14 @@ impl ThreadStorage {
                 activation_count, split_locked, split_locked_until,
                 topics, tags, labels, concepts, drift_history,
                 work_context, ratings, injection_stats, embedding,
-                created_at, last_active, extraction_mode
+                created_at, last_active, extraction_mode, has_truncated_origin
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11,
                 ?12, ?13, ?14,
                 ?15, ?16, ?17, ?18, ?19,
                 ?20, ?21, ?22, ?23,
-                ?24, ?25, ?26
+                ?24, ?25, ?26, ?27
             )",
             params![
                 thread.id,
@@ -154,6 +155,7 @@ impl ThreadStorage {
                     ExtractionMode::Summary => "summary",
                     ExtractionMode::Extract => "extract",
                 },
+                thread.has_truncated_origin as i32,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Insert thread failed: {}", e)))?;
@@ -191,7 +193,8 @@ impl ThreadStorage {
                 topics = ?15, tags = ?16, labels = ?17, concepts = ?18,
                 drift_history = ?19,
                 work_context = ?20, ratings = ?21, injection_stats = ?22,
-                embedding = ?23, last_active = ?24, extraction_mode = ?25
+                embedding = ?23, last_active = ?24, extraction_mode = ?25,
+                has_truncated_origin = ?26
             WHERE id = ?1",
             params![
                 thread.id,
@@ -230,6 +233,7 @@ impl ThreadStorage {
                     ExtractionMode::Summary => "summary",
                     ExtractionMode::Extract => "extract",
                 },
+                thread.has_truncated_origin as i32,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Update thread failed: {}", e)))?;

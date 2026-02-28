@@ -90,6 +90,11 @@ enum Commands {
         #[command(subcommand)]
         action: AgentAction,
     },
+    /// Manage user profile rules
+    Rule {
+        #[command(subcommand)]
+        action: RuleAction,
+    },
     /// Download ONNX Runtime for neural embeddings
     SetupOnnx {
         /// Force re-download even if already installed
@@ -258,6 +263,35 @@ enum AgentAction {
     },
 }
 
+#[derive(Subcommand)]
+enum RuleAction {
+    /// List all rules
+    List {
+        #[arg(long)]
+        project_hash: Option<String>,
+        #[arg(long)]
+        agent_id: Option<String>,
+    },
+    /// Add a rule
+    Add {
+        /// Rule text
+        rule: String,
+        #[arg(long)]
+        project_hash: Option<String>,
+        #[arg(long)]
+        agent_id: Option<String>,
+    },
+    /// Remove a rule by number (1-based)
+    Remove {
+        /// Rule number (1-based)
+        number: usize,
+        #[arg(long)]
+        project_hash: Option<String>,
+        #[arg(long)]
+        agent_id: Option<String>,
+    },
+}
+
 fn main() {
     let app = App::parse();
 
@@ -401,6 +435,26 @@ fn main() {
                 cli::agent::select(id.as_deref(), project_hash.as_deref())
                     .unwrap_or_else(|e| eprintln!("Error: {}", e));
             }
+        },
+        Some(Commands::Rule { action }) => {
+            let result = match action {
+                RuleAction::List { project_hash, agent_id } => {
+                    let ph = cli::resolve_project_hash(project_hash.as_deref()).unwrap_or_else(|e| { eprintln!("Error: {}", e); std::process::exit(1); });
+                    let aid = cli::resolve_agent_id(agent_id.as_deref(), &ph).unwrap_or_else(|e| { eprintln!("Error: {}", e); std::process::exit(1); });
+                    cli::rule::list(&ph, &aid)
+                }
+                RuleAction::Add { rule, project_hash, agent_id } => {
+                    let ph = cli::resolve_project_hash(project_hash.as_deref()).unwrap_or_else(|e| { eprintln!("Error: {}", e); std::process::exit(1); });
+                    let aid = cli::resolve_agent_id(agent_id.as_deref(), &ph).unwrap_or_else(|e| { eprintln!("Error: {}", e); std::process::exit(1); });
+                    cli::rule::add(&ph, &aid, &rule)
+                }
+                RuleAction::Remove { number, project_hash, agent_id } => {
+                    let ph = cli::resolve_project_hash(project_hash.as_deref()).unwrap_or_else(|e| { eprintln!("Error: {}", e); std::process::exit(1); });
+                    let aid = cli::resolve_agent_id(agent_id.as_deref(), &ph).unwrap_or_else(|e| { eprintln!("Error: {}", e); std::process::exit(1); });
+                    cli::rule::remove(&ph, &aid, number)
+                }
+            };
+            result.unwrap_or_else(|e| eprintln!("Error: {}", e));
         },
         Some(Commands::SetupOnnx { force }) => {
             cli::setup_onnx::run(force)

@@ -137,43 +137,34 @@ impl UserProfile {
         }
     }
 
-    /// Detect user rules from message (e.g. "always use TypeScript").
-    /// Returns the detected rule text if found.
-    pub fn detect_rules(&mut self, message: &str) -> Option<String> {
-        let patterns = [
-            "rappelle-toi:", "n'oublie pas:", "toujours ", "jamais ",
-            "rule:", "remember:", "always ", "never ",
-            "regla:", "siempre ", "nunca ",
-        ];
-        let msg_lower = message.to_lowercase();
-        for pattern in &patterns {
-            if let Some(pos) = msg_lower.find(pattern) {
-                // Extract the rule text (from pattern to end of sentence)
-                let rule_start = pos;
-                let rule_text = &message[rule_start..];
-                // Take up to end of line or 200 chars
-                let rule = match rule_text.find('\n') {
-                    Some(nl) => &rule_text[..nl],
-                    None => &rule_text[..rule_text.len().min(200)],
-                };
-                let rule = rule.trim().to_string();
-                if rule.len() >= 10 {
-                    if self.add_rule(rule.clone()) {
-                        return Some(rule);
-                    }
-                }
-            }
+    /// Remove a rule by index (0-based).
+    pub fn remove_rule(&mut self, index: usize) -> Option<String> {
+        if index < self.context_rules.len() {
+            Some(self.context_rules.remove(index).unwrap())
+        } else {
+            None
         }
+    }
+
+    /// Clear all context rules.
+    pub fn clear_rules(&mut self) {
+        self.context_rules.clear();
+    }
+
+    /// Detect user rules from message.
+    /// DISABLED — auto-detection captures garbage fragments.
+    /// Use ai_profile set_rule for explicit rule management.
+    pub fn detect_rules(&mut self, _message: &str) -> Option<String> {
         None
     }
 
-    /// Build injection text for Layer 5.5.
+    /// Build a lean injection string for Layer 5.5.
+    /// Format: identity line + pin hint + numbered rules with tool hints.
     pub fn build_injection(&self) -> Option<String> {
         let mut parts = Vec::new();
 
         // Identity line
-        let mut id_parts = Vec::new();
-        id_parts.push(self.identity.role.clone());
+        let mut id_parts = vec![self.identity.role.clone()];
         if self.identity.relationship != "user" {
             id_parts.push(format!("({})", self.identity.relationship));
         }
@@ -186,18 +177,89 @@ impl UserProfile {
         }
         parts.push(format!("User profile: {}", id_parts.join(", ")));
 
-        // Context rules
+        parts.push("Custom sections: use ai_pin for persistent reminders".to_string());
+
+        // Numbered rules with tool hint
         if !self.context_rules.is_empty() {
-            parts.push("User rules:".to_string());
-            for rule in self.context_rules.iter().take(10) {
-                parts.push(format!("- {}", rule));
+            parts.push("Rules (ai_profile set_rule / remove_rule):".to_string());
+            for (i, rule) in self.context_rules.iter().enumerate() {
+                parts.push(format!("{}. {}", i + 1, rule));
             }
         }
 
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join("\n"))
-        }
+        Some(parts.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_rule_dedup() {
+        let mut profile = UserProfile::default();
+        assert!(profile.add_rule("Always bump version".into()));
+        assert!(!profile.add_rule("Always bump version".into())); // dedup
+        assert_eq!(profile.context_rules.len(), 1);
+    }
+
+    #[test]
+    fn test_remove_rule_by_index() {
+        let mut profile = UserProfile::default();
+        profile.add_rule("Rule A".into());
+        profile.add_rule("Rule B".into());
+        profile.add_rule("Rule C".into());
+
+        let removed = profile.remove_rule(1);
+        assert_eq!(removed, Some("Rule B".into()));
+        assert_eq!(profile.context_rules.len(), 2);
+        assert_eq!(profile.context_rules[0], "Rule A");
+        assert_eq!(profile.context_rules[1], "Rule C");
+
+        // Out of bounds
+        assert_eq!(profile.remove_rule(99), None);
+    }
+
+    #[test]
+    fn test_clear_rules() {
+        let mut profile = UserProfile::default();
+        profile.add_rule("Rule 1".into());
+        profile.add_rule("Rule 2".into());
+        profile.clear_rules();
+        assert!(profile.context_rules.is_empty());
+    }
+
+    #[test]
+    fn test_build_injection_numbered_format() {
+        let mut profile = UserProfile::default();
+        profile.identity.role = "developer".into();
+        profile.preferences.technical_level = "expert".into();
+        profile.add_rule("Never modify LLM prompts".into());
+        profile.add_rule("Always bump version BEFORE build".into());
+
+        let injection = profile.build_injection().unwrap();
+        assert!(injection.contains("User profile: developer, expert level"));
+        assert!(injection.contains("Custom sections: use ai_pin"));
+        assert!(injection.contains("Rules (ai_profile set_rule / remove_rule):"));
+        assert!(injection.contains("1. Never modify LLM prompts"));
+        assert!(injection.contains("2. Always bump version BEFORE build"));
+    }
+
+    #[test]
+    fn test_build_injection_no_rules() {
+        let profile = UserProfile::default();
+        let injection = profile.build_injection().unwrap();
+        assert!(injection.contains("User profile:"));
+        assert!(!injection.contains("Rules"));
+    }
+
+    #[test]
+    fn test_detect_rules_disabled() {
+        let mut profile = UserProfile::default();
+        // These would previously trigger auto-detection
+        assert_eq!(profile.detect_rules("toujours utiliser bun pour les builds"), None);
+        assert_eq!(profile.detect_rules("always use TypeScript for frontend"), None);
+        assert_eq!(profile.detect_rules("never commit without tests"), None);
+        assert!(profile.context_rules.is_empty());
     }
 }

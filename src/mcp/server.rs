@@ -352,15 +352,25 @@ fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running
         }
 
         // H2: cache shared thread subscriptions into beat.json (A1 constraint)
+        // Enriched with agent role from registry for display in lean reminder.
         let shared_db = path_utils::shared_db_path(project_hash);
         if shared_db.exists() {
             if let Ok(shared_conn) = database::open_connection(&shared_db, ConnectionRole::Daemon) {
                 if let Ok(threads) = SharedStorage::list_subscribed_threads(&shared_conn, &agent_id) {
                     let cached: Vec<serde_json::Value> = threads.iter().take(10).map(|s| {
+                        let role = registry_conn.as_ref()
+                            .and_then(|rc| {
+                                ai_smartness::registry::registry::AgentRegistry::get(
+                                    rc, &s.owner_agent, project_hash,
+                                ).ok().flatten().map(|a| a.role)
+                            })
+                            .unwrap_or_else(|| "agent".to_string());
                         serde_json::json!({
                             "id": s.shared_id,
                             "title": s.title,
                             "from": s.owner_agent,
+                            "role": role,
+                            "topics": s.topics,
                         })
                     }).collect();
                     let mut beat3 = BeatState::load(&data_dir);
@@ -528,7 +538,7 @@ fn tool_definitions() -> Vec<serde_json::Value> {
         tool_def("ai_help", "Documentation", &[], &[]),
         tool_def("ai_suggestions", "Proactive suggestions", &[], &["context"]),
         tool_def("ai_shared_status", "Shared cognition status", &[], &[]),
-        tool_def("ai_profile", "User profile", &["action"], &["key", "value"]),
+        tool_def("ai_profile", "User profile — view, set_rule, remove_rule, list, clear_rules", &["action"], &["key", "value"]),
         tool_def("ai_cleanup", "Fix thread titles", &[], &["mode", "dry_run"]),
         tool_def("ai_lock", "Lock memory", &[], &["reason", "duration_minutes"]),
         tool_def("ai_unlock", "Unlock memory", &[], &[]),

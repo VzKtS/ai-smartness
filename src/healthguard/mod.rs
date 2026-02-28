@@ -363,6 +363,7 @@ mod tests {
                 injection_stats: None,
                 embedding: None,
                 extraction_mode: crate::processing::extractor::ExtractionMode::default(),
+                has_truncated_origin: false,
                 created_at: chrono::Utc::now(),
                 last_active: chrono::Utc::now(),
             };

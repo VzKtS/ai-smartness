@@ -5,6 +5,7 @@ pub mod controller;
 pub mod daemon;
 pub mod init;
 pub mod project;
+pub mod rule;
 pub mod search;
 pub mod setup_model;
 pub mod setup_onnx;

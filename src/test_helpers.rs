@@ -45,6 +45,7 @@ impl ThreadBuilder {
                 work_context: None,
                 injection_stats: Some(InjectionStats::default()),
                 extraction_mode: ExtractionMode::default(),
+                has_truncated_origin: false,
             },
         }
     }

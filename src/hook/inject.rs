@@ -129,10 +129,10 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     // Check config toggle first, then length gate
     if !is_prompt_capture_enabled() {
         tracing::info!("Prompt capture disabled in config, skipping");
-    } else if message.chars().count() < ai_smartness::constants::MIN_PROMPT_LENGTH {
+    } else if message.chars().count() < read_min_prompt_length() {
         tracing::debug!(
             chars = message.chars().count(),
-            min = ai_smartness::constants::MIN_PROMPT_LENGTH,
+            min = read_min_prompt_length(),
             "Prompt too short for capture, skip IPC"
         );
     } else {
@@ -177,7 +177,7 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     }
 
     // Layer 0.8: Processing backpressure warning
-    // Short message intentionally < MIN_PROMPT_LENGTH (150) → never captured
+    // Short message intentionally below default min_prompt_length → never captured
     if beat_state.processing_backpressure {
         let warning = "<system-reminder>Warning: Processing Latency</system-reminder>".to_string();
         if warning.len() < budget {
@@ -297,7 +297,7 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     }
 
     // Layer 4: Memory retrieval (similar threads — the main layer)
-    match build_memory_context(&conn, &message, agent_quota) {
+    match build_memory_context(&conn, &message, agent_quota, &beat_state.shared_threads_cache) {
         Some(ctx) => {
             let layer = format!("<system-reminder>\n{}\n</system-reminder>", ctx);
             if layer.len() < budget {
@@ -385,6 +385,19 @@ fn is_prompt_capture_enabled() -> bool {
         }
     }
     true // default: enabled
+}
+
+/// Read minimum prompt length from config.json (capture.min_prompt_length).
+fn read_min_prompt_length() -> usize {
+    let config_path = path_utils::data_dir().join("config.json");
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(val) = v.get("capture").and_then(|c| c.get("min_prompt_length")).and_then(|v| v.as_u64()) {
+                return val as usize;
+            }
+        }
+    }
+    50 // default
 }
 
 /// E1: Update context tokens from Claude Code transcript JSONL.
@@ -594,21 +607,29 @@ fn build_pins_context(conn: &Connection, agent_data_dir: &Path) -> Option<String
     }
 }
 
-/// Layer 4: Memory retrieval — find similar threads via Engram 9-validator pipeline.
-fn build_memory_context(conn: &Connection, message: &str, agent_quota: usize) -> Option<String> {
+/// Layer 4: Memory retrieval — Engram 10-validator pipeline.
+///
+/// Returns a lean format exposing thread_id, weight, confidence, importance
+/// so the agent can act on them (ai_recall, ai_rate_importance, etc.).
+fn build_memory_context(
+    conn: &Connection,
+    message: &str,
+    agent_quota: usize,
+    shared_threads_cache: &[serde_json::Value],
+) -> Option<String> {
     let engram = EngramRetriever::new(conn, EngramConfig::default()).ok()?;
-    let threads = engram.get_relevant_context(conn, message, 5).ok()?;
-    if threads.is_empty() {
+    let scored = engram.get_relevant_context(conn, message, 10).ok()?;
+    if scored.is_empty() && shared_threads_cache.is_empty() {
         return None;
     }
 
     // Re-injection feedback: update last_active, reactivate, and record injection stats
     let active_count = ThreadStorage::count(conn).unwrap_or(0);
     let mut reactivated = 0usize;
-    for thread in &threads {
+    for st in &scored {
+        let thread = &st.thread;
         match thread.status {
             ThreadStatus::Suspended | ThreadStatus::Archived => {
-                // Cap reactivations: max 3 per cycle, don't exceed quota
                 if reactivated >= 3 || active_count + reactivated >= agent_quota {
                     tracing::debug!(thread_id = %thread.id, "Re-injection skipped: quota or max reactivations reached");
                 } else if let Err(e) = ai_smartness::intelligence::thread_manager::ThreadManager::reactivate_thread(conn, &thread.id) {
@@ -619,7 +640,6 @@ fn build_memory_context(conn: &Connection, message: &str, agent_quota: usize) ->
                 }
             }
             ThreadStatus::Active => {
-                // Touch last_active to prevent decay
                 let now = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
                 let _ = conn.execute(
                     "UPDATE threads SET last_active = ?1 WHERE id = ?2",
@@ -636,48 +656,49 @@ fn build_memory_context(conn: &Connection, message: &str, agent_quota: usize) ->
         }
     }
 
-    let mut ctx = String::from("AI Smartness Memory Context:\n");
+    // Build lean engram list with exposed scores
+    let mut ctx = String::from(
+        "Be proactive on your memory, dont wait to be requested about it. ai_help\n\n"
+    );
 
-    if let Some(main) = threads.first() {
-        ctx.push_str(&format!("\nCurrent thread: \"{}\"\n", main.title));
-        if let Some(ref summary) = main.summary {
-            let s = &summary[..summary.len().min(200)];
-            ctx.push_str(&format!("Summary: {}\n", s));
-        }
-        if !main.topics.is_empty() {
-            let topics: Vec<&str> = main.topics.iter().take(5).map(|s| s.as_str()).collect();
-            ctx.push_str(&format!("Topics: {}\n", topics.join(", ")));
-        }
-
-        // Deep injection: include full payload for the top-relevance thread
-        if let Ok(messages) = ThreadStorage::get_messages(conn, &main.id) {
-            let any_truncated = messages.iter().any(|m| m.is_truncated);
-            let total_len: usize = messages.iter().map(|m| m.content.len()).sum();
-            if !any_truncated && total_len <= 10_000 && !messages.is_empty() {
-                ctx.push_str("Content:\n");
-                for msg in &messages {
-                    ctx.push_str(&msg.content);
-                    ctx.push('\n');
-                }
-                ctx.push_str("---\n");
-            }
+    if !scored.is_empty() {
+        ctx.push_str("Engram Threads (ai_recall <thread_id>):\n");
+        for st in &scored {
+            let t = &st.thread;
+            let title = truncate_title(&t.title, 40);
+            ctx.push_str(&format!(
+                "{} : \"{}\" w:{:.2} c:{:.2} i:{:.2}\n",
+                t.id, title, t.weight, st.weighted_score, t.importance
+            ));
         }
     }
 
-    if threads.len() > 1 {
-        ctx.push_str("\nRelated threads:\n");
-        for thread in threads.iter().skip(1).take(3) {
-            let title = &thread.title[..thread.title.len().min(50)];
-            if let Some(ref summary) = thread.summary {
-                let s = &summary[..summary.len().min(50)];
-                ctx.push_str(&format!("- \"{}\" - {}\n", title, s));
-            } else {
-                ctx.push_str(&format!("- \"{}\"\n", title));
-            }
+    // Shared threads from beat cache (populated by heartbeat H2)
+    if !shared_threads_cache.is_empty() {
+        ctx.push_str("\nShared threads (ai_discover / ai_subscribe):\n");
+        for s in shared_threads_cache {
+            let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let title = s.get("title").and_then(|v| v.as_str()).unwrap_or("?");
+            let from = s.get("from").and_then(|v| v.as_str()).unwrap_or("?");
+            let role = s.get("role").and_then(|v| v.as_str()).unwrap_or("agent");
+            ctx.push_str(&format!(
+                "{} : \"{}\" from {} ({})\n",
+                id, title, from, role
+            ));
         }
     }
 
     Some(ctx)
+}
+
+/// Truncate a title to max_len chars, adding "..." if truncated.
+fn truncate_title(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_len.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    }
 }
 
 /// Layer 5: Agent identity — role, hierarchy, subordinates.
