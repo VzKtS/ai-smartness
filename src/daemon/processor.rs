@@ -25,6 +25,7 @@ pub struct PendingContext {
     pub content: String,
     pub thread_id: String,
     pub labels: Vec<String>,
+    pub coherence_score: Option<f64>,
     pub timestamp: Instant,
 }
 
@@ -211,57 +212,55 @@ pub fn process_capture(
     tracing::debug!(confidence = extraction.confidence, "Stage 3/6: Confidence gate passed");
 
     // 4. Coherence gate — determine relationship with pending context
+    //    Returns: parent_hint (for similarity-based action), continuity_previous_id (for chain),
+    //    coherence_score (subject coherence with previous thread).
     let coherence_cfg = &guardian.coherence;
-    let parent_hint = if !coherence_cfg.enabled {
-        // Coherence gate disabled — proceed without parent linking
-        tracing::debug!("Coherence gate disabled, skipping coherence check");
-        None
-    } else if let Some(ctx) = pending.as_ref().filter(|p| !p.is_expired(ttl)) {
-        // Pending context exists — run coherence check
-        let coherence_result = coherence::check_coherence(
-            &ctx.content,
-            &cleaned,
-            &ctx.labels,
-            coherence_cfg,
-        )?;
+    let (parent_hint, continuity_previous_id, coherence_score): (Option<String>, Option<String>, Option<f64>) =
+        if !coherence_cfg.enabled {
+            tracing::debug!("Coherence gate disabled, skipping coherence check");
+            (None, None, None)
+        } else if let Some(ctx) = pending.as_ref().filter(|p| !p.is_expired(ttl)) {
+            let coherence_result = coherence::check_coherence(
+                &ctx.content,
+                &cleaned,
+                &ctx.labels,
+                coherence_cfg,
+            )?;
 
-        let action = coherence::determine_action(
-            coherence_result.score,
-            coherence_cfg.child_threshold,
-            coherence_cfg.orphan_threshold,
-        );
+            let action = coherence::determine_action(
+                coherence_result.score,
+                coherence_cfg.child_threshold,
+                coherence_cfg.orphan_threshold,
+            );
 
-        match action {
-            CoherenceAction::Forget => {
-                tracing::debug!(
-                    score = coherence_result.score,
-                    "Coherence: Forget — content below orphan threshold, skipping"
-                );
-                return Ok(None);
+            match action {
+                CoherenceAction::Forget => {
+                    tracing::debug!(
+                        score = coherence_result.score,
+                        "Coherence: Forget — content below orphan threshold, skipping"
+                    );
+                    return Ok(None);
+                }
+                CoherenceAction::Child | CoherenceAction::Continue => {
+                    tracing::debug!(
+                        score = coherence_result.score,
+                        action = ?action,
+                        parent = %ctx.thread_id,
+                        "Coherence: linked to parent (continuity chain)"
+                    );
+                    (Some(ctx.thread_id.clone()), Some(ctx.thread_id.clone()), Some(coherence_result.score))
+                }
+                CoherenceAction::Orphan => {
+                    tracing::debug!(
+                        score = coherence_result.score,
+                        "Coherence: Orphan — new thread, new chain"
+                    );
+                    (None, None, None)
+                }
             }
-            CoherenceAction::Child | CoherenceAction::Continue => {
-                // Related to parent — pass parent_hint for Fork/Continue
-                tracing::debug!(
-                    score = coherence_result.score,
-                    action = ?action,
-                    parent = %ctx.thread_id,
-                    "Coherence: linked to parent"
-                );
-                Some(ctx.thread_id.clone())
-            }
-            CoherenceAction::Orphan => {
-                // Unrelated but substantial — new thread (no parent)
-                tracing::debug!(
-                    score = coherence_result.score,
-                    "Coherence: Orphan — creating new thread"
-                );
-                None
-            }
-        }
-    } else {
-        // No pending context — proceed as new thread
-        None
-    };
+        } else {
+            (None, None, None)
+        };
 
     // 5. Thread management (NewThread / Continue / Fork / Reactivate)
     tracing::info!(
@@ -276,6 +275,8 @@ pub fn process_capture(
         source_type,
         file_path,
         parent_hint.as_deref(),
+        continuity_previous_id.as_deref(),
+        coherence_score,
         thread_quota,
         guardian,
     )?;
@@ -295,6 +296,7 @@ pub fn process_capture(
             content: truncate_safe(&cleaned, 4000).to_string(),
             thread_id: tid.clone(),
             labels: labels.clone(),
+            coherence_score,
             timestamp: Instant::now(),
         });
         tracing::debug!(
@@ -433,8 +435,16 @@ fn try_changelog_shortcut(
         "Changelog shortcut: found existing thread for file"
     );
 
+    // Extract continuity_from from pending context (the previous thread in the chain)
+    let continuity_from = pending.as_ref()
+        .filter(|p| !p.is_expired(_guardian.extraction.pending_context_ttl_secs))
+        .map(|p| p.thread_id.clone());
+
     // add_changelog handles reactivation internally
-    let result = ThreadManager::add_changelog(conn, &target.id, file_path, source_type, content)?;
+    let result = ThreadManager::add_changelog(
+        conn, &target.id, file_path, source_type, content,
+        continuity_from.as_deref(),
+    )?;
 
     // Update PendingContext to preserve coherence chain
     if let Some(ref tid) = result {
@@ -445,6 +455,7 @@ fn try_changelog_shortcut(
             content: truncate_safe(content, 4000).to_string(),
             thread_id: tid.clone(),
             labels,
+            coherence_score: None,
             timestamp: Instant::now(),
         });
     }

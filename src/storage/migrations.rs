@@ -2,7 +2,7 @@ use crate::{AiError, AiResult};
 use rusqlite::Connection;
 
 /// Schema version actuelle
-pub const CURRENT_SCHEMA_VERSION: u32 = 7;
+pub const CURRENT_SCHEMA_VERSION: u32 = 8;
 
 /// Retourne la version de schema actuelle (0 si table absente)
 pub fn get_schema_version(conn: &Connection) -> AiResult<u32> {
@@ -197,6 +197,19 @@ pub fn migrate_agent_db(conn: &Connection) -> AiResult<()> {
             "ALTER TABLE threads ADD COLUMN has_truncated_origin BOOLEAN DEFAULT 0;"
         ).map_err(|e| AiError::Storage(format!("Agent DB V7 migration failed: {}", e)))?;
         set_schema_version(conn, 7)?;
+    }
+
+    // V8: Continuity Edge — thread-level chain + message waypoints
+    if version < 8 {
+        conn.execute_batch(
+            "ALTER TABLE threads ADD COLUMN continuity_parent_id TEXT;
+             ALTER TABLE threads ADD COLUMN subject_coherence REAL;
+             ALTER TABLE thread_messages ADD COLUMN continuity_from TEXT;
+             ALTER TABLE thread_messages ADD COLUMN continuity_to TEXT;
+             CREATE INDEX IF NOT EXISTS idx_threads_continuity
+                 ON threads(continuity_parent_id) WHERE continuity_parent_id IS NOT NULL;"
+        ).map_err(|e| AiError::Storage(format!("Agent DB V8 migration failed: {}", e)))?;
+        set_schema_version(conn, 8)?;
     }
 
     Ok(())

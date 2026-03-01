@@ -71,6 +71,8 @@ fn thread_from_row(row: &Row) -> rusqlite::Result<Thread> {
             _ => ExtractionMode::Extract,
         },
         has_truncated_origin: row.get::<_, i32>("has_truncated_origin").unwrap_or(0) != 0,
+        continuity_parent_id: row.get("continuity_parent_id").unwrap_or(None),
+        subject_coherence: row.get("subject_coherence").unwrap_or(None),
     })
 }
 
@@ -88,6 +90,8 @@ fn message_from_row(row: &Row) -> rusqlite::Result<ThreadMessage> {
             serde_json::from_str(&s).unwrap_or(serde_json::Value::Object(Default::default()))
         },
         is_truncated: row.get("is_truncated").unwrap_or(false),
+        continuity_from: row.get("continuity_from").unwrap_or(None),
+        continuity_to: row.get("continuity_to").unwrap_or(None),
     })
 }
 
@@ -108,14 +112,16 @@ impl ThreadStorage {
                 activation_count, split_locked, split_locked_until,
                 topics, tags, labels, concepts, drift_history,
                 work_context, ratings, injection_stats, embedding,
-                created_at, last_active, extraction_mode, has_truncated_origin
+                created_at, last_active, extraction_mode, has_truncated_origin,
+                continuity_parent_id, subject_coherence
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11,
                 ?12, ?13, ?14,
                 ?15, ?16, ?17, ?18, ?19,
                 ?20, ?21, ?22, ?23,
-                ?24, ?25, ?26, ?27
+                ?24, ?25, ?26, ?27,
+                ?28, ?29
             )",
             params![
                 thread.id,
@@ -156,6 +162,8 @@ impl ThreadStorage {
                     ExtractionMode::Extract => "extract",
                 },
                 thread.has_truncated_origin as i32,
+                thread.continuity_parent_id,
+                thread.subject_coherence,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Insert thread failed: {}", e)))?;
@@ -194,7 +202,8 @@ impl ThreadStorage {
                 drift_history = ?19,
                 work_context = ?20, ratings = ?21, injection_stats = ?22,
                 embedding = ?23, last_active = ?24, extraction_mode = ?25,
-                has_truncated_origin = ?26
+                has_truncated_origin = ?26,
+                continuity_parent_id = ?27, subject_coherence = ?28
             WHERE id = ?1",
             params![
                 thread.id,
@@ -234,6 +243,8 @@ impl ThreadStorage {
                     ExtractionMode::Extract => "extract",
                 },
                 thread.has_truncated_origin as i32,
+                thread.continuity_parent_id,
+                thread.subject_coherence,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Update thread failed: {}", e)))?;
@@ -602,8 +613,8 @@ impl ThreadStorage {
             .map_err(|e| AiError::Storage(format!("Begin transaction failed: {}", e)))?;
 
         tx.execute(
-            "INSERT INTO thread_messages (id, thread_id, content, source, source_type, timestamp, metadata, is_truncated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO thread_messages (id, thread_id, content, source, source_type, timestamp, metadata, is_truncated, continuity_from, continuity_to)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 msg.msg_id,
                 msg.thread_id,
@@ -613,6 +624,8 @@ impl ThreadStorage {
                 time_utils::to_sqlite(&msg.timestamp),
                 serde_json::to_string(&msg.metadata).unwrap_or_else(|_| "{}".into()),
                 msg.is_truncated,
+                msg.continuity_from,
+                msg.continuity_to,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Insert message failed: {}", e)))?;
@@ -655,6 +668,52 @@ impl ThreadStorage {
         )
         .map_err(|e| AiError::Storage(format!("Delete messages failed: {}", e)))?;
         Ok(())
+    }
+
+    // ── Continuity ──
+
+    /// Backfill continuity_to on the last message of a thread.
+    pub fn update_last_message_continuity_to(
+        conn: &Connection,
+        thread_id: &str,
+        continuity_to: &str,
+    ) -> AiResult<()> {
+        conn.execute(
+            "UPDATE thread_messages SET continuity_to = ?1
+             WHERE thread_id = ?2 AND id = (
+                 SELECT id FROM thread_messages WHERE thread_id = ?2
+                 ORDER BY timestamp DESC LIMIT 1
+             )",
+            params![continuity_to, thread_id],
+        )
+        .map_err(|e| AiError::Storage(format!("Backfill continuity_to failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Get all continuity edges (child_id, parent_id, coherence_score).
+    pub fn get_continuity_edges(
+        conn: &Connection,
+    ) -> AiResult<Vec<(String, String, Option<f64>)>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, continuity_parent_id, subject_coherence
+                 FROM threads WHERE continuity_parent_id IS NOT NULL",
+            )
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+
+        let edges = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                ))
+            })
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(edges)
     }
 
     // ── Batch operations ──

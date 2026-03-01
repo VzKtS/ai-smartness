@@ -46,6 +46,8 @@ pub fn handle_focus(
             embedding: None,
             extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
             has_truncated_origin: false,
+            continuity_parent_id: None,
+            subject_coherence: None,
             created_at: now,
             last_active: now,
         };
@@ -115,6 +117,8 @@ pub fn handle_pin(
         embedding: None,
         extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
         has_truncated_origin: false,
+        continuity_parent_id: None,
+        subject_coherence: None,
         created_at: now,
         last_active: now,
     };
@@ -129,6 +133,8 @@ pub fn handle_pin(
         timestamp: now,
         metadata: serde_json::json!({}),
         is_truncated: false,
+        continuity_from: None,
+        continuity_to: None,
     };
     ThreadStorage::add_message(ctx.agent_conn, &msg)?;
 

@@ -2,6 +2,7 @@ pub mod capture;
 pub mod health;
 pub mod inject;
 pub mod pretool;
+pub mod reminder;
 pub mod response;
 pub mod setup;
 pub mod virtual_paths;

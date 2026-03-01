@@ -411,7 +411,7 @@ fn load_threads_by_ids(
          created_at, last_active, activation_count, split_locked, split_locked_until, \
          origin_type, drift_history, parent_id, child_ids, summary, topics, tags, labels, \
          concepts, embedding, relevance_score, ratings, work_context, injection_stats, \
-         has_truncated_origin \
+         has_truncated_origin, continuity_parent_id, subject_coherence \
          FROM threads WHERE id IN ({})",
         placeholders
     );
@@ -589,6 +589,8 @@ fn row_to_thread(row: &rusqlite::Row) -> rusqlite::Result<Thread> {
         injection_stats,
         extraction_mode: crate::processing::extractor::ExtractionMode::default(),
         has_truncated_origin: row.get::<_, i32>(25).unwrap_or(0) != 0,
+        continuity_parent_id: row.get(26).unwrap_or(None),
+        subject_coherence: row.get(27).unwrap_or(None),
     })
 }
 
@@ -744,7 +746,7 @@ fn search_threads_by_text(
          created_at, last_active, activation_count, split_locked, split_locked_until, \
          origin_type, drift_history, parent_id, child_ids, summary, topics, tags, labels, \
          concepts, embedding, relevance_score, ratings, work_context, injection_stats, \
-         has_truncated_origin \
+         has_truncated_origin, continuity_parent_id, subject_coherence \
          FROM threads WHERE ({}) ORDER BY last_active DESC LIMIT {}",
         conditions.join(" OR "),
         limit

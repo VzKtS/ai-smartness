@@ -59,6 +59,8 @@ pub fn handle_thread_create(
         embedding: None,
         extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
         has_truncated_origin: false,
+        continuity_parent_id: None,
+        subject_coherence: None,
         created_at: now,
         last_active: now,
     };
@@ -73,6 +75,8 @@ pub fn handle_thread_create(
         timestamp: now,
         metadata: serde_json::json!({}),
         is_truncated: false,
+        continuity_from: None,
+        continuity_to: None,
     };
     ThreadStorage::add_message(ctx.agent_conn, &msg)?;
 
@@ -657,6 +661,9 @@ mod tests {
                 injection_stats: None,
                 embedding: None,
                 extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
+                has_truncated_origin: false,
+                continuity_parent_id: None,
+                subject_coherence: None,
                 created_at: chrono::Utc::now(),
                 last_active: chrono::Utc::now(),
             };
@@ -743,6 +750,9 @@ mod tests {
             injection_stats: None,
             embedding: None,
             extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
+            has_truncated_origin: false,
+            continuity_parent_id: None,
+            subject_coherence: None,
             created_at: chrono::Utc::now(),
             last_active: chrono::Utc::now(),
         };
@@ -796,6 +806,9 @@ mod tests {
             injection_stats: None,
             embedding: None,
             extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
+            has_truncated_origin: false,
+            continuity_parent_id: None,
+            subject_coherence: None,
             created_at: chrono::Utc::now(),
             last_active: chrono::Utc::now(),
         };
@@ -849,6 +862,9 @@ mod tests {
             injection_stats: None,
             embedding: None,
             extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
+            has_truncated_origin: false,
+            continuity_parent_id: None,
+            subject_coherence: None,
             created_at: chrono::Utc::now(),
             last_active: chrono::Utc::now(),
         };

@@ -85,6 +85,8 @@ impl ThreadManager {
         source_type: &str,
         file_path: Option<&str>,
         parent_hint: Option<&str>,
+        continuity_previous_id: Option<&str>,
+        coherence_score: Option<f64>,
         thread_quota: usize,
         guardian: &GuardianConfig,
     ) -> AiResult<Option<String>> {
@@ -95,6 +97,7 @@ impl ThreadManager {
             topics = ?extraction.subjects,
             content_len = content.len(),
             thread_quota = thread_quota,
+            continuity_prev = ?continuity_previous_id,
             "ThreadManager: processing input"
         );
 
@@ -103,7 +106,14 @@ impl ThreadManager {
         let embeddings = EmbeddingManager::global();
         let embed_mode = &guardian.thread_matching.embedding.mode;
 
-        let action = if let Some(parent_id) = parent_hint {
+        // Force NewThread for prompt/response — these NEVER merge into existing threads.
+        // Continuity is tracked via continuity_parent_id instead of thread merging.
+        let force_new_thread = matches!(source_type, "prompt" | "response");
+
+        let action = if force_new_thread {
+            tracing::info!(source_type = %source_type, "Force NewThread for prompt/response");
+            ThreadAction::NewThread
+        } else if let Some(parent_id) = parent_hint {
             // Dual gate: coherent (already validated by processor) + similar?
             // If embedding similarity to parent is high enough, CONTINUE in parent.
             // If not similar despite coherence, search for a better match.
@@ -142,7 +152,12 @@ impl ThreadManager {
                 Self::ensure_capacity(conn, thread_quota, embeddings, &guardian.thread_matching)?;
                 let id = Self::create_thread(
                     conn, extraction, content, source_type, None, file_path, embed_mode,
+                    continuity_previous_id, coherence_score,
                 )?;
+                // Backfill continuity_to on previous thread's last message
+                if let Some(prev_id) = continuity_previous_id {
+                    let _ = ThreadStorage::update_last_message_continuity_to(conn, prev_id, &id);
+                }
                 // Thinkbridges: immediate concept connections
                 let normalized = normalize_concepts(&extraction.concepts);
                 let thinkbridges = Self::create_thinkbridges(conn, &id, &normalized, &guardian.gossip)?;
@@ -182,7 +197,13 @@ impl ThreadManager {
                     Some(&parent_id),
                     file_path,
                     embed_mode,
+                    continuity_previous_id,
+                    coherence_score,
                 )?;
+                // Backfill continuity_to on previous thread's last message
+                if let Some(prev_id) = continuity_previous_id {
+                    let _ = ThreadStorage::update_last_message_continuity_to(conn, prev_id, &id);
+                }
                 // Thinkbridges: immediate concept connections
                 let normalized = normalize_concepts(&extraction.concepts);
                 let thinkbridges = Self::create_thinkbridges(conn, &id, &normalized, &guardian.gossip)?;
@@ -194,6 +215,15 @@ impl ThreadManager {
             ThreadAction::Reactivate { thread_id } => {
                 tracing::info!(action = "Reactivate", thread_id = %thread_id, "Action decided");
                 Self::reactivate_thread(conn, &thread_id)?;
+                // Set continuity link on reactivated thread
+                if let Some(prev_id) = continuity_previous_id {
+                    if let Some(mut t) = ThreadStorage::get(conn, &thread_id)? {
+                        t.continuity_parent_id = Some(prev_id.to_string());
+                        t.subject_coherence = coherence_score;
+                        ThreadStorage::update(conn, &t)?;
+                    }
+                    let _ = ThreadStorage::update_last_message_continuity_to(conn, prev_id, &thread_id);
+                }
                 Self::update_thread(conn, &thread_id, extraction, content, source_type, file_path, embed_mode)?;
                 Ok(Some(thread_id))
             }
@@ -209,6 +239,8 @@ impl ThreadManager {
         parent_id: Option<&str>,
         file_path: Option<&str>,
         embed_mode: &EmbeddingMode,
+        continuity_previous_id: Option<&str>,
+        coherence_score: Option<f64>,
     ) -> AiResult<String> {
         let thread_id = id_gen::thread_id();
         let now = time_utils::now();
@@ -270,11 +302,20 @@ impl ThreadManager {
             injection_stats: None,
             extraction_mode: extraction.extraction_mode.clone(),
             has_truncated_origin: false,
+            continuity_parent_id: continuity_previous_id.map(|s| s.to_string()),
+            subject_coherence: coherence_score,
         };
 
         ThreadStorage::insert(conn, &thread)?;
 
-        tracing::info!(thread_id = %thread_id, title = %extraction.title, topics = ?extraction.subjects, "Thread created");
+        tracing::info!(
+            thread_id = %thread_id,
+            title = %extraction.title,
+            topics = ?extraction.subjects,
+            continuity_parent = ?continuity_previous_id,
+            subject_coherence = ?coherence_score,
+            "Thread created"
+        );
 
         // Add initial message
         // For Summary mode: store file_path reference (summary already in thread.summary)
@@ -309,6 +350,8 @@ impl ThreadManager {
             timestamp: now,
             metadata: serde_json::Value::Object(Default::default()),
             is_truncated: truncated,
+            continuity_from: None,
+            continuity_to: None,
         };
         ThreadStorage::add_message(conn, &msg)?;
 
@@ -391,6 +434,8 @@ impl ThreadManager {
             timestamp: time_utils::now(),
             metadata: serde_json::Value::Object(Default::default()),
             is_truncated: truncated,
+            continuity_from: None,
+            continuity_to: None,
         };
         ThreadStorage::add_message(conn, &msg)?;
 
@@ -682,6 +727,7 @@ impl ThreadManager {
         file_path: &str,
         source_type: &str,
         content: &str,
+        continuity_from: Option<&str>,
     ) -> AiResult<Option<String>> {
         let mut thread = match ThreadStorage::get(conn, thread_id)? {
             Some(t) => t,
@@ -770,6 +816,8 @@ impl ThreadManager {
             timestamp: time_utils::now(),
             metadata,
             is_truncated: false,
+            continuity_from: continuity_from.map(|s| s.to_string()),
+            continuity_to: None,
         };
         ThreadStorage::add_message(conn, &msg)?;
 
@@ -931,7 +979,7 @@ mod tests {
         ThreadStorage::insert(&conn, &thread).unwrap();
 
         let result = ThreadManager::add_changelog(
-            &conn, "cl-active", "src/config.rs", "Read", "fn main() {}\n",
+            &conn, "cl-active", "src/config.rs", "Read", "fn main() {}\n", None,
         ).unwrap();
 
         assert_eq!(result, Some("cl-active".to_string()));
@@ -962,7 +1010,7 @@ mod tests {
         ThreadStorage::insert(&conn, &thread).unwrap();
 
         let result = ThreadManager::add_changelog(
-            &conn, "cl-suspended", "src/lib.rs", "Write", "pub mod config;\n",
+            &conn, "cl-suspended", "src/lib.rs", "Write", "pub mod config;\n", None,
         ).unwrap();
 
         assert_eq!(result, Some("cl-suspended".to_string()));
@@ -985,7 +1033,7 @@ mod tests {
         ThreadStorage::insert(&conn, &thread).unwrap();
 
         let result = ThreadManager::add_changelog(
-            &conn, "cl-archived", "src/old.rs", "Read", "// old code\n",
+            &conn, "cl-archived", "src/old.rs", "Read", "// old code\n", None,
         ).unwrap();
 
         assert_eq!(result, Some("cl-archived".to_string()));
@@ -1007,12 +1055,12 @@ mod tests {
         let content = "fn stable() { 42 }\n";
 
         // First read — always "changed" (no previous hash)
-        ThreadManager::add_changelog(&conn, "cl-unchanged", "src/stable.rs", "Read", content).unwrap();
+        ThreadManager::add_changelog(&conn, "cl-unchanged", "src/stable.rs", "Read", content, None).unwrap();
         let msgs = ThreadStorage::get_messages(&conn, "cl-unchanged").unwrap();
         assert_eq!(msgs[0].metadata["changed"], true);
 
         // Second read with same content — skip total (no new message)
-        let result = ThreadManager::add_changelog(&conn, "cl-unchanged", "src/stable.rs", "Read", content).unwrap();
+        let result = ThreadManager::add_changelog(&conn, "cl-unchanged", "src/stable.rs", "Read", content, None).unwrap();
         assert_eq!(result, Some("cl-unchanged".to_string())); // still returns thread_id
         let msgs = ThreadStorage::get_messages(&conn, "cl-unchanged").unwrap();
         assert_eq!(msgs.len(), 1); // no second message — content unchanged
@@ -1029,10 +1077,10 @@ mod tests {
         ThreadStorage::insert(&conn, &thread).unwrap();
 
         // First write
-        ThreadManager::add_changelog(&conn, "cl-changed", "src/evolve.rs", "Write", "v1\n").unwrap();
+        ThreadManager::add_changelog(&conn, "cl-changed", "src/evolve.rs", "Write", "v1\n", None).unwrap();
 
         // Second write with different content
-        ThreadManager::add_changelog(&conn, "cl-changed", "src/evolve.rs", "Write", "v2\n").unwrap();
+        ThreadManager::add_changelog(&conn, "cl-changed", "src/evolve.rs", "Write", "v2\n", None).unwrap();
         let msgs = ThreadStorage::get_messages(&conn, "cl-changed").unwrap();
         assert_eq!(msgs[1].metadata["changed"], true);
         assert!(msgs[1].content.contains("[changelog] Write"));
@@ -1042,7 +1090,7 @@ mod tests {
     fn test_add_changelog_nonexistent_thread() {
         let conn = setup_agent_db();
         let result = ThreadManager::add_changelog(
-            &conn, "nonexistent", "src/main.rs", "Read", "content",
+            &conn, "nonexistent", "src/main.rs", "Read", "content", None,
         ).unwrap();
         assert_eq!(result, None);
     }
@@ -1058,7 +1106,7 @@ mod tests {
         ThreadStorage::insert(&conn, &thread).unwrap();
 
         // Edit action should be added to work_context.actions
-        ThreadManager::add_changelog(&conn, "cl-actions", "src/main.rs", "Edit", "diff here").unwrap();
+        ThreadManager::add_changelog(&conn, "cl-actions", "src/main.rs", "Edit", "diff here", None).unwrap();
 
         let updated = ThreadStorage::get(&conn, "cl-actions").unwrap().unwrap();
         let wc = updated.work_context.unwrap();

@@ -1939,6 +1939,7 @@ let graphSelectedNode = null;
 let graphAnimFrame = null;
 let graphRawThreads = [];
 let graphRawBridges = [];
+let graphRawContinuity = [];
 let graphSearchQuery = '';
 let graphHoveredEdge = null;
 
@@ -2035,21 +2036,25 @@ async function loadGraph() {
     if (!aid) return;
 
     try {
-        const [threads, bridges] = await Promise.all([
+        const [threads, bridges, continuity] = await Promise.all([
             invoke('get_threads', { projectHash, agentId: aid, statusFilter: 'all' }),
             invoke('get_bridges', { projectHash, agentId: aid }),
+            invoke('get_continuity_edges', { projectHash, agentId: aid }),
         ]);
 
         const liveBridges = bridges.filter(b => b.weight > 0.05);
         graphRawThreads = threads;
         graphRawBridges = liveBridges;
+        graphRawContinuity = continuity || [];
         buildGraph(threads, liveBridges);
         forceLayout(150);
         centerGraph();
         drawGraph();
         renderGraphLegend();
+        const contCount = graphEdges.filter(e => e.edge_type === 'continuity').length;
+        const bridgeCount = graphEdges.filter(e => e.edge_type !== 'continuity').length;
         document.getElementById('graph-stats').textContent =
-            `${graphNodes.length} threads, ${graphEdges.length} bridges`;
+            `${graphNodes.length} threads, ${bridgeCount} bridges, ${contCount} continuity`;
     } catch (e) {
         console.error('Graph load error:', e);
         document.getElementById('graph-stats').textContent = 'Error: ' + e;
@@ -2059,7 +2064,7 @@ async function loadGraph() {
 function buildGraph(threads, bridges) {
     const idSet = new Set(threads.map(t => t.id));
 
-    // Build edges with enriched fields
+    // Build bridge edges with enriched fields
     graphEdges = bridges
         .filter(b => idSet.has(b.source_id) && idSet.has(b.target_id))
         .map(b => ({
@@ -2072,7 +2077,29 @@ function buildGraph(threads, bridges) {
             shared_concepts: b.shared_concepts || [],
             use_count: b.use_count || 0,
             bridge_status: (b.status || 'Active').toLowerCase(),
+            edge_type: 'bridge',
         }));
+
+    // Build continuity edges (directional reasoning chain)
+    const fContinuity = document.getElementById('graph-f-continuity')?.checked ?? true;
+    if (fContinuity) {
+        const contEdges = graphRawContinuity
+            .filter(c => idSet.has(c.source_id) && idSet.has(c.target_id))
+            .map(c => ({
+                source: c.source_id,
+                target: c.target_id,
+                weight: 0.5,
+                relation: 'Continuity',
+                reason: '',
+                confidence: c.subject_coherence || 0,
+                shared_concepts: [],
+                use_count: 0,
+                bridge_status: 'active',
+                edge_type: 'continuity',
+                subject_coherence: c.subject_coherence,
+            }));
+        graphEdges = graphEdges.concat(contEdges);
+    }
 
     // F4: Multi-criteria filtering
     const fActive = document.getElementById('graph-f-active')?.checked ?? true;
@@ -2133,8 +2160,10 @@ function applyGraphFilters() {
     centerGraph();
     scheduleGraphDraw();
     renderGraphLegend();
+    const contCount = graphEdges.filter(e => e.edge_type === 'continuity').length;
+    const bridgeCount = graphEdges.filter(e => e.edge_type !== 'continuity').length;
     document.getElementById('graph-stats').textContent =
-        `${graphNodes.length} threads, ${graphEdges.length} bridges`;
+        `${graphNodes.length} threads, ${bridgeCount} bridges, ${contCount} continuity`;
 }
 
 // Barnes-Hut quadtree for O(n log n) repulsion force calculation.
@@ -2374,16 +2403,54 @@ function drawGraph() {
             (e.source === graphSelectedNode.id || e.target === graphSelectedNode.id);
         const isEdgeHover = graphHoveredEdge === e;
 
-        ctx.beginPath();
-        ctx.moveTo(ax, ay);
-        ctx.lineTo(bx, by);
-        ctx.strokeStyle = (isHighlight || isEdgeHover)
-            ? GRAPH_COLORS.edge_highlight
-            : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default);
-        ctx.lineWidth = (isHighlight || isEdgeHover) ? 2.5 : Math.max(0.5, Math.sqrt(e.weight) * 3);
-        ctx.globalAlpha = (isHighlight || isEdgeHover) ? 1 : 0.55 + Math.sqrt(e.weight) * 0.4;
-        ctx.stroke();
-        ctx.globalAlpha = 1;
+        if (e.edge_type === 'continuity') {
+            // Continuity edge: dashed white line, offset ~3px perpendicular, arrowhead
+            const dx = bx - ax, dy = by - ay;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (len < 1) continue;
+            // Perpendicular offset to avoid superposition with bridge edges
+            const ox = (-dy / len) * 3, oy = (dx / len) * 3;
+            const x1 = ax + ox, y1 = ay + oy;
+            const x2 = bx + ox, y2 = by + oy;
+
+            ctx.beginPath();
+            ctx.setLineDash([4, 3]);
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.strokeStyle = (isHighlight || isEdgeHover)
+                ? GRAPH_COLORS.edge_highlight
+                : 'rgba(255,255,255,0.6)';
+            ctx.lineWidth = (isHighlight || isEdgeHover) ? 2 : 1;
+            ctx.globalAlpha = (isHighlight || isEdgeHover) ? 1 : 0.7;
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Arrowhead pointing toward target
+            const arrowSize = 6;
+            const ux = dx / len, uy = dy / len;
+            const tipX = x2 - ux * (b.radius * scale + 2);
+            const tipY = y2 - uy * (b.radius * scale + 2);
+            ctx.beginPath();
+            ctx.moveTo(tipX, tipY);
+            ctx.lineTo(tipX - ux * arrowSize + uy * arrowSize * 0.5, tipY - uy * arrowSize - ux * arrowSize * 0.5);
+            ctx.lineTo(tipX - ux * arrowSize - uy * arrowSize * 0.5, tipY - uy * arrowSize + ux * arrowSize * 0.5);
+            ctx.closePath();
+            ctx.fillStyle = (isHighlight || isEdgeHover) ? GRAPH_COLORS.edge_highlight : 'rgba(255,255,255,0.6)';
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        } else {
+            // Bridge edge: solid colored line
+            ctx.beginPath();
+            ctx.moveTo(ax, ay);
+            ctx.lineTo(bx, by);
+            ctx.strokeStyle = (isHighlight || isEdgeHover)
+                ? GRAPH_COLORS.edge_highlight
+                : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default);
+            ctx.lineWidth = (isHighlight || isEdgeHover) ? 2.5 : Math.max(0.5, Math.sqrt(e.weight) * 3);
+            ctx.globalAlpha = (isHighlight || isEdgeHover) ? 1 : 0.55 + Math.sqrt(e.weight) * 0.4;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        }
 
         if (showLabels || showWeights) {
             const mx = (ax + bx) / 2, my = (ay + by) / 2;
@@ -2392,7 +2459,7 @@ function drawGraph() {
             let edgeLabel = '';
             if (showLabels) edgeLabel += e.relation;
             if (showLabels && showWeights) edgeLabel += ' ';
-            if (showWeights) edgeLabel += e.weight.toFixed(2);
+            if (showWeights) edgeLabel += (e.edge_type === 'continuity' ? (e.subject_coherence || 0).toFixed(2) : e.weight.toFixed(2));
             ctx.fillText(edgeLabel, mx + 2, my - 2);
         }
     }
@@ -2727,6 +2794,7 @@ document.getElementById('graph-f-active')?.addEventListener('change', applyGraph
 document.getElementById('graph-f-suspended')?.addEventListener('change', applyGraphFilters);
 document.getElementById('graph-f-archived')?.addEventListener('change', applyGraphFilters);
 document.getElementById('graph-f-bridges')?.addEventListener('change', applyGraphFilters);
+document.getElementById('graph-f-continuity')?.addEventListener('change', applyGraphFilters);
 document.getElementById('graph-f-imp')?.addEventListener('input', (e) => {
     document.getElementById('graph-f-imp-label').textContent = (parseInt(e.target.value) / 100).toFixed(2);
     applyGraphFilters();
@@ -2755,11 +2823,16 @@ function renderGraphLegend() {
     html += `<span style="color:${GRAPH_COLORS.active}">●</span> Active &nbsp; `;
     html += `<span style="color:${GRAPH_COLORS.suspended}">●</span> Suspended &nbsp; `;
     html += `<span style="color:${GRAPH_COLORS.archived}">●</span> Archived<br>`;
-    html += `<span style="color:${GRAPH_COLORS.text_dim}">— Edges —</span><br>`;
-    const activeRelations = new Set(graphEdges.map(e => e.relation));
+    html += `<span style="color:${GRAPH_COLORS.text_dim}">— Bridges —</span><br>`;
+    const activeRelations = new Set(graphEdges.filter(e => e.edge_type !== 'continuity').map(e => e.relation));
     for (const [rel, color] of Object.entries(RELATION_COLORS)) {
         if (!activeRelations.has(rel)) continue;
         html += `<span style="color:${color}">━</span> ${rel} &nbsp; `;
+    }
+    const hasContinuity = graphEdges.some(e => e.edge_type === 'continuity');
+    if (hasContinuity) {
+        html += `<br><span style="color:${GRAPH_COLORS.text_dim}">— Continuity —</span><br>`;
+        html += `<span style="color:rgba(255,255,255,0.6)">- - &rarr;</span> Reasoning chain &nbsp; `;
     }
     html += `<br><span style="color:${GRAPH_COLORS.text_dim};font-size:10px">Node size ∝ importance</span>`;
     legend.innerHTML = html;

@@ -1,9 +1,12 @@
 //! Injection hook — UserPromptSubmit handler.
 //!
-//! Pass-through with beat tracking: records session_id, prompt_count,
-//! and context tokens from Claude Code transcript JSONL.
+//! Beat tracking + reminder assembly: records session_id, prompt_count,
+//! context tokens from transcript JSONL, then prepends the `<ai-smartness>`
+//! core reminder block to the user message.
 
 use ai_smartness::storage::{beat::BeatState, path_utils, transcript};
+
+use super::reminder;
 
 /// Run the inject hook.
 /// `input` is the raw stdin already read by hook/mod.rs.
@@ -22,7 +25,11 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
 
     beat.save(&agent_data);
 
-    // Pass-through: output the user message unchanged
+    // Build and prepend reminder block
+    let reminder_block = reminder::build(project_hash, agent_id, session_id, &beat);
+    print!("{}", reminder_block);
+
+    // Output the user message
     if message.trim().is_empty() {
         print!("{}", input);
     } else {

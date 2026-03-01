@@ -463,6 +463,8 @@ pub fn get_threads(
             "origin_type": format!("{:?}", t.origin_type),
             "injection_stats": injection_stats,
             "message_count": t.activation_count,
+            "continuity_parent_id": t.continuity_parent_id,
+            "subject_coherence": t.subject_coherence,
             "created_at": t.created_at.to_rfc3339(),
             "last_active": t.last_active.to_rfc3339(),
         })
@@ -613,6 +615,29 @@ pub fn get_bridges(
             "shared_concepts": b.shared_concepts,
             "use_count": b.use_count,
             "reason": b.reason,
+        })
+    }).collect();
+
+    Ok(serde_json::json!(result))
+}
+
+#[tauri::command]
+pub fn get_continuity_edges(
+    project_hash: String,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
+    tracing::info!(project = %&project_hash[..8.min(project_hash.len())], agent = %agent_id, "GUI: get_continuity_edges");
+    let agent_db = path_utils::agent_db_path(&project_hash, &agent_id);
+    let conn = open_connection(&agent_db, ConnectionRole::Cli)
+        .map_err(|e| e.to_string())?;
+
+    let edges = ThreadStorage::get_continuity_edges(&conn)
+        .map_err(|e| e.to_string())?;
+    let result: Vec<serde_json::Value> = edges.iter().map(|(child_id, parent_id, coherence)| {
+        serde_json::json!({
+            "source_id": child_id,
+            "target_id": parent_id,
+            "subject_coherence": coherence,
         })
     }).collect();
 

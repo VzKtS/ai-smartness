@@ -215,6 +215,12 @@ pub struct Thread {
     /// True if any message was created from truncated input (sticky flag).
     #[serde(default)]
     pub has_truncated_origin: bool,
+    /// Previous thread ID in the logical reasoning chain (continuity edge).
+    #[serde(default)]
+    pub continuity_parent_id: Option<String>,
+    /// Subject coherence with continuity parent: 0.0 (new topic) to 1.0 (same topic).
+    #[serde(default)]
+    pub subject_coherence: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,4 +235,10 @@ pub struct ThreadMessage {
     /// True if the original content was truncated (> 2000 chars).
     #[serde(default)]
     pub is_truncated: bool,
+    /// Thread ID entering this changelog waypoint (continuity chain).
+    #[serde(default)]
+    pub continuity_from: Option<String>,
+    /// Thread ID leaving this changelog waypoint (backfilled).
+    #[serde(default)]
+    pub continuity_to: Option<String>,
 }

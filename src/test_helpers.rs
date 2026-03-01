@@ -46,6 +46,8 @@ impl ThreadBuilder {
                 injection_stats: Some(InjectionStats::default()),
                 extraction_mode: ExtractionMode::default(),
                 has_truncated_origin: false,
+                continuity_parent_id: None,
+                subject_coherence: None,
             },
         }
     }
@@ -236,6 +238,8 @@ impl ThreadMessageBuilder {
                 timestamp: Utc::now(),
                 metadata: serde_json::json!({}),
                 is_truncated: false,
+                continuity_from: None,
+                continuity_to: None,
             },
         }
     }

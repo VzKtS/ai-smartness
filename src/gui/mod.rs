@@ -28,6 +28,7 @@ pub fn launch() {
                 commands::list_all_labels,
                 commands::list_all_topics,
                 commands::get_bridges,
+                commands::get_continuity_edges,
                 commands::list_projects,
                 commands::add_project,
                 commands::update_project,
