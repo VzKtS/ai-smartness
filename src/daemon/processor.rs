@@ -145,10 +145,10 @@ pub fn process_capture(
             _ => ExtractionSource::Prompt,
         };
 
-        // Phase B: Gate LLM relevance for short prompts (51-150 chars)
-        if source_type == "prompt" {
+        // Phase B: Gate LLM relevance for short prompts (configurable, default OFF)
+        if source_type == "prompt" && guardian.extraction.enable_prompt_relevance_gate {
             let char_count = cleaned.chars().count();
-            if char_count <= ai_smartness::constants::PROMPT_RELEVANCE_GATE_MAX {
+            if char_count <= guardian.extraction.prompt_relevance_gate_max_chars {
                 match check_prompt_relevance(&cleaned, agent_context, guardian) {
                     Ok(true) => {
                         tracing::info!(chars = char_count, "Short prompt judged RELEVANT by gate LLM");
@@ -212,7 +212,11 @@ pub fn process_capture(
 
     // 4. Coherence gate — determine relationship with pending context
     let coherence_cfg = &guardian.coherence;
-    let parent_hint = if let Some(ctx) = pending.as_ref().filter(|p| !p.is_expired(ttl)) {
+    let parent_hint = if !coherence_cfg.enabled {
+        // Coherence gate disabled — proceed without parent linking
+        tracing::debug!("Coherence gate disabled, skipping coherence check");
+        None
+    } else if let Some(ctx) = pending.as_ref().filter(|p| !p.is_expired(ttl)) {
         // Pending context exists — run coherence check
         let coherence_result = coherence::check_coherence(
             &ctx.content,

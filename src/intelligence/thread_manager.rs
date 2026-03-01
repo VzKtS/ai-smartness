@@ -98,9 +98,7 @@ impl ThreadManager {
             "ThreadManager: processing input"
         );
 
-        if extraction.confidence == 0.0 {
-            return Ok(None);
-        }
+        // confidence == 0.0 gate is centralized in processor.rs (stage 3)
 
         let embeddings = EmbeddingManager::global();
         let embed_mode = &guardian.thread_matching.embedding.mode;

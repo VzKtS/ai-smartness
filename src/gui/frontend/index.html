@@ -382,11 +382,15 @@
                     <h3 class="section-toggle" data-section="advanced-llm">Advanced</h3>
                     <div id="section-advanced-llm" class="section-body">
                         <div class="form-grid">
-                            <label title="Maximum characters of tool output sent to extraction LLM. Default: 3000.">Extraction Max Chars <input type="number" data-path="extraction.max_content_chars" min="100"></label>
-                            <label title="Minimum content length to attempt capture. Default: 80.">Min Capture Length <input type="number" data-path="extraction.min_capture_length" min="0"></label>
+                            <label title="Maximum characters of content sent to extraction LLM. Default: 15000.">Extraction Max Chars <input type="number" data-path="extraction.max_content_chars" min="100"></label>
+                            <label title="Maximum characters of tool output sent to extraction LLM. Default: 3000. Limited by LLM VRAM.">Tool Max Chars <input type="number" data-path="extraction.max_tool_content_chars" min="500" max="8000" step="500"></label>
+                            <label title="Minimum content length to attempt capture. Default: 20.">Min Capture Length <input type="number" data-path="extraction.min_capture_length" min="0"></label>
                             <label title="Detect skip markers in tool output. Default: on.">Skip Signal <input type="checkbox" data-path="extraction.enable_skip_signal"></label>
+                            <label title="Enable LLM relevance gate for short prompts. When on, prompts under the max chars threshold are judged by LLM before extraction. Default: off.">Prompt Relevance Gate <input type="checkbox" data-path="extraction.enable_prompt_relevance_gate"></label>
+                            <label title="Maximum prompt length (chars) for relevance gate. Only prompts shorter than this are gated. Default: 150.">Gate Max Chars <input type="number" data-path="extraction.prompt_relevance_gate_max_chars" min="20" max="500" step="10"></label>
+                            <label title="Enable coherence gate. When off, all captures proceed without coherence check. Default: on.">Coherence Gate <input type="checkbox" data-path="coherence.enabled" checked></label>
                             <label title="Coherence score threshold to continue an existing thread. Default: 0.6.">Coherence Child Threshold <input type="number" data-path="coherence.child_threshold" min="0" max="1" step="0.05"></label>
-                            <label title="Score below which content is dropped. Default: 0.4.">Coherence Orphan Threshold <input type="number" data-path="coherence.orphan_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Score below which content is dropped. Default: 0.2.">Coherence Orphan Threshold <input type="number" data-path="coherence.orphan_threshold" min="0" max="1" step="0.05"></label>
                             <label title="Default coherence score when LLM fails. Default: 0.5.">Coherence Fallback Score <input type="number" data-path="coherence.fallback_score" min="0" max="1" step="0.05"></label>
                             <label title="Similarity above this = auto-reactivate without LLM. Default: 0.35.">Reactivation Auto Threshold <input type="number" data-path="reactivation.auto_threshold" min="0" max="1" step="0.05"></label>
                             <label title="Below this = skip reactivation entirely. Default: 0.15.">Reactivation Borderline <input type="number" data-path="reactivation.borderline_threshold" min="0" max="1" step="0.05"></label>

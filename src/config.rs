@@ -186,10 +186,16 @@ pub struct ExtractionConfig {
     pub pending_context_ttl_secs: u64,      // default: 600
     /// Max content chars sent to LLM for tool summary pipeline (truncation).
     /// Kept low to avoid Vulkan VRAM exhaustion on prompt decode (GTX 1650).
-    /// 2000 chars ≈ 600 tokens content + ~300 tokens template = ~900 total.
-    /// Crash observed at 1520 tokens (4000 chars), safe zone < 500 tokens.
+    /// 3000 chars ≈ 750 tokens content + ~300 tokens template = ~1050 total.
+    /// Crash observed at 1520 tokens (4000 chars), safe at ≤1200 tokens.
     #[serde(default = "default_max_tool_content_chars")]
-    pub max_tool_content_chars: usize,      // default: 2000
+    pub max_tool_content_chars: usize,      // default: 3000
+    /// Enable prompt relevance gate (LLM judges short prompts).
+    #[serde(default)]
+    pub enable_prompt_relevance_gate: bool,  // default: false (OFF)
+    /// Max chars for prompt relevance gate (only prompts ≤ this are gated).
+    #[serde(default = "default_prompt_relevance_gate_max_chars")]
+    pub prompt_relevance_gate_max_chars: usize, // default: 150
 }
 
 impl Default for ExtractionConfig {
@@ -197,7 +203,7 @@ impl Default for ExtractionConfig {
         Self {
             llm: TaskLlmConfig { enabled: true },
             max_content_chars: 15000,
-            min_capture_length: 80,
+            min_capture_length: 20,
             topic_noise_words: vec![
                 "message", "contenu", "analyse", "fichier",
                 "response", "result", "data", "type", "value",
@@ -207,12 +213,15 @@ impl Default for ExtractionConfig {
             skip_tools: vec![],
             enable_skip_signal: true,
             pending_context_ttl_secs: default_pending_context_ttl(),
-            max_tool_content_chars: 2000,
+            max_tool_content_chars: 3000,
+            enable_prompt_relevance_gate: false,
+            prompt_relevance_gate_max_chars: 150,
         }
     }
 }
 
-fn default_max_tool_content_chars() -> usize { 2000 }
+fn default_max_tool_content_chars() -> usize { 3000 }
+fn default_prompt_relevance_gate_max_chars() -> usize { 150 }
 
 // ============================================================================
 // COHERENCE CONFIG
@@ -227,11 +236,14 @@ fn default_max_tool_content_chars() -> usize { 2000 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoherenceConfig {
     pub llm: TaskLlmConfig,
+    /// Enable coherence gate (if false, all captures proceed without coherence check).
+    #[serde(default = "default_true")]
+    pub enabled: bool,                       // default: true
     pub max_context_chars: usize,            // default: 1500
     /// Threshold for child decision (content related to parent).
     pub child_threshold: f64,                // default: 0.6
     /// Threshold for orphan decision (unrelated but substantial).
-    pub orphan_threshold: f64,               // default: 0.4
+    pub orphan_threshold: f64,               // default: 0.2
     /// Fallback score returned on LLM error.
     pub fallback_score: f64,                 // default: 0.5
 }
@@ -240,9 +252,10 @@ impl Default for CoherenceConfig {
     fn default() -> Self {
         Self {
             llm: TaskLlmConfig { enabled: true },
+            enabled: true,
             max_context_chars: 1500,
             child_threshold: 0.6,
-            orphan_threshold: 0.4,
+            orphan_threshold: 0.2,
             fallback_score: 0.5,
         }
     }
