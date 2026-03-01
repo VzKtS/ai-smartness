@@ -234,6 +234,7 @@ document.querySelectorAll('.tab:not(.tab-debug)').forEach(tab => {
         if (tab.dataset.tab === 'settings') loadSettings();
         if (tab.dataset.tab === 'agents') loadAgents();
         if (tab.dataset.tab === 'graph') loadGraph();
+        if (tab.dataset.tab !== 'graph') stopGraphAnimation();
     });
 });
 
@@ -1942,9 +1943,90 @@ let graphRawBridges = [];
 let graphRawContinuity = [];
 let graphSearchQuery = '';
 let graphHoveredEdge = null;
+let graphParticles = [];
+let graphAnimating = false;
+let graphLastAnimTime = 0;
+
+// Bezier control point for curved edges — offset perpendicular to midpoint
+function edgeControlPoint(ax, ay, bx, by, offset) {
+    const mx = (ax + bx) / 2, my = (ay + by) / 2;
+    const dx = bx - ax, dy = by - ay;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    return { x: mx + (-dy / len) * offset, y: my + (dx / len) * offset };
+}
+
+// Quadratic bezier point at parameter t
+function bezierPoint(ax, ay, cpx, cpy, bx, by, t) {
+    const u = 1 - t;
+    return {
+        x: u * u * ax + 2 * u * t * cpx + t * t * bx,
+        y: u * u * ay + 2 * u * t * cpy + t * t * by,
+    };
+}
+
+// Quadratic bezier tangent at parameter t (for arrowhead direction)
+function bezierTangent(ax, ay, cpx, cpy, bx, by, t) {
+    const u = 1 - t;
+    return {
+        x: 2 * u * (cpx - ax) + 2 * t * (bx - cpx),
+        y: 2 * u * (cpy - ay) + 2 * t * (by - cpy),
+    };
+}
+
+// Initialize particles along all edges
+function initParticles() {
+    graphParticles = [];
+    for (const e of graphEdges) {
+        const count = e.edge_type === 'continuity' ? 2 : 1;
+        for (let i = 0; i < count; i++) {
+            graphParticles.push({
+                edge: e, t: Math.random(),
+                speed: 0.002 + Math.random() * 0.002, dir: 1,
+            });
+        }
+        if (e.edge_type !== 'continuity') {
+            // Bidirectional: add reverse particle
+            graphParticles.push({
+                edge: e, t: Math.random(),
+                speed: 0.002 + Math.random() * 0.002, dir: -1,
+            });
+        }
+    }
+}
+
+// Animation loop
+function animateGraph(timestamp) {
+    if (!graphAnimating) return;
+    const dt = Math.min(timestamp - graphLastAnimTime, 50); // cap at 50ms
+    graphLastAnimTime = timestamp;
+    for (const p of graphParticles) {
+        p.t += p.speed * p.dir;
+        if (p.dir === 1 && p.t > 1) {
+            p.t = p.edge.edge_type === 'continuity' ? 0 : 1;
+            if (p.edge.edge_type !== 'continuity') p.dir = -1;
+        }
+        if (p.dir === -1 && p.t < 0) { p.t = 0; p.dir = 1; }
+    }
+    drawGraph();
+    graphAnimFrame = requestAnimationFrame(animateGraph);
+}
+
+function startGraphAnimation() {
+    if (graphAnimating) return;
+    graphAnimating = true;
+    graphLastAnimTime = performance.now();
+    initParticles();
+    graphAnimFrame = requestAnimationFrame(animateGraph);
+}
+
+function stopGraphAnimation() {
+    graphAnimating = false;
+    if (graphAnimFrame) { cancelAnimationFrame(graphAnimFrame); graphAnimFrame = null; }
+}
 
 // F0: rAF-throttled draw scheduler — prevents redundant repaints within one frame
 function scheduleGraphDraw() {
+    if (graphAnimating) return; // animation loop handles redraws
     if (graphAnimFrame) return;
     graphAnimFrame = requestAnimationFrame(() => {
         graphAnimFrame = null;
@@ -2049,7 +2131,8 @@ async function loadGraph() {
         buildGraph(threads, liveBridges);
         forceLayout(150);
         centerGraph();
-        drawGraph();
+        initParticles();
+        startGraphAnimation();
         renderGraphLegend();
         const contCount = graphEdges.filter(e => e.edge_type === 'continuity').length;
         const bridgeCount = graphEdges.filter(e => e.edge_type !== 'continuity').length;
@@ -2135,7 +2218,7 @@ function buildGraph(threads, bridges) {
         x: (Math.random() - 0.5) * 600,
         y: (Math.random() - 0.5) * 400,
         vx: 0, vy: 0,
-        radius: 6 + (t.importance || 0.5) * 10,
+        radius: 3 + (t.importance || 0.5) * 7,
     }));
 
     // Re-filter edges to match filtered nodes
@@ -2158,7 +2241,8 @@ function applyGraphFilters() {
     buildGraph(graphRawThreads, graphRawBridges);
     forceLayout(150);
     centerGraph();
-    scheduleGraphDraw();
+    initParticles();
+    startGraphAnimation();
     renderGraphLegend();
     const contCount = graphEdges.filter(e => e.edge_type === 'continuity').length;
     const bridgeCount = graphEdges.filter(e => e.edge_type !== 'continuity').length;
@@ -2403,20 +2487,16 @@ function drawGraph() {
             (e.source === graphSelectedNode.id || e.target === graphSelectedNode.id);
         const isEdgeHover = graphHoveredEdge === e;
 
-        if (e.edge_type === 'continuity') {
-            // Continuity edge: dashed white line, offset ~3px perpendicular, arrowhead
-            const dx = bx - ax, dy = by - ay;
-            const len = Math.sqrt(dx * dx + dy * dy);
-            if (len < 1) continue;
-            // Perpendicular offset to avoid superposition with bridge edges
-            const ox = (-dy / len) * 3, oy = (dx / len) * 3;
-            const x1 = ax + ox, y1 = ay + oy;
-            const x2 = bx + ox, y2 = by + oy;
+        // Curved edges: continuity arcs below (-15px), bridges arc above (+15px)
+        const curveOffset = e.edge_type === 'continuity' ? -15 : 15;
+        const cp = edgeControlPoint(ax, ay, bx, by, curveOffset);
 
+        if (e.edge_type === 'continuity') {
+            // Continuity edge: dashed violet bezier curve + arrowhead
             ctx.beginPath();
             ctx.setLineDash([4, 3]);
-            ctx.moveTo(x1, y1);
-            ctx.lineTo(x2, y2);
+            ctx.moveTo(ax, ay);
+            ctx.quadraticCurveTo(cp.x, cp.y, bx, by);
             ctx.strokeStyle = (isHighlight || isEdgeHover)
                 ? GRAPH_COLORS.edge_highlight
                 : 'rgba(167,139,250,0.7)';
@@ -2425,24 +2505,26 @@ function drawGraph() {
             ctx.stroke();
             ctx.setLineDash([]);
 
-            // Arrowhead pointing toward target
+            // Arrowhead at curve tip (tangent at t≈0.92)
             const arrowSize = 6;
-            const ux = dx / len, uy = dy / len;
-            const tipX = x2 - ux * (b.radius * scale + 2);
-            const tipY = y2 - uy * (b.radius * scale + 2);
+            const tipT = 0.92;
+            const tip = bezierPoint(ax, ay, cp.x, cp.y, bx, by, tipT);
+            const tan = bezierTangent(ax, ay, cp.x, cp.y, bx, by, tipT);
+            const tLen = Math.sqrt(tan.x * tan.x + tan.y * tan.y) || 1;
+            const ux = tan.x / tLen, uy = tan.y / tLen;
             ctx.beginPath();
-            ctx.moveTo(tipX, tipY);
-            ctx.lineTo(tipX - ux * arrowSize + uy * arrowSize * 0.5, tipY - uy * arrowSize - ux * arrowSize * 0.5);
-            ctx.lineTo(tipX - ux * arrowSize - uy * arrowSize * 0.5, tipY - uy * arrowSize + ux * arrowSize * 0.5);
+            ctx.moveTo(tip.x, tip.y);
+            ctx.lineTo(tip.x - ux * arrowSize + uy * arrowSize * 0.5, tip.y - uy * arrowSize - ux * arrowSize * 0.5);
+            ctx.lineTo(tip.x - ux * arrowSize - uy * arrowSize * 0.5, tip.y - uy * arrowSize + ux * arrowSize * 0.5);
             ctx.closePath();
             ctx.fillStyle = (isHighlight || isEdgeHover) ? GRAPH_COLORS.edge_highlight : 'rgba(167,139,250,0.7)';
             ctx.fill();
             ctx.globalAlpha = 1;
         } else {
-            // Bridge edge: solid colored line
+            // Bridge edge: solid colored bezier curve
             ctx.beginPath();
             ctx.moveTo(ax, ay);
-            ctx.lineTo(bx, by);
+            ctx.quadraticCurveTo(cp.x, cp.y, bx, by);
             ctx.strokeStyle = (isHighlight || isEdgeHover)
                 ? GRAPH_COLORS.edge_highlight
                 : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default);
@@ -2453,15 +2535,36 @@ function drawGraph() {
         }
 
         if (showLabels || showWeights) {
-            const mx = (ax + bx) / 2, my = (ay + by) / 2;
             ctx.font = '9px monospace';
             ctx.fillStyle = GRAPH_COLORS.text_dim;
             let edgeLabel = '';
             if (showLabels) edgeLabel += e.relation;
             if (showLabels && showWeights) edgeLabel += ' ';
             if (showWeights) edgeLabel += (e.edge_type === 'continuity' ? (e.subject_coherence || 0).toFixed(2) : e.weight.toFixed(2));
-            ctx.fillText(edgeLabel, mx + 2, my - 2);
+            ctx.fillText(edgeLabel, cp.x + 2, cp.y - 2);
         }
+    }
+
+    // Draw particles along edges (screen-space bezier, consistent with edge rendering)
+    for (const p of graphParticles) {
+        const e = p.edge;
+        const a = nodeMap[e.source], b = nodeMap[e.target];
+        if (!a || !b) continue;
+        const pax = a.x * scale + tx, pay = a.y * scale + ty;
+        const pbx = b.x * scale + tx, pby = b.y * scale + ty;
+        const offset = e.edge_type === 'continuity' ? -15 : 15;
+        const pcp = edgeControlPoint(pax, pay, pbx, pby, offset);
+        const pt = bezierPoint(pax, pay, pcp.x, pcp.y, pbx, pby, p.t);
+        // Viewport cull
+        if (pt.x < -10 || pt.x > rect.width + 10 || pt.y < -10 || pt.y > rect.height + 10) continue;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 2, 0, Math.PI * 2);
+        ctx.fillStyle = e.edge_type === 'continuity'
+            ? 'rgba(167,139,250,0.9)'
+            : (RELATION_COLORS[e.relation] || GRAPH_COLORS.edge_default);
+        ctx.globalAlpha = 0.85;
+        ctx.fill();
+        ctx.globalAlpha = 1;
     }
 
     // Draw nodes as circles — label shown below circle when zoom >= threshold
@@ -2494,13 +2597,13 @@ function drawGraph() {
         // Label below circle — only when sufficiently zoomed in
         if (scale >= ZOOM_LABEL_THRESHOLD) {
             const label = n.title.length > 22 ? n.title.substring(0, 20) + '..' : n.title;
-            const fontSize = Math.max(9, 10 * (0.8 + (n.importance || 0.5) * 0.5));
+            const fontSize = Math.max(8, 9 * (0.8 + (n.importance || 0.5) * 0.5));
             ctx.font = `${fontSize}px sans-serif`;
             ctx.fillStyle = isDimmed ? GRAPH_COLORS.text_dim : GRAPH_COLORS.text;
             ctx.globalAlpha = isDimmed ? 0.25 : 1;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'top';
-            ctx.fillText(label, nx, ny + r + 3);
+            ctx.fillText(label, nx, ny + r + 2);
             ctx.textAlign = 'left';
             ctx.textBaseline = 'alphabetic';
             ctx.globalAlpha = 1;
