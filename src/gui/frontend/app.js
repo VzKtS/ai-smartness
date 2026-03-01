@@ -1511,11 +1511,44 @@ document.getElementById('btn-save-daemon-settings')?.addEventListener('click', s
 // ═══════════════════════════════════════════════════════════════
 
 let currentProfile = null;
+let profileAgentId = '';  // agent selected in Profile tab
+
+async function loadProfileAgentSelector() {
+    if (!projectHash) return;
+    const sel = document.getElementById('profile-agent-select');
+    if (!sel) return;
+    sel.innerHTML = '';
+    try {
+        const agents = await invoke('list_agents', { projectHash });
+        if (agents.length === 0) {
+            sel.innerHTML = '<option value="">No agents</option>';
+            return;
+        }
+        for (const a of agents) {
+            const opt = document.createElement('option');
+            opt.value = a.id;
+            opt.textContent = `${a.name || a.id} (${a.role || '?'})`;
+            sel.appendChild(opt);
+        }
+        // Auto-select first agent and load profile
+        profileAgentId = agents[0].id;
+        sel.value = profileAgentId;
+        loadProfile();
+    } catch (e) {
+        console.error('Profile agent selector error:', e);
+    }
+}
+
+document.getElementById('profile-agent-select')?.addEventListener('change', (e) => {
+    profileAgentId = e.target.value;
+    currentProfile = null;
+    loadProfile();
+});
 
 async function loadProfile() {
-    if (!projectHash || agentId === 'default') return;
+    if (!projectHash || !profileAgentId) return;
     try {
-        currentProfile = await invoke('get_user_profile', { projectHash, agentId });
+        currentProfile = await invoke('get_user_profile', { projectHash, agentId: profileAgentId });
         populateProfileForm(currentProfile);
     } catch (e) {
         console.error('Profile load error:', e);
@@ -1544,12 +1577,14 @@ function renderProfileRules(rules) {
         item.querySelector('.rule-input').addEventListener('change', (e) => {
             if (currentProfile && currentProfile.context_rules) {
                 currentProfile.context_rules[idx] = e.target.value.trim();
+                saveProfile();
             }
         });
         item.querySelector('button').addEventListener('click', () => {
             if (currentProfile && currentProfile.context_rules) {
                 currentProfile.context_rules.splice(idx, 1);
                 renderProfileRules(currentProfile.context_rules);
+                saveProfile();
             }
         });
         list.appendChild(item);
@@ -1576,10 +1611,11 @@ function collectProfileForm() {
 }
 
 async function saveProfile() {
+    if (!profileAgentId) return;
     const profile = collectProfileForm();
     const statusEl = document.getElementById('profile-status');
     try {
-        await invoke('save_user_profile', { projectHash, agentId, profile });
+        await invoke('save_user_profile', { projectHash, agentId: profileAgentId, profile });
         currentProfile = profile;
         if (statusEl) { statusEl.textContent = 'Saved'; setTimeout(() => statusEl.textContent = '', 2000); }
     } catch (e) {
@@ -1599,13 +1635,14 @@ document.getElementById('btn-add-rule')?.addEventListener('click', () => {
     if (!currentProfile.context_rules.includes(rule)) {
         currentProfile.context_rules.push(rule);
         renderProfileRules(currentProfile.context_rules);
+        saveProfile();
     }
     if (input) input.value = '';
 });
 
-// Load profile when Profile sub-tab is activated
+// Load profile agent selector when Profile sub-tab is activated
 document.querySelector('[data-stab="stab-profile"]')?.addEventListener('click', () => {
-    if (!currentProfile) loadProfile();
+    loadProfileAgentSelector();
 });
 
 // ═══════════════════════════════════════════════════════════════

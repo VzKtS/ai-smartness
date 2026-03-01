@@ -618,6 +618,11 @@
 
             <!-- ── Profile ── -->
             <div id="stab-profile" class="sub-panel">
+                <div style="margin-bottom:12px">
+                    <label style="font-size:13px;color:var(--text-dim);display:flex;align-items:center;gap:8px">Agent
+                        <select id="profile-agent-select" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-size:13px"></select>
+                    </label>
+                </div>
                 <div class="config-section">
                     <h3 class="section-toggle open" data-section="prof-identity">Identity</h3>
                     <div id="section-prof-identity" class="section-body open">
@@ -663,8 +668,8 @@
                     </div>
                 </div>
                 <div class="config-section">
-                    <h3 class="section-toggle" data-section="prof-rules">Custom Rules</h3>
-                    <div id="section-prof-rules" class="section-body">
+                    <h3 class="section-toggle open" data-section="prof-rules">Custom Rules</h3>
+                    <div id="section-prof-rules" class="section-body open">
                         <p class="hint" title="Rules the agent should always follow. Auto-detected from phrases like 'always...', 'never...', 'remember:'. Can also be added manually here.">Rules the agent should always follow (e.g., "always use TypeScript", "never commit directly to main").</p>
                         <div id="profile-rules-list" class="pattern-list"></div>
                         <div style="display:flex; gap:8px; margin-top:8px">
