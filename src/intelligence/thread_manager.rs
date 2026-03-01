@@ -146,6 +146,27 @@ impl ThreadManager {
             Self::decide_action(conn, extraction, embeddings, embed_mode, &guardian.thread_matching)?
         };
 
+        // Origin-type compatibility gate: tool captures must NOT merge into conversational threads
+        let action = match &action {
+            ThreadAction::Continue { thread_id } | ThreadAction::Reactivate { thread_id } => {
+                let target_is_conversational = ThreadStorage::get(conn, thread_id)?
+                    .map(|t| matches!(t.origin_type, OriginType::Prompt | OriginType::Response))
+                    .unwrap_or(false);
+                let source_is_tool = !matches!(source_type, "prompt" | "response");
+                if target_is_conversational && source_is_tool {
+                    tracing::info!(
+                        source_type = %source_type,
+                        target_thread = %thread_id,
+                        "Origin mismatch: tool capture → conversational thread, forcing NewThread"
+                    );
+                    ThreadAction::NewThread
+                } else {
+                    action
+                }
+            }
+            _ => action,
+        };
+
         match action {
             ThreadAction::NewThread => {
                 tracing::info!(action = "NewThread", "Action decided");
@@ -215,13 +236,16 @@ impl ThreadManager {
             ThreadAction::Reactivate { thread_id } => {
                 tracing::info!(action = "Reactivate", thread_id = %thread_id, "Action decided");
                 Self::reactivate_thread(conn, &thread_id)?;
-                // Set continuity link on reactivated thread
+                // Set continuity link on reactivated thread (preserve existing chain)
                 if let Some(prev_id) = continuity_previous_id {
                     if let Some(mut t) = ThreadStorage::get(conn, &thread_id)? {
-                        t.continuity_parent_id = Some(prev_id.to_string());
-                        t.subject_coherence = coherence_score;
-                        ThreadStorage::update(conn, &t)?;
+                        if t.continuity_parent_id.is_none() {
+                            t.continuity_parent_id = Some(prev_id.to_string());
+                            t.subject_coherence = coherence_score;
+                            ThreadStorage::update(conn, &t)?;
+                        }
                     }
+                    // Always backfill continuity_to on the previous thread
                     let _ = ThreadStorage::update_last_message_continuity_to(conn, prev_id, &thread_id);
                 }
                 Self::update_thread(conn, &thread_id, extraction, content, source_type, file_path, embed_mode)?;

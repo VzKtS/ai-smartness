@@ -635,8 +635,8 @@ pub fn get_continuity_edges(
         .map_err(|e| e.to_string())?;
     let result: Vec<serde_json::Value> = edges.iter().map(|(child_id, parent_id, coherence)| {
         serde_json::json!({
-            "source_id": child_id,
-            "target_id": parent_id,
+            "source_id": parent_id,
+            "target_id": child_id,
             "subject_coherence": coherence,
         })
     }).collect();

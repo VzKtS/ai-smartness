@@ -2145,7 +2145,7 @@ function buildGraph(threads, bridges) {
     // F4: Min bridges connectivity filter
     if (fMinBridges > 0) {
         const bc = {};
-        graphEdges.forEach(e => { bc[e.source] = (bc[e.source] || 0) + 1; bc[e.target] = (bc[e.target] || 0) + 1; });
+        graphEdges.filter(e => e.edge_type !== 'continuity').forEach(e => { bc[e.source] = (bc[e.source] || 0) + 1; bc[e.target] = (bc[e.target] || 0) + 1; });
         graphNodes = graphNodes.filter(n => (bc[n.id] || 0) >= fMinBridges);
         const nodeIds2 = new Set(graphNodes.map(n => n.id));
         graphEdges = graphEdges.filter(e => nodeIds2.has(e.source) && nodeIds2.has(e.target));
@@ -2419,7 +2419,7 @@ function drawGraph() {
             ctx.lineTo(x2, y2);
             ctx.strokeStyle = (isHighlight || isEdgeHover)
                 ? GRAPH_COLORS.edge_highlight
-                : 'rgba(255,255,255,0.6)';
+                : 'rgba(167,139,250,0.7)';
             ctx.lineWidth = (isHighlight || isEdgeHover) ? 2 : 1;
             ctx.globalAlpha = (isHighlight || isEdgeHover) ? 1 : 0.7;
             ctx.stroke();
@@ -2435,7 +2435,7 @@ function drawGraph() {
             ctx.lineTo(tipX - ux * arrowSize + uy * arrowSize * 0.5, tipY - uy * arrowSize - ux * arrowSize * 0.5);
             ctx.lineTo(tipX - ux * arrowSize - uy * arrowSize * 0.5, tipY - uy * arrowSize + ux * arrowSize * 0.5);
             ctx.closePath();
-            ctx.fillStyle = (isHighlight || isEdgeHover) ? GRAPH_COLORS.edge_highlight : 'rgba(255,255,255,0.6)';
+            ctx.fillStyle = (isHighlight || isEdgeHover) ? GRAPH_COLORS.edge_highlight : 'rgba(167,139,250,0.7)';
             ctx.fill();
             ctx.globalAlpha = 1;
         } else {
@@ -2832,7 +2832,7 @@ function renderGraphLegend() {
     const hasContinuity = graphEdges.some(e => e.edge_type === 'continuity');
     if (hasContinuity) {
         html += `<br><span style="color:${GRAPH_COLORS.text_dim}">— Continuity —</span><br>`;
-        html += `<span style="color:rgba(255,255,255,0.6)">- - &rarr;</span> Reasoning chain &nbsp; `;
+        html += `<span style="color:rgba(167,139,250,0.7)">- - &rarr;</span> Reasoning chain &nbsp; `;
     }
     html += `<br><span style="color:${GRAPH_COLORS.text_dim};font-size:10px">Node size ∝ importance</span>`;
     legend.innerHTML = html;

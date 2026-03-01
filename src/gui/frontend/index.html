@@ -340,6 +340,11 @@
                     <div id="section-global" class="section-body open">
                         <div class="form-grid">
                             <label data-i18n="cfg.enabled" title="Master switch for the entire Guardian cognitive system. When disabled, no LLM calls are made — hooks pass through without memory processing.">Guardian Enabled <input type="checkbox" data-path="enabled"></label>
+                            <label title="Local GGUF model for all LLM inference tasks. Phi4Mini: balanced (default). ThreeB: lighter, faster. SevenB: more capable but needs >4GB VRAM.">Local Model <select data-path="local_model_size">
+                                <option value="Phi4Mini">Phi-4 Mini (Q4_K_M)</option>
+                                <option value="ThreeB">Qwen 3B (Q4_K_M)</option>
+                                <option value="SevenB">Qwen 7B (Q4_K_M)</option>
+                            </select></label>
                         </div>
                     </div>
                 </div>
@@ -410,6 +415,8 @@
                                 <span>Topic Aliases</span>
                                 <textarea data-path="extraction.topic_aliases" data-array="keyval" rows="3" placeholder="js=javascript&#10;ts=typescript"></textarea>
                             </label>
+                            <label title="Seconds before PendingContext expires. Controls how long consecutive captures are linked for coherence chaining. Default: 600 (10 min).">Pending Context TTL (secs) <input type="number" data-path="extraction.pending_context_ttl_secs" min="30" max="3600" step="30"></label>
+                            <label title="Maximum characters sent to coherence gate LLM. Longer content is truncated. Default: 1500.">Coherence Max Chars <input type="number" data-path="coherence.max_context_chars" min="200" max="5000" step="100"></label>
                         </div>
                     </div>
                 </div>
@@ -422,6 +429,8 @@
                     <label title="Embedding backend for thread matching. OnnxWithFallback: ONNX neural model with TF-IDF fallback if ONNX unavailable. OnnxOnly: skip if ONNX missing. TfidfOnly: lightweight keyword-based (offline, no model needed). Disabled: always create new threads.">Embedding Mode <select data-path="thread_matching.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
                     <label title="Cosine similarity threshold for ONNX (all-MiniLM-L6-v2 neural model). Content with similarity >= threshold continues the existing thread. Higher = more separate threads, lower = more merging. Default: 0.60.">ONNX Threshold <input type="number" data-path="thread_matching.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
                     <label title="Cosine similarity threshold for TF-IDF keyword-based fallback. Typically lower than ONNX since TF-IDF scores are less discriminative. Default: 0.45.">TF-IDF Threshold <input type="number" data-path="thread_matching.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Cosine similarity threshold for continuing in an existing thread (coherent + similar). Higher = more separate threads. Default: 0.75.">Continue Threshold <input type="number" data-path="thread_matching.continue_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Similarity threshold for reactivating a suspended/archived thread. Very high by default to avoid false reactivations. Default: 0.90.">Reactivate Threshold <input type="number" data-path="thread_matching.reactivate_threshold" min="0" max="1" step="0.05"></label>
                 </div>
             </div>
 
