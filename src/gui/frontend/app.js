@@ -1526,6 +1526,7 @@ function populateProfileForm(p) {
     document.getElementById('profile-name').value = p.identity?.name || '';
     document.getElementById('profile-role').value = p.identity?.role || 'user';
     document.getElementById('profile-relationship').value = p.identity?.relationship || 'user';
+    document.getElementById('profile-language').value = p.preferences?.language || 'en';
     document.getElementById('profile-verbosity').value = p.preferences?.verbosity || 'normal';
     document.getElementById('profile-technical').value = p.preferences?.technical_level || 'intermediate';
     document.getElementById('profile-emoji').checked = p.preferences?.emoji_usage || false;
@@ -1565,7 +1566,7 @@ function collectProfileForm() {
             name: document.getElementById('profile-name').value || null,
         },
         preferences: {
-            language: currentProfile?.preferences?.language || 'en',
+            language: document.getElementById('profile-language').value || 'en',
             verbosity: document.getElementById('profile-verbosity').value,
             emoji_usage: document.getElementById('profile-emoji').checked,
             technical_level: document.getElementById('profile-technical').value,

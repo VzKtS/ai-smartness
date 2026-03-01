@@ -538,7 +538,7 @@ fn tool_definitions() -> Vec<serde_json::Value> {
         tool_def("ai_help", "Documentation", &[], &[]),
         tool_def("ai_suggestions", "Proactive suggestions", &[], &["context"]),
         tool_def("ai_shared_status", "Shared cognition status", &[], &[]),
-        tool_def("ai_profile", "User profile — view, set_rule, remove_rule, list, clear_rules", &["action"], &["key", "value"]),
+        tool_def("ai_profile", "User profile — view, set, set_rule, remove_rule, list, clear_rules", &["action"], &["key", "value"]),
         tool_def("ai_cleanup", "Fix thread titles", &[], &["mode", "dry_run"]),
         tool_def("ai_lock", "Lock memory", &[], &["reason", "duration_minutes"]),
         tool_def("ai_unlock", "Unlock memory", &[], &[]),

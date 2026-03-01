@@ -1,11 +1,16 @@
-use ai_smartness::thread::ThreadStatus;
-use ai_smartness::AiResult;
+use ai_smartness::agent::TaskStatus;
+use ai_smartness::registry::tasks::AgentTaskStorage;
 use ai_smartness::storage::backup::BackupManager;
 use ai_smartness::storage::beat::BeatState;
 use ai_smartness::storage::bridges::BridgeStorage;
+use ai_smartness::storage::cognitive_inbox::CognitiveInbox;
+use ai_smartness::storage::mcp_messages::McpMessages;
 use ai_smartness::storage::path_utils;
 use ai_smartness::storage::shared_storage::SharedStorage;
 use ai_smartness::storage::threads::ThreadStorage;
+use ai_smartness::thread::ThreadStatus;
+use ai_smartness::user_profile::UserProfile;
+use ai_smartness::AiResult;
 
 use super::{optional_str, required_str, ToolContext};
 
@@ -18,9 +23,86 @@ pub fn handle_status(
     let archived = ThreadStorage::count_by_status(ctx.agent_conn, &ThreadStatus::Archived)?;
     let bridges = BridgeStorage::count(ctx.agent_conn)?;
 
-    // E7: Expose beat.json data in ai_status response
     let data_dir = path_utils::agent_data_dir(ctx.project_hash, ctx.agent_id);
     let beat = BeatState::load(&data_dir);
+
+    // Profile
+    let profile = UserProfile::load(&data_dir);
+    let profile_json = serde_json::json!({
+        "identity": {
+            "role": profile.identity.role,
+            "relationship": profile.identity.relationship,
+            "name": profile.identity.name,
+        },
+        "preferences": {
+            "language": profile.preferences.language,
+            "verbosity": profile.preferences.verbosity,
+            "emoji_usage": profile.preferences.emoji_usage,
+            "technical_level": profile.preferences.technical_level,
+        },
+        "rules": profile.context_rules.iter().collect::<Vec<_>>(),
+        "rules_count": profile.context_rules.len(),
+    });
+
+    // Pins, focus, top threads (single list_all pass)
+    let all_threads = ThreadStorage::list_all(ctx.agent_conn)?;
+
+    let pins: Vec<serde_json::Value> = all_threads
+        .iter()
+        .filter(|t| t.tags.contains(&"__pin__".to_string()) && t.status == ThreadStatus::Active)
+        .take(10)
+        .map(|t| {
+            let content = ThreadStorage::get_messages(ctx.agent_conn, &t.id)
+                .ok()
+                .and_then(|msgs| msgs.first().map(|m| m.content.clone()));
+            serde_json::json!({
+                "id": t.id, "title": t.title, "weight": t.weight,
+                "topics": t.topics, "content": content,
+            })
+        })
+        .collect();
+
+    let focus: Vec<serde_json::Value> = all_threads
+        .iter()
+        .filter(|t| t.tags.contains(&"__focus__".to_string()) && t.status == ThreadStatus::Active)
+        .map(|t| {
+            serde_json::json!({
+                "topic": t.topics.first().unwrap_or(&t.title),
+                "weight": t.weight,
+            })
+        })
+        .collect();
+
+    let top_threads: Vec<serde_json::Value> = all_threads
+        .iter()
+        .filter(|t| {
+            t.status == ThreadStatus::Active
+                && !t.tags.contains(&"__pin__".to_string())
+                && !t.tags.contains(&"__focus__".to_string())
+        })
+        .take(5)
+        .map(|t| {
+            serde_json::json!({
+                "id": t.id, "title": t.title, "weight": t.weight,
+                "topics": t.topics, "labels": t.labels,
+            })
+        })
+        .collect();
+
+    // Pending tasks
+    let pending_tasks = AgentTaskStorage::list_tasks_for_agent(
+        ctx.registry_conn,
+        ctx.agent_id,
+        ctx.project_hash,
+    )
+    .unwrap_or_default()
+    .iter()
+    .filter(|t| matches!(t.status, TaskStatus::Pending | TaskStatus::InProgress))
+    .count();
+
+    // Pending messages
+    let pending_messages = McpMessages::count_pending(ctx.shared_conn, ctx.agent_id).unwrap_or(0)
+        + CognitiveInbox::count_pending(ctx.agent_conn, ctx.agent_id).unwrap_or(0);
 
     Ok(serde_json::json!({
         "threads": {"active": active, "suspended": suspended, "archived": archived},
@@ -42,6 +124,12 @@ pub fn handle_status(
         "last_error": beat.last_error,
         "last_error_at": beat.last_error_at,
         "system_metrics": beat.system_metrics,
+        "profile": profile_json,
+        "pins": pins,
+        "focus": focus,
+        "top_threads": top_threads,
+        "pending_tasks": pending_tasks,
+        "pending_messages": pending_messages,
     }))
 }
 
@@ -75,17 +163,17 @@ pub fn handle_help(
         "version": env!("CARGO_PKG_VERSION"),
         "tool_count": 67,
         "categories": [
+            "Reminder & Context (ai_status → full context read, ai_profile set → edit identity/preferences, ai_profile set_rule → edit rules, ai_pin → pin content, ai_focus/ai_unfocus → prioritize topics)",
             "Memory & Search (ai_recall)",
             "Thread Lifecycle (ai_thread_create, ai_thread_rm, ai_thread_rm_batch, ai_thread_list, ai_thread_search, ai_thread_activate, ai_thread_suspend, ai_reactivate)",
             "Thread Operations (ai_merge, ai_merge_batch, ai_split, ai_split_unlock)",
             "Thread Metadata (ai_label, ai_labels_suggest, ai_rename, ai_rename_batch, ai_rate_importance, ai_rate_context)",
             "Bridges (ai_bridges, ai_bridge_analysis, ai_bridge_scan_orphans, ai_bridge_kill, ai_bridge_kill_batch)",
-            "Focus & Pins (ai_focus, ai_unfocus, ai_pin)",
             "Cognitive Messaging (ai_msg_focus, ai_msg_ack)",
             "Shared Cognition (ai_share, ai_unshare, ai_publish, ai_discover, ai_subscribe, ai_unsubscribe, ai_sync, ai_shared_status, ai_recommend)",
-            "System & Status (ai_status, ai_sysinfo, ai_help, ai_suggestions, ai_profile, ai_topics, health_check, topics_network, metrics_cross_agent, test_sampling)",
+            "System & Status (ai_sysinfo, ai_help, ai_suggestions, ai_topics, health_check, topics_network, metrics_cross_agent, test_sampling)",
             "Maintenance (ai_cleanup, ai_lock, ai_unlock, ai_lock_status, ai_backup, beat_wake)",
-            "Agent Management (ai_agent_select, agent_list, agent_query, agent_status, agent_cleanup, agent_configure, agent_tasks, task_delegate, task_status)",
+            "Agent Management (ai_agent_select, agent_list, agent_query, agent_status, agent_cleanup, agent_configure, agent_tasks, task_delegate, task_status, task_complete)",
             "Inter-Agent Messaging (msg_send, msg_broadcast, msg_inbox, msg_reply)",
         ],
     }))
@@ -217,7 +305,26 @@ pub fn handle_profile(
             profile.save(&data_dir);
             Ok(serde_json::json!({"action": "clear_rules", "rules_count": 0}))
         }
-        _ => Ok(serde_json::json!({"action": action, "error": "unknown action — use view, set_rule, remove_rule, list, or clear_rules"})),
+        "set" => {
+            let key = required_str(params, "key")?;
+            let value = required_str(params, "value")?;
+            match key.as_str() {
+                "name" => profile.identity.name = if value.is_empty() { None } else { Some(value.clone()) },
+                "role" => profile.identity.role = value.clone(),
+                "relationship" => profile.identity.relationship = value.clone(),
+                "language" => profile.preferences.language = value.clone(),
+                "verbosity" => profile.preferences.verbosity = value.clone(),
+                "emoji_usage" => profile.preferences.emoji_usage = matches!(value.as_str(), "true" | "1" | "yes"),
+                "technical_level" => profile.preferences.technical_level = value.clone(),
+                _ => return Ok(serde_json::json!({
+                    "action": "set",
+                    "error": format!("Unknown key: {}. Valid: name, role, relationship, language, verbosity, emoji_usage, technical_level", key),
+                })),
+            }
+            profile.save(&data_dir);
+            Ok(serde_json::json!({"action": "set", "key": key, "value": value, "saved": true}))
+        }
+        _ => Ok(serde_json::json!({"action": action, "error": "unknown action — use view, set, set_rule, remove_rule, list, or clear_rules"})),
     }
 }
 

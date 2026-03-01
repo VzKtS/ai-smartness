@@ -86,6 +86,19 @@ impl McpMessages {
         Ok(messages)
     }
 
+    /// Count pending messages for an agent (including broadcasts).
+    pub fn count_pending(conn: &Connection, agent_id: &str) -> AiResult<usize> {
+        let c: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mcp_messages
+                 WHERE (to_agent = ?1 OR to_agent = '*') AND status = 'pending'",
+                params![agent_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+        Ok(c)
+    }
+
     pub fn reply(conn: &Connection, reply_to: &str, msg: &Message) -> AiResult<()> {
         let attachments_json = serde_json::to_string(&msg.attachments)
             .unwrap_or_else(|_| "[]".to_string());
@@ -249,5 +262,19 @@ mod tests {
             "SELECT status FROM mcp_messages WHERE id = 'm1'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(s, "expired");
+    }
+
+    #[test]
+    fn test_count_pending() {
+        let conn = setup_shared_db();
+        McpMessages::send(&conn, &make_msg("m1", "alice", "bob")).unwrap();
+        McpMessages::send(&conn, &make_msg("m2", "alice", "bob")).unwrap();
+        McpMessages::broadcast(&conn, &make_msg("m3", "alice", "*")).unwrap();
+
+        // Ack m1 → only m2 + m3 (broadcast) remain pending
+        McpMessages::ack(&conn, "m1").unwrap();
+
+        let count = McpMessages::count_pending(&conn, "bob").unwrap();
+        assert_eq!(count, 2, "Should count direct + broadcast pending messages");
     }
 }
