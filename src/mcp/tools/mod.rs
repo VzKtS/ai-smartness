@@ -93,6 +93,7 @@ fn route_plain_tool(
         "ai_thread_rm_batch" => threads::handle_thread_rm_batch(params, ctx),
         "ai_thread_list" => threads::handle_thread_list(params, ctx),
         "ai_thread_search" => threads::handle_thread_search(params, ctx),
+        "ai_continuity_edges" => threads::handle_continuity_edges(params, ctx),
         "ai_thread_activate" => threads::handle_thread_activate(params, ctx),
         "ai_thread_suspend" => threads::handle_thread_suspend(params, ctx),
         "ai_thread_purge" => threads::handle_thread_purge(params, ctx),

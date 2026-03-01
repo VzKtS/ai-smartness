@@ -563,7 +563,27 @@ fn thread_json(t: &ai_smartness::thread::Thread) -> serde_json::Value {
         "topics": t.topics,
         "labels": t.labels,
         "last_active": t.last_active.to_rfc3339(),
+        "continuity_parent_id": t.continuity_parent_id,
+        "subject_coherence": t.subject_coherence,
     })
+}
+
+pub fn handle_continuity_edges(
+    _params: &serde_json::Value,
+    ctx: &ToolContext,
+) -> AiResult<serde_json::Value> {
+    let edges = ThreadStorage::get_continuity_edges(ctx.agent_conn)?;
+    let results: Vec<serde_json::Value> = edges
+        .iter()
+        .map(|(child_id, parent_id, coherence)| {
+            serde_json::json!({
+                "source_id": parent_id,
+                "target_id": child_id,
+                "subject_coherence": coherence,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({"edges": results, "count": results.len()}))
 }
 
 #[cfg(test)]
