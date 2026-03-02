@@ -2980,7 +2980,7 @@ function renderGraphLegend() {
     const activeOrigins = new Set(graphNodes.map(n => n.origin_type).filter(Boolean));
     if (activeOrigins.size > 0) {
         html += `<br><span style="color:${GRAPH_COLORS.text_dim}">— Origin (ring) —</span><br>`;
-        const originOrder = ['file_read', 'file_write', 'prompt', 'response', 'command', 'task', 'fetch'];
+        const originOrder = ['FileRead', 'FileWrite', 'Prompt', 'Response', 'Command', 'Task', 'Fetch'];
         for (const o of originOrder) {
             if (!activeOrigins.has(o)) continue;
             html += `<span style="color:${originBadgeColor(o)}">◉</span> ${originLabel(o)} &nbsp; `;
