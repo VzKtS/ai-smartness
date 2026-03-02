@@ -4,6 +4,7 @@
 //! context tokens from transcript JSONL, then prepends the `<ai-smartness>`
 //! core reminder block to the user message.
 
+use ai_smartness::processing::daemon_ipc_client;
 use ai_smartness::storage::{beat::BeatState, path_utils, transcript};
 
 use super::reminder;
@@ -24,6 +25,9 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     }
 
     beat.save(&agent_data);
+
+    // Send prompt to daemon for capture (non-blocking, ignore errors)
+    let _ = daemon_ipc_client::send_prompt_capture(project_hash, agent_id, &message, session_id);
 
     // Build and prepend reminder block
     let reminder_block = reminder::build(project_hash, agent_id, session_id, &beat);
