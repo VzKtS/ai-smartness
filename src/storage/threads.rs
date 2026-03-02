@@ -696,8 +696,18 @@ impl ThreadStorage {
     ) -> AiResult<Vec<(String, String, Option<f64>)>> {
         let mut stmt = conn
             .prepare(
-                "SELECT id, continuity_parent_id, subject_coherence
-                 FROM threads WHERE continuity_parent_id IS NOT NULL",
+                "SELECT child_id, parent_id, MAX(subject_coherence) as subject_coherence
+                 FROM (
+                     SELECT id as child_id, continuity_parent_id as parent_id, subject_coherence
+                     FROM threads
+                     WHERE continuity_parent_id IS NOT NULL
+                     UNION ALL
+                     SELECT DISTINCT thread_id as child_id, continuity_from as parent_id, NULL as subject_coherence
+                     FROM thread_messages
+                     WHERE continuity_from IS NOT NULL
+                       AND continuity_from != thread_id
+                 ) combined
+                 GROUP BY child_id, parent_id",
             )
             .map_err(|e| AiError::Storage(e.to_string()))?;
 
