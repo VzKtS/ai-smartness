@@ -1958,6 +1958,7 @@ window.purgeAgentDb = purgeAgentDb;
 let graphNodes = [];
 let graphEdges = [];
 let graphTransform = { x: 0, y: 0, scale: 1 };
+let graphSpacingPrev = 3000;
 let graphDrag = null;
 let graphHoveredNode = null;
 let graphSelectedNode = null;
@@ -2154,6 +2155,7 @@ async function loadGraph() {
         graphRawContinuity = continuity || [];
         buildGraph(threads, liveBridges);
         forceLayout(150);
+        graphSpacingPrev = parseInt(document.getElementById('graph-spacing')?.value || '3000', 10);
         centerGraph();
         initParticles();
         startGraphAnimation();
@@ -2266,6 +2268,7 @@ function applyGraphFilters() {
     if (graphRawThreads.length === 0) return;
     buildGraph(graphRawThreads, graphRawBridges);
     forceLayout(150);
+    graphSpacingPrev = parseInt(document.getElementById('graph-spacing')?.value || '3000', 10);
     centerGraph();
     initParticles();
     startGraphAnimation();
@@ -2373,7 +2376,7 @@ function forceLayout(iterations) {
     const nodeMap = {};
     nodes.forEach(n => { nodeMap[n.id] = n; });
 
-    const repulsion = 3000;
+    const repulsion = parseInt(document.getElementById('graph-spacing')?.value || '3000', 10);
     const attraction = 0.01;
     const damping = 0.9;
     const minDist = 30;
@@ -2898,6 +2901,23 @@ document.getElementById('btn-graph-refresh')?.addEventListener('click', loadGrap
 document.getElementById('graph-agent-select')?.addEventListener('change', loadGraph);
 document.getElementById('graph-show-labels')?.addEventListener('change', () => scheduleGraphDraw());
 document.getElementById('graph-show-weights')?.addEventListener('change', () => scheduleGraphDraw());
+document.getElementById('graph-spacing')?.addEventListener('input', (e) => {
+    const v = parseInt(e.target.value, 10);
+    document.getElementById('graph-spacing-label').textContent = v >= 1000 ? (v / 1000) + 'k' : v;
+    // Scale node positions around center of mass (preserves zoom/pan)
+    if (graphNodes.length === 0) return;
+    const old = graphSpacingPrev || 3000;
+    const ratio = v / old;
+    let cx = 0, cy = 0;
+    for (const n of graphNodes) { cx += n.x; cy += n.y; }
+    cx /= graphNodes.length; cy /= graphNodes.length;
+    for (const n of graphNodes) {
+        n.x = cx + (n.x - cx) * ratio;
+        n.y = cy + (n.y - cy) * ratio;
+    }
+    graphSpacingPrev = v;
+    drawGraph();
+});
 
 // F1: Search input — live filtering + Enter to center + Escape to clear
 document.getElementById('graph-search')?.addEventListener('input', (e) => {
@@ -2948,6 +2968,10 @@ document.getElementById('btn-graph-filter-reset')?.addEventListener('click', () 
     document.getElementById('graph-f-imp-label').textContent = '0.00';
     document.getElementById('graph-f-bridges').value = '0';
     document.getElementById('graph-f-origin').value = '';
+    const spacingEl = document.getElementById('graph-spacing');
+    if (spacingEl) { spacingEl.value = '3000'; }
+    const spacingLabel = document.getElementById('graph-spacing-label');
+    if (spacingLabel) { spacingLabel.textContent = '3k'; }
     const searchEl = document.getElementById('graph-search');
     if (searchEl) { searchEl.value = ''; graphSearchQuery = ''; }
     applyGraphFilters();
