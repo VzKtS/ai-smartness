@@ -11,8 +11,8 @@
         <h1>AI Smartness</h1>
         <nav>
             <button class="tab active" data-tab="dashboard" data-i18n="tab.dashboard">Dashboard</button>
-            <button class="tab" data-tab="threads" data-i18n="tab.threads">Threads</button>
             <button class="tab" data-tab="agents" data-i18n="tab.agents">Agents</button>
+            <button class="tab" data-tab="threads" data-i18n="tab.threads">Threads</button>
             <button class="tab" data-tab="graph" data-i18n="tab.graph">Graph</button>
             <button class="tab" data-tab="settings" data-i18n="tab.settings">Settings</button>
             <button id="btn-debug" class="tab tab-debug" data-i18n="btn.debug">Debug</button>
@@ -129,6 +129,18 @@
                         <option value="suspended" data-i18n="dash.suspended">Suspended</option>
                         <option value="archived" data-i18n="dash.archived">Archived</option>
                     </select>
+                    <select id="origin-filter">
+                        <option value="">All origins</option>
+                        <option value="Prompt">Prompt</option>
+                        <option value="FileRead">Read</option>
+                        <option value="FileWrite">Write</option>
+                        <option value="Response">Response</option>
+                        <option value="Task">Task</option>
+                        <option value="Fetch">Fetch</option>
+                        <option value="Command">Command</option>
+                        <option value="Split">Split</option>
+                        <option value="Reactivation">Reactivation</option>
+                    </select>
                     <input type="text" id="thread-search" data-i18n-placeholder="ph.search" placeholder="Search threads...">
                     <button id="btn-search" data-i18n="btn.search">Search</button>
                     <button id="btn-reindex" class="btn-sm" title="Recalculate all thread embeddings for improved search quality. Check 'Reset weights' to also reset thread weights to 1.0.">Reindex</button>
@@ -153,6 +165,7 @@
                 <thead>
                     <tr>
                         <th data-i18n="th.title">Title</th>
+                        <th>Origin</th>
                         <th data-i18n="th.status">Status</th>
                         <th data-i18n="th.weight">Weight</th>
                         <th data-i18n="th.importance">Importance</th>

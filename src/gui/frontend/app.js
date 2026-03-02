@@ -473,7 +473,8 @@ document.getElementById('btn-search-labels')?.addEventListener('click', async ()
     if (labels.length === 0) return;
     try {
         const threads = await invoke('search_threads_by_label', { projectHash, agentId: threadAgentId, labels });
-        renderThreads(threads);
+        currentThreads = threads;
+        applyOriginFilter();
     } catch (e) { console.error('Label search error:', e); }
 });
 
@@ -483,12 +484,14 @@ document.getElementById('btn-search-topics')?.addEventListener('click', async ()
     if (topics.length === 0) return;
     try {
         const threads = await invoke('search_threads_by_topic', { projectHash, agentId: threadAgentId, topics });
-        renderThreads(threads);
+        currentThreads = threads;
+        applyOriginFilter();
     } catch (e) { console.error('Topic search error:', e); }
 });
 
 document.getElementById('btn-load-labels')?.addEventListener('click', loadLabelOptions);
 document.getElementById('btn-load-topics')?.addEventListener('click', loadTopicOptions);
+document.getElementById('origin-filter')?.addEventListener('change', applyOriginFilter);
 
 // ─── Settings buttons ────────────────────────────────────────
 document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
@@ -928,6 +931,23 @@ function renderAgentBridges(bridges) {
 // ═══════════════════════════════════════════════════════════════
 
 let threadAgentId = '';  // Currently selected agent in Threads tab
+let currentThreads = []; // Stored for client-side origin filtering
+
+function originLabel(type) {
+    const map = { Prompt:'Prompt', FileRead:'Read', FileWrite:'Write', Response:'Response',
+                  Task:'Task', Fetch:'Fetch', Command:'Command', Split:'Split', Reactivation:'Reactivation' };
+    return map[type] || type || '\u2014';
+}
+function originBadgeColor(type) {
+    const colors = { FileRead:'#4a9eff', FileWrite:'#4ade80', Prompt:'#fbbf24', Response:'#a78bfa',
+                     Task:'#22d3ee', Fetch:'#f472b6', Command:'#94a3b8', Split:'#fb923c', Reactivation:'#86efac' };
+    return colors[type] || '#666';
+}
+function applyOriginFilter() {
+    const origin = document.getElementById('origin-filter').value;
+    const filtered = origin ? currentThreads.filter(t => t.origin_type === origin) : currentThreads;
+    renderThreads(filtered);
+}
 
 async function loadThreadAgentTabs() {
     if (!projectHash) return;
@@ -978,7 +998,8 @@ async function loadThreads() {
         const threads = await invoke('get_threads', {
             projectHash, agentId: threadAgentId, statusFilter: filter
         });
-        renderThreads(threads);
+        currentThreads = threads;
+        applyOriginFilter();
     } catch (e) { console.error('Threads error:', e); }
 }
 
@@ -986,7 +1007,8 @@ async function searchThreads(query) {
     if (!projectHash || !threadAgentId) return;
     try {
         const threads = await invoke('search_threads', { projectHash, agentId: threadAgentId, query });
-        renderThreads(threads);
+        currentThreads = threads;
+        applyOriginFilter();
     } catch (e) { console.error('Search error:', e); }
 }
 
@@ -997,8 +1019,10 @@ function renderThreads(threads) {
         const tr = document.createElement('tr');
         tr.dataset.threadId = t.id;
         tr.style.cursor = 'pointer';
+        const oc = originBadgeColor(t.origin_type);
         tr.innerHTML = `
             <td>${esc(t.title)}</td>
+            <td><span class="badge" style="background:${oc};color:#111;font-size:11px;padding:2px 6px;border-radius:3px">${originLabel(t.origin_type)}</span></td>
             <td><span class="badge badge-${(t.status||'').toLowerCase()}">${esc(t.status)}</span></td>
             <td>${(t.weight || 0).toFixed(2)}</td>
             <td>${(t.importance || 0).toFixed(2)}</td>
@@ -1008,7 +1032,7 @@ function renderThreads(threads) {
         tbody.appendChild(tr);
     }
     if (threads.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim)">No threads found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim)">No threads found</td></tr>';
     }
 }
 

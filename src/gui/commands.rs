@@ -495,6 +495,7 @@ pub fn search_threads(
             "weight": t.weight,
             "importance": t.importance,
             "topics": t.topics,
+            "origin_type": format!("{:?}", t.origin_type),
         })
     }).collect();
 
@@ -524,6 +525,7 @@ pub fn search_threads_by_label(
             "importance": t.importance,
             "topics": t.topics,
             "labels": t.labels,
+            "origin_type": format!("{:?}", t.origin_type),
             "message_count": ThreadStorage::message_count(&conn, &t.id).unwrap_or(0),
         })
     }).collect();
@@ -554,6 +556,7 @@ pub fn search_threads_by_topic(
             "importance": t.importance,
             "topics": t.topics,
             "labels": t.labels,
+            "origin_type": format!("{:?}", t.origin_type),
             "message_count": ThreadStorage::message_count(&conn, &t.id).unwrap_or(0),
         })
     }).collect();
