@@ -2214,6 +2214,7 @@ function buildGraph(threads, bridges) {
     const fArchived = document.getElementById('graph-f-archived')?.checked ?? false;
     const fImpMin = (parseInt(document.getElementById('graph-f-imp')?.value || '0')) / 100;
     const fMinBridges = parseInt(document.getElementById('graph-f-bridges')?.value || '0');
+    const fOrigin = document.getElementById('graph-f-origin')?.value || '';
 
     let filtered = threads.filter(t => {
         const s = (t.status || 'Active').toLowerCase();
@@ -2221,6 +2222,7 @@ function buildGraph(threads, bridges) {
         if (s === 'suspended' && !fSuspended) return false;
         if (s === 'archived' && !fArchived) return false;
         if ((t.importance || 0.5) < fImpMin) return false;
+        if (fOrigin && (t.origin_type || '') !== fOrigin) return false;
         return true;
     });
 
@@ -2242,7 +2244,7 @@ function buildGraph(threads, bridges) {
         x: (Math.random() - 0.5) * 600,
         y: (Math.random() - 0.5) * 400,
         vx: 0, vy: 0,
-        radius: 3 + (t.importance || 0.5) * 7,
+        radius: 2 + (t.importance || 0.5) * 5,
     }));
 
     // Re-filter edges to match filtered nodes
@@ -2605,6 +2607,17 @@ function drawGraph() {
 
         const r = n.radius * scale;
 
+        // Origin type ring (outer circle)
+        const ringWidth = Math.max(1.5, 2 * scale);
+        ctx.beginPath();
+        ctx.arc(nx, ny, r + ringWidth, 0, Math.PI * 2);
+        ctx.strokeStyle = originBadgeColor(n.origin_type);
+        ctx.lineWidth = ringWidth;
+        ctx.globalAlpha = isDimmed ? 0.15 : 0.85;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+
+        // Inner fill (status color)
         ctx.beginPath();
         ctx.arc(nx, ny, r, 0, Math.PI * 2);
         ctx.fillStyle = GRAPH_COLORS[n.status] || GRAPH_COLORS.active;
@@ -2767,7 +2780,7 @@ if (graphCanvas) {
                         (age ? `<br><span style="color:${GRAPH_COLORS.text_dim}">${age}</span>` : '') +
                         (node.labels.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Labels:</span> ${esc(node.labels.slice(0, 3).join(', '))}` : '') +
                         (node.topics.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '') +
-                        (node.origin_type ? `<br><span style="color:${GRAPH_COLORS.text_dim}">Origin: ${esc(node.origin_type)}</span>` : '');
+                        (node.origin_type ? `<br><span style="background:${originBadgeColor(node.origin_type)};color:#111;font-size:10px;padding:1px 5px;border-radius:3px">${originLabel(node.origin_type)}</span>` : '');
                     const containerRect = graphCanvas.parentElement.getBoundingClientRect();
                     let tipX = tipClientX - containerRect.left + 14;
                     let tipY = tipClientY - containerRect.top + 14;
@@ -2824,7 +2837,7 @@ function showGraphDetail(node) {
 
     let meta = `<strong>Status:</strong> <span style="color:${GRAPH_COLORS[node.status] || GRAPH_COLORS.active}">● ${node.status}</span><br>`;
     meta += `<strong>Weight:</strong> ${node.weight.toFixed(2)} &nbsp; <strong>Importance:</strong> ${node.importance.toFixed(2)}<br>`;
-    if (node.origin_type) meta += `<strong>Origin:</strong> ${esc(node.origin_type)}<br>`;
+    if (node.origin_type) meta += `<strong>Origin:</strong> <span style="background:${originBadgeColor(node.origin_type)};color:#111;font-size:11px;padding:1px 6px;border-radius:3px">${originLabel(node.origin_type)}</span><br>`;
     meta += `<strong>Topics:</strong> ${node.topics.join(', ') || '-'}<br>`;
     if (node.labels.length > 0) {
         meta += `<strong>Labels:</strong> ` + node.labels.map(l =>
@@ -2926,6 +2939,7 @@ document.getElementById('graph-f-imp')?.addEventListener('input', (e) => {
     document.getElementById('graph-f-imp-label').textContent = (parseInt(e.target.value) / 100).toFixed(2);
     applyGraphFilters();
 });
+document.getElementById('graph-f-origin')?.addEventListener('change', applyGraphFilters);
 document.getElementById('btn-graph-filter-reset')?.addEventListener('click', () => {
     document.getElementById('graph-f-active').checked = true;
     document.getElementById('graph-f-suspended').checked = false;
@@ -2933,6 +2947,7 @@ document.getElementById('btn-graph-filter-reset')?.addEventListener('click', () 
     document.getElementById('graph-f-imp').value = '0';
     document.getElementById('graph-f-imp-label').textContent = '0.00';
     document.getElementById('graph-f-bridges').value = '0';
+    document.getElementById('graph-f-origin').value = '';
     const searchEl = document.getElementById('graph-search');
     if (searchEl) { searchEl.value = ''; graphSearchQuery = ''; }
     applyGraphFilters();
@@ -2960,6 +2975,16 @@ function renderGraphLegend() {
     if (hasContinuity) {
         html += `<br><span style="color:${GRAPH_COLORS.text_dim}">— Continuity —</span><br>`;
         html += `<span style="color:rgba(167,139,250,0.7)">- - &rarr;</span> Reasoning chain &nbsp; `;
+    }
+    // Origin type legend (ring colors)
+    const activeOrigins = new Set(graphNodes.map(n => n.origin_type).filter(Boolean));
+    if (activeOrigins.size > 0) {
+        html += `<br><span style="color:${GRAPH_COLORS.text_dim}">— Origin (ring) —</span><br>`;
+        const originOrder = ['file_read', 'file_write', 'prompt', 'response', 'command', 'task', 'fetch'];
+        for (const o of originOrder) {
+            if (!activeOrigins.has(o)) continue;
+            html += `<span style="color:${originBadgeColor(o)}">◉</span> ${originLabel(o)} &nbsp; `;
+        }
     }
     html += `<br><span style="color:${GRAPH_COLORS.text_dim};font-size:10px">Node size ∝ importance</span>`;
     legend.innerHTML = html;
