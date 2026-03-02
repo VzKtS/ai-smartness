@@ -209,6 +209,7 @@ fn is_tool_capture_enabled(_project_hash: &str, tool_name: &str) -> bool {
                     "WebFetch" => "web_fetch",
                     "WebSearch" => "web_search",
                     "Task" => "task",
+                    "Agent" => "task",
                     "NotebookEdit" => "notebook_edit",
                     _ => return false,
                 };
