@@ -26,8 +26,11 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
 
     beat.save(&agent_data);
 
+    // Strip IDE/system-injected tags before capture (they pollute memory)
+    let clean_message = strip_system_tags(&message);
+
     // Send prompt to daemon for capture (non-blocking, ignore errors)
-    let _ = daemon_ipc_client::send_prompt_capture(project_hash, agent_id, &message, session_id);
+    let _ = daemon_ipc_client::send_prompt_capture(project_hash, agent_id, &clean_message, session_id);
 
     // Build and prepend reminder block
     let reminder_block = reminder::build(project_hash, agent_id, session_id, &beat);
@@ -71,4 +74,34 @@ fn extract_message(input: &str) -> String {
         }
     }
     input.to_string()
+}
+
+/// Strip IDE/system-injected XML tags from prompt text.
+///
+/// VSCode extension injects `<ide_selection>...</ide_selection>` into prompts,
+/// and context compaction may leave `<system-reminder>...</system-reminder>` blocks.
+/// These pollute captured content and must be removed before sending to memory.
+fn strip_system_tags(text: &str) -> String {
+    const TAGS: &[&str] = &["ide_selection", "system-reminder"];
+    let mut result = text.to_string();
+    for tag in TAGS {
+        loop {
+            let open = format!("<{}", tag);
+            let close = format!("</{}>", tag);
+            let start = match result.find(&open) {
+                Some(i) => i,
+                None => break,
+            };
+            let end = match result[start..].find(&close) {
+                Some(i) => start + i + close.len(),
+                None => break, // unclosed tag — leave as-is
+            };
+            result.replace_range(start..end, "");
+        }
+    }
+    // Collapse multiple blank lines left by removed blocks
+    while result.contains("\n\n\n") {
+        result = result.replace("\n\n\n", "\n\n");
+    }
+    result.trim().to_string()
 }

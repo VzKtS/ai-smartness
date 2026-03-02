@@ -342,9 +342,11 @@ impl ThreadManager {
         );
 
         // Add initial message
-        // For Summary mode: store file_path reference (summary already in thread.summary)
-        // For Extract mode: store the original content (meaningful human text)
-        let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary {
+        // Conversational sources (prompt/response): ALWAYS store original content — user intent matters
+        // Tool Summary mode: store file_path reference (summary already in thread.summary)
+        // Tool Extract mode: store the original content
+        let is_conversational = source_type == "prompt" || source_type == "response";
+        let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary && !is_conversational {
             if let Some(fp) = file_path {
                 ("reference".to_string(), fp.to_string(), false)
             } else {
@@ -427,8 +429,10 @@ impl ThreadManager {
             None => return Ok(()),
         };
 
-        // For Summary mode: store file_path reference (summary already in thread.summary)
-        let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary {
+        // Conversational sources (prompt/response): ALWAYS store original content
+        // Tool Summary mode: store file_path reference (summary already in thread.summary)
+        let is_conversational = source_type == "prompt" || source_type == "response";
+        let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary && !is_conversational {
             if let Some(fp) = file_path {
                 ("reference".to_string(), fp.to_string(), false)
             } else {
