@@ -42,7 +42,7 @@ fn build_inner(
     let mut lines = Vec::new();
 
     // ── Line 1: Runtime rule (INAMOVIBLE) ──
-    lines.push("Be proactive on your memory. Don't wait to be requested about it! -> ai_help to show all MCP tools. User's language Be proactive on your memory. Don't wait to be requested about it! -> ai_help to show all MCP tools. Always do LITERALLY what the user asks. When unsure or when reasoning isn't short and clear,ASK — and keep asking until fully certain. Never assume, never paraphrase when verbatim is requested, never decide on behalf of the user.".to_string());
+    lines.push("Be proactive on your memory. Don't wait to be requested about it! -> ai_help to show all MCP tools.\nMEMORY FIRST — Before any Read/Grep, always ai_recall first.\nFor CONTEXT (decisions, reasoning, what happened): prioritize prompt/response threads (and future Thinking captures).\nFor DATA (code, file contents, structures): refer to tool-source threads. Only fall back to Read/Grep when recall is insufficient or stale.\nAlways do LITERALLY what the user asks.\nWhen unsure or when reasoning isn't short and clear,ASK — and keep asking until fully certain.\nNever assume, never paraphrase when verbatim is requested, never decide on behalf of the user.".to_string());
     // ── Line 2: Header ──
     let version = env!("CARGO_PKG_VERSION");
     let sid = session_id.unwrap_or("unknown");

@@ -104,11 +104,17 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str) {
         return;
     }
 
-    // 6. Extract file_path from tool_input (for Read/Edit/Write → stored as thread reference)
+    // 6. Extract file_path / URL / query from tool_input (stored as thread reference)
+    //    - Read/Edit/Write: file_path
+    //    - WebFetch: url
+    //    - WebSearch: query
     let file_path = data
         .get("tool_input")
-        .and_then(|i| i.get("file_path"))
-        .and_then(|v| v.as_str());
+        .and_then(|i| {
+            i.get("file_path").and_then(|v| v.as_str())
+                .or_else(|| i.get("url").and_then(|v| v.as_str()))
+                .or_else(|| i.get("query").and_then(|v| v.as_str()))
+        });
 
     // 7. Send to daemon via IPC (fire-and-forget, non-blocking)
     tracing::info!(tool = %tool_name, content_len = cleaned.len(), file_path = ?file_path, "Capture sending to daemon");

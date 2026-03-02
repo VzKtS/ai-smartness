@@ -342,11 +342,13 @@ impl ThreadManager {
         );
 
         // Add initial message
-        // Conversational sources (prompt/response): ALWAYS store original content — user intent matters
+        // Verbatim sources (prompt/response/web): ALWAYS store original content
         // Tool Summary mode: store file_path reference (summary already in thread.summary)
         // Tool Extract mode: store the original content
-        let is_conversational = source_type == "prompt" || source_type == "response";
-        let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary && !is_conversational {
+        let force_verbatim = matches!(source_type,
+            "prompt" | "response" | "WebFetch" | "fetch" | "WebSearch"
+        );
+        let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary && !force_verbatim {
             if let Some(fp) = file_path {
                 ("reference".to_string(), fp.to_string(), false)
             } else {
@@ -355,6 +357,7 @@ impl ThreadManager {
         } else {
             let limit = match source_type {
                 "prompt" | "response" => CONTENT_LIMIT_CONVERSATION,
+                "WebFetch" | "fetch" | "WebSearch" => CONTENT_LIMIT_WEB,
                 _ => CONTENT_LIMIT_DEFAULT,
             };
             let trunc = content.len() > limit;
@@ -429,10 +432,12 @@ impl ThreadManager {
             None => return Ok(()),
         };
 
-        // Conversational sources (prompt/response): ALWAYS store original content
+        // Verbatim sources (prompt/response/web): ALWAYS store original content
         // Tool Summary mode: store file_path reference (summary already in thread.summary)
-        let is_conversational = source_type == "prompt" || source_type == "response";
-        let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary && !is_conversational {
+        let force_verbatim = matches!(source_type,
+            "prompt" | "response" | "WebFetch" | "fetch" | "WebSearch"
+        );
+        let (msg_source, msg_content, truncated) = if extraction.extraction_mode == ExtractionMode::Summary && !force_verbatim {
             if let Some(fp) = file_path {
                 ("reference".to_string(), fp.to_string(), false)
             } else {
@@ -441,6 +446,7 @@ impl ThreadManager {
         } else {
             let limit = match source_type {
                 "prompt" | "response" => CONTENT_LIMIT_CONVERSATION,
+                "WebFetch" | "fetch" | "WebSearch" => CONTENT_LIMIT_WEB,
                 _ => CONTENT_LIMIT_DEFAULT,
             };
             let trunc = content.len() > limit;

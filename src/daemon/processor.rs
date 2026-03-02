@@ -401,11 +401,13 @@ Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", 
     Ok(true)
 }
 
-/// Check if a source_type is a file tool (Read/Write/Edit) eligible for changelog shortcut.
+/// Check if a source_type is a file/URL tool eligible for changelog shortcut.
+/// WebFetch included: same URL re-fetched → changelog update, skip LLM.
+/// WebSearch excluded: results change per query, hash-based dedup won't match.
 fn is_file_tool_source(source_type: &str) -> bool {
     matches!(
         source_type,
-        "Read" | "file_read" | "Write" | "file_write" | "Edit"
+        "Read" | "file_read" | "Write" | "file_write" | "Edit" | "WebFetch" | "fetch"
     )
 }
 
