@@ -1,6 +1,6 @@
 [package]
 name = "ai-smartness"
-version = "5.4.12-alpha"
+version = "5.4.13-alpha"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
