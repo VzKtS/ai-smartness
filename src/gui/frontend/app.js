@@ -2983,7 +2983,7 @@ function renderGraphLegend() {
         const originOrder = ['FileRead', 'FileWrite', 'Prompt', 'Response', 'Command', 'Task', 'Fetch'];
         for (const o of originOrder) {
             if (!activeOrigins.has(o)) continue;
-            html += `<span style="color:${originBadgeColor(o)}">◉</span> ${originLabel(o)} &nbsp; `;
+            html += `<span style="color:${originBadgeColor(o)}">◯</span> ${originLabel(o)} &nbsp; `;
         }
     }
     html += `<br><span style="color:${GRAPH_COLORS.text_dim};font-size:10px">Node size ∝ importance</span>`;
