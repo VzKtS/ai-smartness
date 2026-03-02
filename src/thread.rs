@@ -89,7 +89,7 @@ impl std::str::FromStr for OriginType {
             "prompt" | "Prompt" => Ok(Self::Prompt),
             "file_read" | "Read" => Ok(Self::FileRead),
             "file_write" | "Write" | "Edit" => Ok(Self::FileWrite),
-            "task" | "Task" => Ok(Self::Task),
+            "task" | "Task" | "Agent" => Ok(Self::Task),
             "fetch" | "Fetch" | "WebFetch" | "WebSearch" => Ok(Self::Fetch),
             "response" | "Response" => Ok(Self::Response),
             "command" | "Command" | "Bash" => Ok(Self::Command),
