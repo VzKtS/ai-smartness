@@ -23,6 +23,9 @@ pub fn handle_merge(
         let _ = ThreadStorage::add_message(ctx.agent_conn, &msg);
     }
 
+    // Reparent continuity edges: children of absorbed → survivor
+    ThreadStorage::reparent_continuity(ctx.agent_conn, &absorbed_id, &survivor_id)?;
+
     // Merge metadata with consolidation (dedup + substring removal + caps)
     let mut merged = survivor.clone();
     merge_metadata::consolidate_after_merge(&mut merged, &absorbed);

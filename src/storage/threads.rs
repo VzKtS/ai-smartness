@@ -252,6 +252,7 @@ impl ThreadStorage {
     }
 
     pub fn delete(conn: &Connection, id: &str) -> AiResult<()> {
+        Self::cleanup_continuity_refs(conn, id)?;
         conn.execute("DELETE FROM threads WHERE id = ?1", params![id])
             .map_err(|e| AiError::Storage(format!("Delete thread failed: {}", e)))?;
         Ok(())
@@ -726,6 +727,109 @@ impl ThreadStorage {
         Ok(edges)
     }
 
+    // ── Continuity integrity ──
+
+    /// Reparent continuity references from `old_id` to `new_id`.
+    /// Used during merge: children of the absorbed thread are reparented to the survivor.
+    pub fn reparent_continuity(conn: &Connection, old_id: &str, new_id: &str) -> AiResult<()> {
+        conn.execute(
+            "UPDATE threads SET continuity_parent_id = ?1 WHERE continuity_parent_id = ?2",
+            params![new_id, old_id],
+        )
+        .map_err(|e| AiError::Storage(format!("Reparent continuity threads failed: {}", e)))?;
+
+        conn.execute(
+            "UPDATE thread_messages SET continuity_from = ?1 WHERE continuity_from = ?2",
+            params![new_id, old_id],
+        )
+        .map_err(|e| AiError::Storage(format!("Reparent continuity messages failed: {}", e)))?;
+
+        conn.execute(
+            "UPDATE thread_messages SET continuity_to = ?1 WHERE continuity_to = ?2",
+            params![new_id, old_id],
+        )
+        .map_err(|e| AiError::Storage(format!("Reparent continuity_to messages failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// SET NULL on all continuity references pointing to a thread about to be deleted.
+    /// Used during delete to prevent orphan continuity edges.
+    pub fn cleanup_continuity_refs(conn: &Connection, thread_id: &str) -> AiResult<()> {
+        conn.execute(
+            "UPDATE threads SET continuity_parent_id = NULL WHERE continuity_parent_id = ?1",
+            params![thread_id],
+        )
+        .map_err(|e| AiError::Storage(format!("Cleanup continuity threads failed: {}", e)))?;
+
+        conn.execute(
+            "UPDATE thread_messages SET continuity_from = NULL WHERE continuity_from = ?1",
+            params![thread_id],
+        )
+        .map_err(|e| AiError::Storage(format!("Cleanup continuity_from failed: {}", e)))?;
+
+        conn.execute(
+            "UPDATE thread_messages SET continuity_to = NULL WHERE continuity_to = ?1",
+            params![thread_id],
+        )
+        .map_err(|e| AiError::Storage(format!("Cleanup continuity_to failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Find threads whose continuity_parent_id points to a non-existent thread.
+    /// Returns list of orphan thread IDs.
+    pub fn scan_orphan_continuity(conn: &Connection) -> AiResult<Vec<String>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.id FROM threads t
+                 WHERE t.continuity_parent_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM threads WHERE id = t.continuity_parent_id)",
+            )
+            .map_err(|e| AiError::Storage(e.to_string()))?;
+
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| AiError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(ids)
+    }
+
+    /// SET NULL on orphan continuity_parent_id references (parent thread doesn't exist).
+    /// Returns number of threads cleaned.
+    pub fn cleanup_orphan_continuity(conn: &Connection) -> AiResult<usize> {
+        let cleaned = conn
+            .execute(
+                "UPDATE threads SET continuity_parent_id = NULL
+                 WHERE continuity_parent_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM threads WHERE id = threads.continuity_parent_id)",
+                [],
+            )
+            .map_err(|e| AiError::Storage(format!("Cleanup orphan continuity failed: {}", e)))?;
+
+        // Also clean orphan message-level continuity_from references
+        conn.execute(
+            "UPDATE thread_messages SET continuity_from = NULL
+             WHERE continuity_from IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM threads WHERE id = thread_messages.continuity_from)",
+            [],
+        )
+        .map_err(|e| AiError::Storage(format!("Cleanup orphan continuity_from failed: {}", e)))?;
+
+        // And continuity_to
+        conn.execute(
+            "UPDATE thread_messages SET continuity_to = NULL
+             WHERE continuity_to IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM threads WHERE id = thread_messages.continuity_to)",
+            [],
+        )
+        .map_err(|e| AiError::Storage(format!("Cleanup orphan continuity_to failed: {}", e)))?;
+
+        Ok(cleaned)
+    }
+
     // ── Batch operations ──
 
     pub fn delete_batch(conn: &Connection, ids: &[String]) -> AiResult<usize> {
@@ -737,6 +841,11 @@ impl ThreadStorage {
                 let chunk_vec: Vec<String> = chunk.to_vec();
                 Self::delete_batch(conn, &chunk_vec).map(|n| acc + n)
             });
+        }
+
+        // Clean continuity refs before deleting
+        for id in ids {
+            Self::cleanup_continuity_refs(conn, id)?;
         }
 
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
@@ -757,7 +866,27 @@ impl ThreadStorage {
         let tx = conn.unchecked_transaction()
             .map_err(|e| AiError::Storage(format!("Begin transaction failed: {}", e)))?;
 
-        // Delete messages for threads with this status first
+        // Clean continuity refs pointing to threads about to be deleted
+        tx.execute(
+            "UPDATE threads SET continuity_parent_id = NULL
+             WHERE continuity_parent_id IN (SELECT id FROM threads WHERE status = ?1)",
+            params![status.as_str()],
+        )
+        .map_err(|e| AiError::Storage(format!("Cleanup continuity on purge failed: {}", e)))?;
+        tx.execute(
+            "UPDATE thread_messages SET continuity_from = NULL
+             WHERE continuity_from IN (SELECT id FROM threads WHERE status = ?1)",
+            params![status.as_str()],
+        )
+        .map_err(|e| AiError::Storage(format!("Cleanup continuity_from on purge failed: {}", e)))?;
+        tx.execute(
+            "UPDATE thread_messages SET continuity_to = NULL
+             WHERE continuity_to IN (SELECT id FROM threads WHERE status = ?1)",
+            params![status.as_str()],
+        )
+        .map_err(|e| AiError::Storage(format!("Cleanup continuity_to on purge failed: {}", e)))?;
+
+        // Delete messages for threads with this status
         tx.execute(
             "DELETE FROM thread_messages WHERE thread_id IN (SELECT id FROM threads WHERE status = ?1)",
             params![status.as_str()],
@@ -1234,5 +1363,111 @@ mod tests {
         assert_eq!(ThreadStorage::find_by_file_path(&conn, "src/lib.rs").unwrap().len(), 1);
         assert_eq!(ThreadStorage::find_by_file_path(&conn, "src/config.rs").unwrap().len(), 1);
         assert!(ThreadStorage::find_by_file_path(&conn, "src/other.rs").unwrap().is_empty());
+    }
+
+    // ── Continuity integrity tests ──
+
+    #[test]
+    fn test_reparent_continuity_on_merge() {
+        let conn = setup_agent_db();
+        // Parent (will be absorbed), survivor, and child pointing to parent
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("parent").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("survivor").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("child").continuity_parent_id("parent").build()).unwrap();
+
+        // Message with continuity_from pointing to parent
+        let msg = ThreadMessageBuilder::new("child").continuity_from("parent").build();
+        ThreadStorage::add_message(&conn, &msg).unwrap();
+
+        // Reparent: parent → survivor
+        ThreadStorage::reparent_continuity(&conn, "parent", "survivor").unwrap();
+
+        let child = ThreadStorage::get(&conn, "child").unwrap().unwrap();
+        assert_eq!(child.continuity_parent_id.as_deref(), Some("survivor"));
+
+        let msgs = ThreadStorage::get_messages(&conn, "child").unwrap();
+        assert_eq!(msgs[0].continuity_from.as_deref(), Some("survivor"));
+    }
+
+    #[test]
+    fn test_delete_cleans_continuity_refs() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("parent").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("child").continuity_parent_id("parent").build()).unwrap();
+
+        let msg = ThreadMessageBuilder::new("child").continuity_from("parent").build();
+        ThreadStorage::add_message(&conn, &msg).unwrap();
+
+        // Deleting parent should NULL out continuity refs on child
+        ThreadStorage::delete(&conn, "parent").unwrap();
+
+        let child = ThreadStorage::get(&conn, "child").unwrap().unwrap();
+        assert_eq!(child.continuity_parent_id, None, "continuity_parent_id should be NULL after parent delete");
+
+        let msgs = ThreadStorage::get_messages(&conn, "child").unwrap();
+        assert_eq!(msgs[0].continuity_from, None, "continuity_from should be NULL after parent delete");
+    }
+
+    #[test]
+    fn test_delete_batch_cleans_continuity() {
+        let conn = setup_agent_db();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("p1").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("p2").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("c1").continuity_parent_id("p1").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("c2").continuity_parent_id("p2").build()).unwrap();
+
+        ThreadStorage::delete_batch(&conn, &["p1".into(), "p2".into()]).unwrap();
+
+        let c1 = ThreadStorage::get(&conn, "c1").unwrap().unwrap();
+        let c2 = ThreadStorage::get(&conn, "c2").unwrap().unwrap();
+        assert_eq!(c1.continuity_parent_id, None);
+        assert_eq!(c2.continuity_parent_id, None);
+    }
+
+    #[test]
+    fn test_delete_by_status_cleans_continuity() {
+        let conn = setup_agent_db();
+        // Archived parent, active child pointing to it
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("archived-parent").status(ThreadStatus::Archived).build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("active-child").continuity_parent_id("archived-parent").build()).unwrap();
+
+        ThreadStorage::delete_by_status(&conn, &ThreadStatus::Archived).unwrap();
+
+        let child = ThreadStorage::get(&conn, "active-child").unwrap().unwrap();
+        assert_eq!(child.continuity_parent_id, None, "continuity_parent_id should be NULL after status purge");
+    }
+
+    #[test]
+    fn test_scan_orphan_continuity() {
+        use crate::test_helpers::setup_agent_db_no_fk;
+        let conn = setup_agent_db_no_fk();
+
+        // Create parent-child continuity chain
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("parent").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("child").continuity_parent_id("parent").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("other").build()).unwrap();
+
+        // No orphans yet
+        let orphans = ThreadStorage::scan_orphan_continuity(&conn).unwrap();
+        assert_eq!(orphans.len(), 0, "No orphans before delete");
+
+        // Delete parent via raw SQL (bypass cleanup_continuity_refs to simulate orphan)
+        conn.execute("DELETE FROM threads WHERE id = 'parent'", []).unwrap();
+
+        // Now child is an orphan
+        let orphans = ThreadStorage::scan_orphan_continuity(&conn).unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0], "child");
+
+        // Cleanup should fix it
+        let cleaned = ThreadStorage::cleanup_orphan_continuity(&conn).unwrap();
+        assert!(cleaned >= 1);
+
+        let fixed = ThreadStorage::get(&conn, "child").unwrap().unwrap();
+        assert_eq!(fixed.continuity_parent_id, None);
+
+        // No more orphans
+        let orphans = ThreadStorage::scan_orphan_continuity(&conn).unwrap();
+        assert_eq!(orphans.len(), 0);
     }
 }

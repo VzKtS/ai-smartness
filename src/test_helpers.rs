@@ -132,6 +132,11 @@ impl ThreadBuilder {
         self
     }
 
+    pub fn continuity_parent_id(mut self, id: &str) -> Self {
+        self.thread.continuity_parent_id = Some(id.to_string());
+        self
+    }
+
     pub fn build(self) -> Thread {
         self.thread
     }
@@ -251,6 +256,11 @@ impl ThreadMessageBuilder {
 
     pub fn source(mut self, s: &str) -> Self {
         self.msg.source = s.to_string();
+        self
+    }
+
+    pub fn continuity_from(mut self, id: &str) -> Self {
+        self.msg.continuity_from = Some(id.to_string());
         self
     }
 

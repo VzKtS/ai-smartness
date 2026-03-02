@@ -103,7 +103,14 @@ impl Decayer {
             BridgeStorage::delete_batch(conn, &ids)?;
         }
 
-        tracing::info!(threads_affected = affected, threads_suspended = suspended_count, orphans_cleaned = orphans.len(), "Decay cycle complete");
+        // 4. Clean orphan continuity edges
+        let continuity_orphans = ThreadStorage::scan_orphan_continuity(conn)?;
+        if !continuity_orphans.is_empty() {
+            tracing::debug!(orphan_count = continuity_orphans.len(), "Cleaning orphan continuity edges");
+            ThreadStorage::cleanup_orphan_continuity(conn)?;
+        }
+
+        tracing::info!(threads_affected = affected, threads_suspended = suspended_count, orphans_cleaned = orphans.len(), continuity_orphans = continuity_orphans.len(), "Decay cycle complete");
 
         Ok(affected)
     }
@@ -260,5 +267,24 @@ mod tests {
 
         // Orphan bridge should be deleted
         assert!(BridgeStorage::get(&conn, "b-orphan").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_decay_cleans_orphan_continuity() {
+        let conn = setup_agent_db_no_fk();
+        let cfg = default_cfg();
+        // t1 exists, t2 has continuity_parent_id pointing to t1
+        let t1 = ThreadBuilder::new().id("t1").build();
+        let t2 = ThreadBuilder::new().id("t2").continuity_parent_id("t1").build();
+        ThreadStorage::insert(&conn, &t1).unwrap();
+        ThreadStorage::insert(&conn, &t2).unwrap();
+        // Delete t1 directly (no FK, simulates orphan)
+        conn.execute("DELETE FROM threads WHERE id = 't1'", []).unwrap();
+
+        Decayer::decay_active(&conn, &cfg).unwrap();
+
+        // t2's continuity_parent_id should be NULL now
+        let got = ThreadStorage::get(&conn, "t2").unwrap().unwrap();
+        assert_eq!(got.continuity_parent_id, None);
     }
 }

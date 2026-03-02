@@ -95,7 +95,7 @@ pub fn handle_split(
             embedding: None,
             extraction_mode: ai_smartness::processing::extractor::ExtractionMode::default(),
             has_truncated_origin: false,
-            continuity_parent_id: None,
+            continuity_parent_id: Some(thread_id.clone()),
             subject_coherence: None,
             created_at: now,
             last_active: now,
