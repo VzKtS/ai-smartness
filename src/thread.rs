@@ -86,15 +86,15 @@ impl std::str::FromStr for OriginType {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "prompt" => Ok(Self::Prompt),
-            "file_read" => Ok(Self::FileRead),
-            "file_write" => Ok(Self::FileWrite),
-            "task" => Ok(Self::Task),
-            "fetch" => Ok(Self::Fetch),
-            "response" => Ok(Self::Response),
-            "command" => Ok(Self::Command),
-            "split" => Ok(Self::Split),
-            "reactivation" => Ok(Self::Reactivation),
+            "prompt" | "Prompt" => Ok(Self::Prompt),
+            "file_read" | "Read" => Ok(Self::FileRead),
+            "file_write" | "Write" | "Edit" => Ok(Self::FileWrite),
+            "task" | "Task" => Ok(Self::Task),
+            "fetch" | "Fetch" | "WebFetch" | "WebSearch" => Ok(Self::Fetch),
+            "response" | "Response" => Ok(Self::Response),
+            "command" | "Command" | "Bash" => Ok(Self::Command),
+            "split" | "Split" => Ok(Self::Split),
+            "reactivation" | "Reactivation" => Ok(Self::Reactivation),
             _ => Err(format!("Unknown origin type: {}", s)),
         }
     }
