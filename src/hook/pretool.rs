@@ -154,17 +154,21 @@ fn try_engram_injection(session_id: Option<&str>, project_hash: &str, agent_id: 
         return None;
     }
 
-    // Format engram hint
+    // Format engram hint — degressive summary length: most relevant thread gets more context
+    let max_lengths = [250, 150, 80];
     let mut hint = String::from("<engram>\n");
-    for r in results.iter().filter(|r| r.pass_count >= 2).take(3) {
+    for (i, r) in results.iter().filter(|r| r.pass_count >= 2).take(3).enumerate() {
         let summary = r.summary.as_deref().unwrap_or("");
-        let summary_short = if summary.len() > 80 {
-            format!("{}...", &summary[..summary.chars().take(77).map(|c| c.len_utf8()).sum()])
+        let max_len = max_lengths[i];
+        let summary_short = if summary.len() > max_len {
+            let byte_end: usize = summary.chars().take(max_len - 3).map(|c| c.len_utf8()).sum();
+            format!("{}...", &summary[..byte_end])
         } else {
             summary.to_string()
         };
         hint.push_str(&format!("- \"{}\": {}\n", r.title, summary_short));
     }
+    hint.push_str("BIFURCATE: save your current reasoning as a __mind__ thread before continuing.\n");
     hint.push_str("</engram>");
 
     tracing::info!(
