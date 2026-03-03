@@ -482,9 +482,13 @@ fn check_cognitive_proactive(project_hash: &str, agent_id: &str) {
         }
     }
 
+    // Re-check: messages may have been acked between peek and signal check
+    let still_pending = CognitiveInbox::count_pending(&conn, agent_id).unwrap_or(0);
+    if still_pending == 0 { return; }
+
     tracing::info!(
         agent = agent_id,
-        pending = messages.len(),
+        pending = still_pending,
         "Cognitive proactive: emitting wake signal"
     );
     super::tools::messaging::emit_wake_signal(agent_id, "cognitive-inbox", "Pending cognitive messages", "cognitive", false);

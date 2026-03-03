@@ -192,12 +192,27 @@ pub fn handle_msg_ack(
     let ack_id = match thread_id.or(msg_ref) {
         Some(id) => id,
         None => {
+            // Transition all pending → read so ack_latest can find them
+            CognitiveInbox::read_pending(ctx.agent_conn, ctx.agent_id)?;
             CognitiveInbox::ack_latest(ctx.agent_conn, ctx.agent_id)?
                 .ok_or_else(|| ai_smartness::AiError::InvalidInput("No unacked messages found".into()))?
         }
     };
 
     CognitiveInbox::ack(ctx.agent_conn, &ack_id)?;
+
+    // Remove cognitive wake signal when inbox is fully drained
+    if CognitiveInbox::count_pending(ctx.agent_conn, ctx.agent_id).unwrap_or(1) == 0 {
+        let signal_path = path_utils::wake_signal_path(ctx.agent_id);
+        if let Ok(content) = std::fs::read_to_string(&signal_path) {
+            if let Ok(sig) = serde_json::from_str::<serde_json::Value>(&content) {
+                if sig.get("mode").and_then(|m| m.as_str()) == Some("cognitive") {
+                    std::fs::remove_file(&signal_path).ok();
+                }
+            }
+        }
+    }
+
     Ok(serde_json::json!({"acked": ack_id}))
 }
 
@@ -652,7 +667,7 @@ mod tests {
         cleanup_signal(agent);
     }
 
-    // T-C5.3: handle_msg_ack without params uses ack_latest
+    // T-C5.3: handle_msg_ack without params — read_pending + ack_latest in one call
     #[test]
     fn test_msg_ack_fallback_uses_ack_latest() {
         let agent_conn = setup_agent_db();
@@ -679,14 +694,68 @@ mod tests {
             rusqlite::params![agent_id, future, now_str],
         ).unwrap();
 
-        // Mark as read
-        ai_smartness::storage::cognitive_inbox::CognitiveInbox::read_pending(&agent_conn, agent_id).unwrap();
-
-        // Call with empty params → should use ack_latest fallback
+        // No manual read_pending() — handle_msg_ack does it internally now
         let params = serde_json::json!({});
         let result = handle_msg_ack(&params, &ctx);
-        assert!(result.is_ok(), "Should succeed using ack_latest fallback");
+        assert!(result.is_ok(), "Should succeed: read_pending + ack_latest in one call");
         assert_eq!(result.unwrap()["acked"], "m1");
+
+        // Verify message is fully consumed
+        let count = ai_smartness::storage::cognitive_inbox::CognitiveInbox::count_pending(&agent_conn, agent_id).unwrap();
+        assert_eq!(count, 0, "No pending messages should remain after ack");
+    }
+
+    // Bug #1 fix: full lifecycle — pending → read → acked + signal cleanup
+    #[test]
+    fn test_msg_ack_full_lifecycle_with_signal_cleanup() {
+        let agent_id = "test-ack-lifecycle-1";
+        cleanup_signal(agent_id);
+
+        let agent_conn = setup_agent_db();
+        let registry_conn = setup_registry_db();
+        let shared_conn = setup_shared_db();
+
+        let ctx = ToolContext {
+            agent_conn: &agent_conn,
+            registry_conn: &registry_conn,
+            shared_conn: &shared_conn,
+            project_hash: "test-ph",
+            agent_id,
+        };
+
+        let future = ai_smartness::time_utils::to_sqlite(
+            &(ai_smartness::time_utils::now() + chrono::Duration::hours(24)),
+        );
+        let now_str = ai_smartness::time_utils::to_sqlite(&ai_smartness::time_utils::now());
+
+        // 1. Insert pending cognitive message
+        agent_conn.execute(
+            "INSERT INTO cognitive_inbox (id, from_agent, to_agent, subject, content, priority, ttl_expiry, status, created_at)
+             VALUES ('lifecycle-m1', 'sender', ?1, 'test', 'hello', 'normal', ?2, 'pending', ?3)",
+            rusqlite::params![agent_id, future, now_str],
+        ).unwrap();
+
+        // 2. Emit cognitive wake signal
+        emit_wake_signal(agent_id, "sender", "test subject", "cognitive", false);
+        assert!(path_utils::wake_signal_path(agent_id).exists(), "Signal should exist before ack");
+
+        // 3. Verify pending count is 1
+        let count_before = ai_smartness::storage::cognitive_inbox::CognitiveInbox::count_pending(&agent_conn, agent_id).unwrap();
+        assert_eq!(count_before, 1, "Should have 1 pending message");
+
+        // 4. Call handle_msg_ack with no params
+        let result = handle_msg_ack(&serde_json::json!({}), &ctx);
+        assert!(result.is_ok(), "Ack should succeed");
+        assert_eq!(result.unwrap()["acked"], "lifecycle-m1");
+
+        // 5. Verify pending count is 0
+        let count_after = ai_smartness::storage::cognitive_inbox::CognitiveInbox::count_pending(&agent_conn, agent_id).unwrap();
+        assert_eq!(count_after, 0, "No pending messages after ack");
+
+        // 6. Verify cognitive wake signal was removed
+        assert!(!path_utils::wake_signal_path(agent_id).exists(), "Cognitive signal should be removed after ack drains inbox");
+
+        cleanup_signal(agent_id);
     }
 
     fn register_agent_for_broadcast(conn: &Connection, id: &str, ph: &str) {

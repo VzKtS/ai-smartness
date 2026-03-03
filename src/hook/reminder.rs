@@ -188,6 +188,16 @@ fn append_pending_messages(
         }
         lines.push(format!("\nalerts: {}", parts.join(" | ")));
     }
+
+    // Cognitive inbox content (auto-clears after ai_msg_ack)
+    let cog_msgs = CognitiveInbox::peek_pending(agent_conn, agent_id).unwrap_or_default();
+    if !cog_msgs.is_empty() {
+        lines.push(String::new());
+        lines.push("cognitive inbox (use ai_msg_ack after processing):".to_string());
+        for m in &cog_msgs {
+            lines.push(format!("- [from:{}] \"{}\" | {}", m.from_agent, m.subject, m.content));
+        }
+    }
 }
 
 /// Lookup agent role from registry. Returns "agent" as fallback.
