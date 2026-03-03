@@ -117,9 +117,12 @@ fn append_threads_pins_focus(lines: &mut Vec<String>, conn: &rusqlite::Connectio
         lines.push("threads (ai_recall for deep search):".to_string());
         for t in &threads {
             let id8 = if t.id.len() > 8 { &t.id[..8] } else { &t.id };
+            let parent_part = t.continuity_parent_id.as_ref().and_then(|pid| {
+                ThreadStorage::get(conn, pid).ok().flatten().map(|p| format!(" <- \"{}\"", p.title))
+            }).unwrap_or_default();
             lines.push(format!(
-                "- {} \"{}\" w={:.2} i={:.2}",
-                id8, t.title, t.weight, t.importance
+                "- {} \"{}\" w={:.2} i={:.2}{}",
+                id8, t.title, t.weight, t.importance, parent_part
             ));
         }
     }
