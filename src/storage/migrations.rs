@@ -501,6 +501,14 @@ pub fn migrate_registry_db(conn: &Connection) -> AiResult<()> {
         set_schema_version(conn, 7)?;
     }
 
+    // V8: add context_path column to agent_tasks
+    if version < 8 {
+        conn.execute_batch(
+            "ALTER TABLE agent_tasks ADD COLUMN context_path TEXT;"
+        ).map_err(|e| AiError::Storage(format!("Registry DB V8 migration failed: {}", e)))?;
+        set_schema_version(conn, 8)?;
+    }
+
     Ok(())
 }
 

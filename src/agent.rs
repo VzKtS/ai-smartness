@@ -336,4 +336,5 @@ pub struct AgentTask {
     pub deadline: Option<DateTime<Utc>>,
     pub dependencies: Vec<String>,
     pub result: Option<String>,
+    pub context_path: Option<String>,
 }

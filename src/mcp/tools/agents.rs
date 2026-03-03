@@ -232,6 +232,7 @@ pub fn handle_agent_tasks(
                 deadline: None,
                 dependencies: vec![],
                 result: None,
+                context_path: None,
             };
             AgentTaskStorage::create_task(ctx.registry_conn, &task)?;
             Ok(serde_json::json!({"created": task.id}))
@@ -363,6 +364,7 @@ pub fn handle_task_delegate(
         deadline: None,
         dependencies: vec![],
         result: None,
+        context_path: optional_str(params, "context_path"),
     };
 
     AgentTaskStorage::create_task(ctx.registry_conn, &task)?;
@@ -385,6 +387,7 @@ pub fn handle_task_status(
             "priority": task.priority.as_str(),
             "result": task.result,
             "description": task.description,
+            "context_path": task.context_path,
         }))
     } else {
         Err(ai_smartness::AiError::InvalidInput(format!(

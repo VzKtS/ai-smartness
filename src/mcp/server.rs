@@ -558,7 +558,7 @@ fn tool_definitions() -> Vec<serde_json::Value> {
         tool_def("agent_cleanup", "Clean up agents", &[], &["remove_agent", "remove_orphans"]),
         tool_def("agent_configure", "Configure agent", &["agent_id", "project_hash"], &["role", "supervisor_id"]),
         tool_def("agent_tasks", "Manage tasks", &["action"], &[]),
-        tool_def("task_delegate", "Delegate task", &["to", "task"], &["context", "priority"]),
+        tool_def("task_delegate", "Delegate task", &["to", "task"], &["context", "priority", "context_path"]),
         tool_def("task_status", "Task status", &["task_id"], &[]),
         tool_def("task_complete", "Mark a delegated task as completed and auto-notify the delegator", &["task_id"], &["result"]),
         tool_def("metrics_cross_agent", "Cross-agent metrics", &[], &["agent_id", "period"]),

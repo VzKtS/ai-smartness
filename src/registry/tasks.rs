@@ -31,6 +31,7 @@ fn task_from_row(row: &Row) -> rusqlite::Result<AgentTask> {
         deadline: deadline_str.and_then(|s| time_utils::from_sqlite(&s).ok()),
         dependencies: serde_json::from_str(&deps_json).unwrap_or_default(),
         result: row.get("result")?,
+        context_path: row.get::<_, Option<String>>("context_path").unwrap_or(None),
     })
 }
 
@@ -75,8 +76,8 @@ impl AgentTaskStorage {
         conn.execute(
             "INSERT INTO agent_tasks (
                 id, project_hash, assigned_to, assigned_by, title, description,
-                priority, status, created_at, updated_at, deadline, dependencies, result
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                priority, status, created_at, updated_at, deadline, dependencies, result, context_path
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 task.id,
                 task.project_hash,
@@ -91,6 +92,7 @@ impl AgentTaskStorage {
                 task.deadline.map(|d| time_utils::to_sqlite(&d)),
                 serde_json::to_string(&task.dependencies).unwrap_or_else(|_| "[]".into()),
                 task.result,
+                task.context_path,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Create task failed: {}", e)))?;
@@ -338,6 +340,7 @@ mod tests {
             deadline: None,
             dependencies: vec![],
             result: None,
+            context_path: None,
         };
         AgentTaskStorage::create_task(&conn, &task).unwrap();
 
