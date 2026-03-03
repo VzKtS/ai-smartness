@@ -569,21 +569,48 @@ fn thread_json(t: &ai_smartness::thread::Thread) -> serde_json::Value {
 }
 
 pub fn handle_continuity_edges(
-    _params: &serde_json::Value,
+    params: &serde_json::Value,
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
-    let edges = ThreadStorage::get_continuity_edges(ctx.agent_conn)?;
-    let results: Vec<serde_json::Value> = edges
-        .iter()
-        .map(|(child_id, parent_id, coherence)| {
-            serde_json::json!({
-                "source_id": parent_id,
-                "target_id": child_id,
-                "subject_coherence": coherence,
-            })
-        })
-        .collect();
-    Ok(serde_json::json!({"edges": results, "count": results.len()}))
+    let action = optional_str(params, "action").unwrap_or_else(|| "list".to_string());
+
+    match action.as_str() {
+        "list" => {
+            let edges = ThreadStorage::get_continuity_edges(ctx.agent_conn)?;
+            let results: Vec<serde_json::Value> = edges
+                .iter()
+                .map(|(child_id, parent_id, coherence)| {
+                    serde_json::json!({
+                        "source_id": parent_id,
+                        "target_id": child_id,
+                        "subject_coherence": coherence,
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({"edges": results, "count": results.len()}))
+        }
+        "set" => {
+            let thread_id = required_str(params, "thread_id")?;
+            let parent_id = required_str(params, "parent_id")?;
+            let coherence = optional_f64(params, "coherence");
+            ThreadStorage::set_continuity_parent(ctx.agent_conn, &thread_id, &parent_id, coherence)?;
+            Ok(serde_json::json!({"ok": true, "action": "set", "thread_id": thread_id, "parent_id": parent_id}))
+        }
+        "unset" => {
+            let thread_id = required_str(params, "thread_id")?;
+            ThreadStorage::unset_continuity_parent(ctx.agent_conn, &thread_id)?;
+            Ok(serde_json::json!({"ok": true, "action": "unset", "thread_id": thread_id}))
+        }
+        "scan_orphans" => {
+            let orphans = ThreadStorage::scan_orphan_continuity(ctx.agent_conn)?;
+            Ok(serde_json::json!({"orphans": orphans, "count": orphans.len()}))
+        }
+        "repair" => {
+            let cleaned = ThreadStorage::cleanup_orphan_continuity(ctx.agent_conn)?;
+            Ok(serde_json::json!({"ok": true, "action": "repair", "cleaned": cleaned}))
+        }
+        _ => Err(ai_smartness::AiError::InvalidInput(format!("Unknown continuity action: {}", action))),
+    }
 }
 
 #[cfg(test)]

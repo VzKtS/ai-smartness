@@ -727,6 +727,34 @@ impl ThreadStorage {
         Ok(edges)
     }
 
+    /// Set continuity_parent_id (and optional coherence) on a thread.
+    pub fn set_continuity_parent(
+        conn: &Connection,
+        thread_id: &str,
+        parent_id: &str,
+        coherence: Option<f64>,
+    ) -> AiResult<()> {
+        conn.execute(
+            "UPDATE threads SET continuity_parent_id = ?1, subject_coherence = ?2 WHERE id = ?3",
+            params![parent_id, coherence, thread_id],
+        )
+        .map_err(|e| AiError::Storage(format!("Set continuity parent failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Remove continuity_parent_id from a thread.
+    pub fn unset_continuity_parent(
+        conn: &Connection,
+        thread_id: &str,
+    ) -> AiResult<()> {
+        conn.execute(
+            "UPDATE threads SET continuity_parent_id = NULL, subject_coherence = NULL WHERE id = ?1",
+            params![thread_id],
+        )
+        .map_err(|e| AiError::Storage(format!("Unset continuity parent failed: {}", e)))?;
+        Ok(())
+    }
+
     // ── Continuity integrity ──
 
     /// Reparent continuity references from `old_id` to `new_id`.

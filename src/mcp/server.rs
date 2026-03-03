@@ -515,7 +515,7 @@ fn tool_definitions() -> Vec<serde_json::Value> {
         tool_def("ai_rate_importance", "Set importance score", &["thread_id", "score"], &["reason"]),
         tool_def("ai_rate_context", "Rate context usefulness", &["thread_id", "useful"], &["reason"]),
         tool_def("ai_mark_used", "Mark thread as used after injection", &["thread_id"], &[]),
-        tool_def("ai_continuity_edges", "List continuity edges (reasoning chain between threads)", &[], &[]),
+        tool_def("ai_continuity_edges", "Manage continuity edges (reasoning chain between threads)", &[], &["action", "thread_id", "parent_id", "coherence"]),
         tool_def("ai_bridges", "List bridges", &[], &["thread_id", "relation_type", "status"]),
         tool_def("ai_bridge_analysis", "Bridge network analytics", &[], &[]),
         tool_def("ai_bridge_scan_orphans", "Scan orphan bridges", &[], &["confirm"]),
