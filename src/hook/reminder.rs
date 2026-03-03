@@ -63,6 +63,7 @@ fn build_inner(
     lines.push(String::new());
     lines.push("rules:".to_string());
     lines.push("- NEVER use bash/sqlite to access or modify ai-smartness databases directly. All memory operations MUST go through MCP tools.".to_string());
+    lines.push("- During long responses or complex reasoning, self-interrupt by creating a __mind__ savepoint (ai_thread_create with tag __mind__) to capture your current reasoning state. This triggers the engram cycle and lets you reassess your direction.".to_string());
     for rule in &profile.context_rules {
         lines.push(format!("- {}", rule));
     }
