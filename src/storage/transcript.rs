@@ -143,6 +143,71 @@ fn find_last_json_string(content: &str, key: &str) -> Option<String> {
     Some(content[start..end].to_string())
 }
 
+/// Extract the last thinking block from a transcript JSONL file.
+/// Uses seek-from-end to read only the last ~32KB, then scans for the last
+/// assistant message with a `thinking` content block.
+///
+/// Returns None if no thinking block found or file unreadable.
+pub fn extract_last_thinking(session_id: &str) -> Option<String> {
+    let path = find_transcript(session_id)?;
+    let file = std::fs::File::open(&path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let file_size = metadata.len();
+
+    if file_size == 0 {
+        return None;
+    }
+
+    // Read last 32KB — thinking blocks are in recent assistant messages
+    let tail = read_tail(&file, file_size, file_size.min(32_000))?;
+
+    // Scan lines in reverse to find the last assistant message with thinking
+    let mut last_thinking: Option<String> = None;
+    for line in tail.lines().rev() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let data: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Only look at assistant messages
+        let role = data
+            .get("message")
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
+        if role != "assistant" {
+            continue;
+        }
+
+        // Check content array for thinking blocks
+        if let Some(content) = data
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        {
+            for block in content {
+                if block.get("type").and_then(|t| t.as_str()) == Some("thinking") {
+                    if let Some(thinking_text) = block.get("thinking").and_then(|t| t.as_str()) {
+                        if !thinking_text.is_empty() {
+                            last_thinking = Some(thinking_text.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Found an assistant message — stop scanning (we want the most recent)
+        if last_thinking.is_some() {
+            break;
+        }
+    }
+
+    last_thinking
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +296,109 @@ mod tests {
     fn test_find_transcript_not_found() {
         // With a fake session_id, should return None
         assert!(find_transcript("nonexistent-session-id-12345").is_none());
+    }
+
+    #[test]
+    fn test_extract_thinking_from_tail() {
+        // Test the thinking extraction logic directly using read_tail + parsing
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-session.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+
+        // Write a user message (no thinking)
+        writeln!(f, r#"{{"type":"human","message":{{"role":"user","content":[{{"type":"text","text":"hello"}}]}}}}"#).unwrap();
+        // Write an assistant message WITH thinking
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"thinking","thinking":"I need to analyze this request carefully"}},{{"type":"text","text":"Hello!"}}]}}}}"#).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let size = file.metadata().unwrap().len();
+        let tail = read_tail(&file, size, size).unwrap();
+
+        // Parse like extract_last_thinking does
+        let mut found = None;
+        for line in tail.lines().rev() {
+            let data: serde_json::Value = serde_json::from_str(line).unwrap();
+            let role = data.get("message").and_then(|m| m.get("role")).and_then(|r| r.as_str()).unwrap_or("");
+            if role == "assistant" {
+                if let Some(content) = data.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+                    for block in content {
+                        if block.get("type").and_then(|t| t.as_str()) == Some("thinking") {
+                            found = block.get("thinking").and_then(|t| t.as_str()).map(|s| s.to_string());
+                        }
+                    }
+                }
+                if found.is_some() { break; }
+            }
+        }
+        assert_eq!(found, Some("I need to analyze this request carefully".to_string()));
+    }
+
+    #[test]
+    fn test_extract_thinking_no_thinking_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-no-thinking.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+
+        // Assistant message WITHOUT thinking
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Just text"}}]}}}}"#).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let size = file.metadata().unwrap().len();
+        let tail = read_tail(&file, size, size).unwrap();
+
+        let mut found = None;
+        for line in tail.lines().rev() {
+            if let Ok(data) = serde_json::from_str::<serde_json::Value>(line) {
+                let role = data.get("message").and_then(|m| m.get("role")).and_then(|r| r.as_str()).unwrap_or("");
+                if role == "assistant" {
+                    if let Some(content) = data.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+                        for block in content {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("thinking") {
+                                found = block.get("thinking").and_then(|t| t.as_str()).map(|s| s.to_string());
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_extract_thinking_multiple_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-multi.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+
+        // First assistant message with thinking
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"thinking","thinking":"First thought"}},{{"type":"text","text":"First response"}}]}}}}"#).unwrap();
+        // User message
+        writeln!(f, r#"{{"type":"human","message":{{"role":"user","content":[{{"type":"text","text":"more"}}]}}}}"#).unwrap();
+        // Second assistant message with thinking (most recent)
+        writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"thinking","thinking":"Second thought, more detailed"}},{{"type":"text","text":"Second response"}}]}}}}"#).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let size = file.metadata().unwrap().len();
+        let tail = read_tail(&file, size, size).unwrap();
+
+        let mut found = None;
+        for line in tail.lines().rev() {
+            if let Ok(data) = serde_json::from_str::<serde_json::Value>(line) {
+                let role = data.get("message").and_then(|m| m.get("role")).and_then(|r| r.as_str()).unwrap_or("");
+                if role == "assistant" {
+                    if let Some(content) = data.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+                        for block in content {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("thinking") {
+                                found = block.get("thinking").and_then(|t| t.as_str()).map(|s| s.to_string());
+                            }
+                        }
+                    }
+                    if found.is_some() { break; }
+                }
+            }
+        }
+        // Should find the LAST (most recent) thinking block
+        assert_eq!(found, Some("Second thought, more detailed".to_string()));
     }
 }

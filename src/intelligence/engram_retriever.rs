@@ -249,6 +249,86 @@ impl EngramRetriever {
         Ok(result)
     }
 
+    /// Query for thinking injection — same 3-phase pipeline but:
+    /// - Floor at pass_count >= 2 (instead of >= 3 for WeakInject)
+    /// - NO Hebbian reinforcement (thinking queries are high-frequency)
+    /// - Returns all threads with pass_count >= 2 for convergence check by caller
+    pub fn query_for_thinking_injection(
+        &self,
+        conn: &Connection,
+        thinking_text: &str,
+        limit: usize,
+    ) -> AiResult<Vec<ScoredThread>> {
+        tracing::info!(query_len = thinking_text.len(), "Engram thinking query starting");
+
+        // Phase 1: same pre-filter
+        let query_topics = self.topic_index.extract_matching_topics(thinking_text);
+        let query_concepts = self.concept_index.extract_matching_concepts(thinking_text);
+
+        let candidate_ids = if self.config.hash_index_enabled
+            && (!query_topics.is_empty() || !query_concepts.is_empty())
+        {
+            let mut ids = self.topic_index.lookup(&query_topics);
+            ids.extend(self.concept_index.lookup(&query_concepts));
+            if ids.len() > self.config.max_candidates {
+                ids.into_iter().take(self.config.max_candidates).collect()
+            } else {
+                ids
+            }
+        } else {
+            load_active_thread_ids(conn, self.config.max_candidates)?
+        };
+
+        if candidate_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let candidates = load_threads_by_ids(conn, &candidate_ids)?;
+        let query_embedding = compute_query_embedding(thinking_text, &self.config.embedding.mode);
+
+        let ctx = QueryContext {
+            user_message: thinking_text.to_string(),
+            query_embedding,
+            query_topics,
+            query_concepts,
+            active_thread_id: None,
+            focus_topics: Vec::new(),
+            label_hint: None,
+            bridge_connections: HashMap::new(),
+        };
+
+        // Phase 2: score with validators
+        let mut scores: Vec<EngramScore> = candidates.iter()
+            .filter_map(|t| self.score_thread_engram(t, &ctx))
+            .collect();
+
+        scores.sort_by(|a, b| b.weighted_score.partial_cmp(&a.weighted_score)
+            .unwrap_or(std::cmp::Ordering::Equal));
+
+        // Phase 3: floor at pass_count >= 2 (lower than standard >= 3)
+        let result: Vec<ScoredThread> = scores.iter()
+            .filter(|s| s.pass_count >= 2)
+            .take(limit)
+            .filter_map(|s| {
+                candidates.iter().find(|t| t.id == s.thread_id).map(|t| ScoredThread {
+                    thread: t.clone(),
+                    weighted_score: s.weighted_score,
+                    pass_count: s.pass_count,
+                    decision: s.decision.clone(),
+                })
+            })
+            .collect();
+
+        tracing::info!(
+            candidates_scored = scores.len(),
+            returned = result.len(),
+            "Engram thinking query complete (no Hebbian reinforcement)"
+        );
+
+        // NO Hebbian reinforcement — thinking queries are high-frequency
+        Ok(result)
+    }
+
     /// Score a thread using all 10 validators.
     fn score_thread_engram(
         &self,

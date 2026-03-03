@@ -101,13 +101,14 @@ fn append_threads_pins_focus(lines: &mut Vec<String>, conn: &rusqlite::Connectio
         Err(_) => return,
     };
 
-    // Threads: top 3 active, excluding __pin__ and __focus__
+    // Threads: top 3 active, excluding __pin__, __focus__, and __mind__
     let threads: Vec<_> = all
         .iter()
         .filter(|t| {
             t.status == ThreadStatus::Active
                 && !t.tags.contains(&"__pin__".to_string())
                 && !t.tags.contains(&"__focus__".to_string())
+                && !t.tags.contains(&"__mind__".to_string())
         })
         .take(3)
         .collect();
@@ -155,6 +156,22 @@ fn append_threads_pins_focus(lines: &mut Vec<String>, conn: &rusqlite::Connectio
         for t in &focus {
             let topic = t.topics.first().map(|s| s.as_str()).unwrap_or(&t.title);
             lines.push(format!("- {} w={:.2}", topic, t.weight));
+        }
+    }
+
+    // Mind: __mind__ tagged, active (reasoning savepoints)
+    let mind: Vec<_> = all
+        .iter()
+        .filter(|t| t.tags.contains(&"__mind__".to_string()) && t.status == ThreadStatus::Active)
+        .take(3)
+        .collect();
+
+    if !mind.is_empty() {
+        lines.push(String::new());
+        lines.push("mind (active savepoints):".to_string());
+        for t in &mind {
+            let id8 = if t.id.len() > 8 { &t.id[..8] } else { &t.id };
+            lines.push(format!("- {} \"{}\"", id8, t.title));
         }
     }
 }

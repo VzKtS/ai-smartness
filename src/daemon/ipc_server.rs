@@ -436,6 +436,52 @@ fn dispatch(
             Ok(serde_json::json!({"agents": agents}))
         }
 
+        "engram_query" => {
+            let key = extract_agent_key(params)?;
+            let query = params
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "Missing 'query' in params".to_string())?;
+            let limit = params
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5) as usize;
+
+            tracing::info!(
+                agent = %key.agent_id,
+                query_len = query.len(),
+                "IPC: engram_query for thinking injection"
+            );
+
+            let conn = pool.get_or_open(&key)?;
+            let conn_guard = conn.lock().map_err(|e| e.to_string())?;
+
+            // Construct retriever on-the-fly (stateless — no shared state needed)
+            let config = ai_smartness::config::EngramConfig::default();
+            let retriever = ai_smartness::intelligence::engram_retriever::EngramRetriever::new(
+                &conn_guard, config,
+            ).map_err(|e| format!("Retriever init: {}", e))?;
+
+            let results = retriever
+                .query_for_thinking_injection(&conn_guard, query, limit)
+                .map_err(|e| format!("Engram query: {}", e))?;
+
+            let threads: Vec<serde_json::Value> = results.iter().map(|st| {
+                serde_json::json!({
+                    "id": st.thread.id,
+                    "title": st.thread.title,
+                    "summary": st.thread.summary,
+                    "pass_count": st.pass_count,
+                    "weighted_score": st.weighted_score,
+                })
+            }).collect();
+
+            Ok(serde_json::json!({
+                "threads": threads,
+                "count": threads.len(),
+            }))
+        }
+
         _ => {
             tracing::warn!(method = method, "Unknown IPC method");
             Err(format!("Unknown method: {}", method))

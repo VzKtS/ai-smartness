@@ -30,6 +30,22 @@ pub fn handle_thread_create(
         .and_then(|v| parse_string_or_array(v))
         .unwrap_or_default();
     let importance = optional_f64(params, "importance").unwrap_or(0.5);
+    let tags: Vec<String> = params
+        .get("tags")
+        .and_then(|v| parse_string_or_array(v))
+        .unwrap_or_default();
+
+    // Validate system tags (__ prefix): only allow known ones
+    const ALLOWED_SYSTEM_TAGS: &[&str] = &["__pin__", "__focus__", "__mind__", "__shared__"];
+    for tag in &tags {
+        if tag.starts_with("__") && !ALLOWED_SYSTEM_TAGS.contains(&tag.as_str()) {
+            return Err(ai_smartness::AiError::InvalidInput(format!(
+                "Unknown system tag: '{}'. Allowed: {:?}",
+                tag, ALLOWED_SYSTEM_TAGS
+            )));
+        }
+    }
+
     let now = time_utils::now();
     let thread_id = id_gen::thread_id();
 
@@ -49,7 +65,7 @@ pub fn handle_thread_create(
         split_locked: false,
         split_locked_until: None,
         topics,
-        tags: vec![],
+        tags,
         labels: vec![],
         concepts: vec![],
         drift_history: vec![],

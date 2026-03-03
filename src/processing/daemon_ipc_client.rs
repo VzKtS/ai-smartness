@@ -119,6 +119,53 @@ pub fn send_method(method: &str, params: serde_json::Value) -> AiResult<serde_js
     call_daemon(method, params)
 }
 
+/// Engram query result — lightweight struct for thinking injection.
+#[derive(Debug, Clone)]
+pub struct EngramResult {
+    pub id: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub pass_count: u8,
+    pub weighted_score: f64,
+}
+
+/// Query the engram retriever via daemon for thinking injection.
+/// Returns scored threads matching the query text.
+pub fn engram_query(
+    project_hash: &str,
+    agent_id: &str,
+    query: &str,
+    limit: usize,
+) -> AiResult<Vec<EngramResult>> {
+    let params = serde_json::json!({
+        "project_hash": project_hash,
+        "agent_id": agent_id,
+        "query": query,
+        "limit": limit,
+    });
+
+    let response = call_daemon("engram_query", params)?;
+
+    let threads = response
+        .get("threads")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(threads
+        .iter()
+        .filter_map(|t| {
+            Some(EngramResult {
+                id: t.get("id")?.as_str()?.to_string(),
+                title: t.get("title")?.as_str()?.to_string(),
+                summary: t.get("summary").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                pass_count: t.get("pass_count").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
+                weighted_score: t.get("weighted_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            })
+        })
+        .collect())
+}
+
 /// Inner IPC call — connect, write, read, parse. Runs in a dedicated thread.
 fn do_ipc_call(sock_path: std::path::PathBuf, request_json: String) -> AiResult<serde_json::Value> {
     use interprocess::local_socket::{prelude::*, GenericFilePath};

@@ -497,7 +497,7 @@ fn check_cognitive_proactive(project_hash: &str, agent_id: &str) {
 fn tool_definitions() -> Vec<serde_json::Value> {
     vec![
         tool_def("ai_recall", "Search semantic memory for relevant threads", &["query"], &["label", "include_bridges"]),
-        tool_def("ai_thread_create", "Create a new thread manually", &["title", "content"], &["topics", "importance"]),
+        tool_def("ai_thread_create", "Create a new thread manually", &["title", "content"], &["topics", "importance", "tags"]),
         tool_def("ai_thread_rm", "Delete a thread by ID", &["thread_id"], &[]),
         tool_def("ai_thread_rm_batch", "Delete multiple threads", &["thread_ids"], &[]),
         tool_def("ai_thread_list", "List threads with filters", &[], &["status", "sort_by", "limit", "offset"]),
