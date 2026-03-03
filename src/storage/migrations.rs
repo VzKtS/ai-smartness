@@ -212,6 +212,14 @@ pub fn migrate_agent_db(conn: &Connection) -> AiResult<()> {
         set_schema_version(conn, 8)?;
     }
 
+    // V9: add reply_to column to cognitive_inbox (message threading)
+    if version < 9 {
+        conn.execute_batch(
+            "ALTER TABLE cognitive_inbox ADD COLUMN reply_to TEXT;"
+        ).map_err(|e| AiError::Storage(format!("Agent DB V9 migration failed: {}", e)))?;
+        set_schema_version(conn, 9)?;
+    }
+
     Ok(())
 }
 

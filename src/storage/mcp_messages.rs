@@ -41,6 +41,8 @@ fn mcp_msg_from_row(row: &Row) -> rusqlite::Result<Message> {
         read_at: read_str.and_then(|s| time_utils::from_sqlite(&s).ok()),
         acked_at: None,
         attachments,
+        reply_to_id: row.get::<_, Option<String>>("reply_to").unwrap_or(None),
+        thread_id: row.get::<_, Option<String>>("thread_id").unwrap_or(None),
     })
 }
 
@@ -189,6 +191,8 @@ mod tests {
             read_at: None,
             acked_at: None,
             attachments: vec![],
+            reply_to_id: None,
+            thread_id: None,
         }
     }
 

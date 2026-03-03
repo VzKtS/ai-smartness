@@ -430,6 +430,8 @@ pub fn handle_task_complete(
             read_at: None,
             acked_at: None,
             attachments: vec![],
+            reply_to_id: None,
+            thread_id: None,
         };
         McpMessages::send(ctx.shared_conn, &msg).ok();
         // interrupt=true: task completion is always priority (avoid ghost-wake regression)

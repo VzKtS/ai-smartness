@@ -38,6 +38,8 @@ fn message_from_row(row: &Row) -> rusqlite::Result<Message> {
         read_at: read_str.and_then(|s| time_utils::from_sqlite(&s).ok()),
         acked_at: acked_str.and_then(|s| time_utils::from_sqlite(&s).ok()),
         attachments,
+        reply_to_id: row.get::<_, Option<String>>("reply_to").unwrap_or(None),
+        thread_id: None,
     })
 }
 
@@ -48,8 +50,8 @@ impl CognitiveInbox {
             .unwrap_or_else(|_| "[]".to_string());
 
         conn.execute(
-            "INSERT INTO cognitive_inbox (id, from_agent, to_agent, subject, content, priority, ttl_expiry, status, created_at, attachments)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO cognitive_inbox (id, from_agent, to_agent, subject, content, priority, ttl_expiry, status, created_at, attachments, reply_to)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 msg.id,
                 msg.from_agent,
@@ -61,6 +63,7 @@ impl CognitiveInbox {
                 msg.status.as_str(),
                 time_utils::to_sqlite(&msg.created_at),
                 attachments_json,
+                msg.reply_to_id,
             ],
         )
         .map_err(|e| AiError::Storage(format!("Send cognitive message failed: {}", e)))?;

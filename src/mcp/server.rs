@@ -525,7 +525,7 @@ fn tool_definitions() -> Vec<serde_json::Value> {
         tool_def("ai_focus", "Focus on a topic", &["topic"], &["weight"]),
         tool_def("ai_unfocus", "Remove focus", &[], &["topic"]),
         tool_def("ai_pin", "Pin important content", &["content"], &["title", "topics", "weight_boost"]),
-        tool_def("ai_msg_focus", "Write cognitive message", &["target_agent_id", "from_agent", "subject", "content"], &["priority", "ttl_minutes", "attachments"]),
+        tool_def("ai_msg_focus", "Write cognitive message", &["target_agent_id", "from_agent", "subject", "content"], &["priority", "ttl_minutes", "attachments", "reply_to"]),
         tool_def("ai_msg_ack", "Acknowledge message", &[], &["thread_id", "msg_ref"]),
         tool_def("ai_share", "Share a thread", &["thread_id"], &["visibility", "allowed_agents"]),
         tool_def("ai_unshare", "Unshare a thread", &["shared_id"], &[]),

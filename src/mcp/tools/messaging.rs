@@ -135,6 +135,7 @@ pub fn handle_msg_focus(
     let mut content = required_str(params, "content")?;
     let priority_str = optional_str(params, "priority").unwrap_or_else(|| "normal".into());
     let ttl_minutes = optional_usize(params, "ttl_minutes").unwrap_or(1440);
+    let reply_to = optional_str(params, "reply_to");
 
     // Resolve file attachments
     let attachment_paths = optional_array(params, "attachments").unwrap_or_default();
@@ -167,6 +168,8 @@ pub fn handle_msg_focus(
         read_at: None,
         acked_at: None,
         attachments,
+        reply_to_id: reply_to,
+        thread_id: None,
     };
 
     // Write to the TARGET agent's DB so the receiver's inject hook sees it
@@ -240,6 +243,8 @@ pub fn handle_msg_send(
         read_at: None,
         acked_at: None,
         attachments,
+        reply_to_id: None,
+        thread_id: None,
     };
 
     McpMessages::send(ctx.shared_conn, &msg)?;
@@ -284,6 +289,8 @@ pub fn handle_msg_broadcast(
         read_at: None,
         acked_at: None,
         attachments,
+        reply_to_id: None,
+        thread_id: None,
     };
 
     McpMessages::broadcast(ctx.shared_conn, &msg)?;
@@ -330,6 +337,12 @@ pub fn handle_msg_inbox(
                         })
                     }).collect::<Vec<_>>()
                 );
+            }
+            if let Some(ref rt) = m.reply_to_id {
+                obj["in_reply_to"] = serde_json::Value::String(rt.clone());
+            }
+            if let Some(ref tid) = m.thread_id {
+                obj["thread_id"] = serde_json::Value::String(tid.clone());
             }
             obj
         })
@@ -401,6 +414,8 @@ pub fn handle_msg_reply(
         read_at: None,
         acked_at: None,
         attachments,
+        reply_to_id: Some(message_id.clone()),
+        thread_id: None,
     };
 
     McpMessages::reply(ctx.shared_conn, &message_id, &reply)?;
