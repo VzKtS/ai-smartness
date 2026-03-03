@@ -191,7 +191,7 @@ pub fn run(action: HookAction) {
             HookAction::PreTool { project_hash, agent_id } => {
                 let agent = resolve_agent(agent_id, project_hash);
                 tracing::info!(agent = %agent, "Dispatching pretool");
-                pretool::run(project_hash, &agent, &input);
+                pretool::run(project_hash, &agent, &input, session_id.as_deref());
             }
             HookAction::Stop { project_hash, agent_id } => {
                 let agent = resolve_agent(agent_id, project_hash);
