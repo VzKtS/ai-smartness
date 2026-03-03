@@ -4,6 +4,7 @@ use ai_smartness::intelligence::engram_retriever::EngramRetriever;
 use ai_smartness::storage::beat::BeatState;
 use ai_smartness::storage::bridges::BridgeStorage;
 use ai_smartness::storage::path_utils;
+use ai_smartness::storage::threads::ThreadStorage;
 
 use super::{optional_str, required_str, ToolContext};
 
@@ -13,6 +14,9 @@ pub fn handle_recall(
 ) -> AiResult<serde_json::Value> {
     let query = required_str(params, "query")?;
     let label_filter = optional_str(params, "label");
+    let include_bridges = optional_str(params, "include_bridges")
+        .map(|s| s == "true")
+        .unwrap_or(false);
 
     let engram = EngramRetriever::new(ctx.agent_conn, EngramConfig::default())?;
     let mut threads = engram.search(ctx.agent_conn, &query, 10)?;
@@ -23,24 +27,46 @@ pub fn handle_recall(
 
     threads.truncate(10);
 
-    let mut bridges_out = Vec::new();
-    for t in &threads {
-        if let Ok(bs) = BridgeStorage::list_for_thread(ctx.agent_conn, &t.id) {
-            for b in bs.into_iter().take(3) {
-                bridges_out.push(serde_json::json!({
-                    "id": b.id,
-                    "source_id": b.source_id,
-                    "target_id": b.target_id,
-                    "relation": b.relation_type.as_str(),
-                    "weight": b.weight,
-                }));
+    let bridges_out = if include_bridges {
+        let mut out = Vec::new();
+        for t in &threads {
+            if let Ok(bs) = BridgeStorage::list_for_thread(ctx.agent_conn, &t.id) {
+                for b in bs.into_iter().take(3) {
+                    out.push(serde_json::json!({
+                        "id": b.id,
+                        "source_id": b.source_id,
+                        "target_id": b.target_id,
+                        "relation": b.relation_type.as_str(),
+                        "weight": b.weight,
+                    }));
+                }
             }
         }
-    }
+        out
+    } else {
+        Vec::new()
+    };
+
+    // Batch-resolve continuity parent titles
+    let parent_titles: std::collections::HashMap<String, String> = {
+        let mut map = std::collections::HashMap::new();
+        for t in &threads {
+            if let Some(ref pid) = t.continuity_parent_id {
+                if !map.contains_key(pid) {
+                    if let Ok(Some(parent)) = ThreadStorage::get(ctx.agent_conn, pid) {
+                        map.insert(pid.clone(), parent.title);
+                    }
+                }
+            }
+        }
+        map
+    };
 
     let threads_json: Vec<serde_json::Value> = threads
         .iter()
         .map(|t| {
+            let parent_title = t.continuity_parent_id.as_ref()
+                .and_then(|pid| parent_titles.get(pid).cloned());
             serde_json::json!({
                 "id": t.id,
                 "title": t.title,
@@ -51,6 +77,8 @@ pub fn handle_recall(
                 "labels": t.labels,
                 "summary": t.summary,
                 "last_active": t.last_active.to_rfc3339(),
+                "continuity_parent_id": t.continuity_parent_id,
+                "continuity_parent_title": parent_title,
             })
         })
         .collect();
