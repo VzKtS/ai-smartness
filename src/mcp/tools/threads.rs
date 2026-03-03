@@ -249,25 +249,37 @@ pub fn handle_label(
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
     let id = required_str(params, "thread_id")?;
-    let labels = required_array(params, "labels")?;
-    let mode = optional_str(params, "mode").unwrap_or_else(|| "add".into());
+    let mode = optional_str(params, "mode").unwrap_or_else(|| "list".into());
 
-    let mut thread = ThreadStorage::get(ctx.agent_conn, &id)?
+    let thread = ThreadStorage::get(ctx.agent_conn, &id)?
         .ok_or_else(|| ai_smartness::AiError::ThreadNotFound(id.clone()))?;
 
     match mode.as_str() {
-        "set" => thread.labels = labels,
-        "remove" => thread.labels.retain(|l| !labels.contains(l)),
-        _ => {
-            for l in labels {
-                if !thread.labels.contains(&l) {
-                    thread.labels.push(l);
-                }
-            }
+        "list" => {
+            Ok(serde_json::json!({"thread_id": id, "labels": thread.labels}))
         }
+        "set" | "add" | "remove" => {
+            let labels = required_array(params, "labels")?;
+            let mut thread = thread;
+            match mode.as_str() {
+                "set" => thread.labels = labels,
+                "add" => {
+                    for l in labels {
+                        if !thread.labels.contains(&l) {
+                            thread.labels.push(l);
+                        }
+                    }
+                }
+                "remove" => thread.labels.retain(|l| !labels.contains(l)),
+                _ => unreachable!(),
+            }
+            ThreadStorage::update(ctx.agent_conn, &thread)?;
+            Ok(serde_json::json!({"thread_id": id, "labels": thread.labels}))
+        }
+        _ => Err(ai_smartness::AiError::InvalidInput(
+            format!("Unknown label mode: '{}'. Valid: list, set, add, remove", mode)
+        )),
     }
-    ThreadStorage::update(ctx.agent_conn, &thread)?;
-    Ok(serde_json::json!({"thread_id": id, "labels": thread.labels}))
 }
 
 pub fn handle_concepts(
@@ -275,30 +287,39 @@ pub fn handle_concepts(
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
     let id = required_str(params, "thread_id")?;
-    let concepts = required_array(params, "concepts")?;
-    let mode = optional_str(params, "mode").unwrap_or_else(|| "set".into());
+    let mode = optional_str(params, "mode").unwrap_or_else(|| "list".into());
 
-    let mut thread = ThreadStorage::get(ctx.agent_conn, &id)?
+    let thread = ThreadStorage::get(ctx.agent_conn, &id)?
         .ok_or_else(|| ai_smartness::AiError::ThreadNotFound(id.clone()))?;
 
     match mode.as_str() {
-        "add" => {
-            let mut all = thread.concepts.clone();
-            all.extend(concepts);
-            thread.concepts = normalize_concepts(&all);
+        "list" => {
+            Ok(serde_json::json!({"thread_id": id, "concepts": thread.concepts}))
         }
-        "remove" => {
-            let to_remove: std::collections::HashSet<String> =
-                concepts.into_iter().map(|c| c.to_lowercase()).collect();
-            thread.concepts.retain(|c| !to_remove.contains(&c.to_lowercase()));
+        "set" | "add" | "remove" => {
+            let concepts = required_array(params, "concepts")?;
+            let mut thread = thread;
+            match mode.as_str() {
+                "set" => thread.concepts = normalize_concepts(&concepts),
+                "add" => {
+                    let mut all = thread.concepts.clone();
+                    all.extend(concepts);
+                    thread.concepts = normalize_concepts(&all);
+                }
+                "remove" => {
+                    let to_remove: std::collections::HashSet<String> =
+                        concepts.into_iter().map(|c| c.to_lowercase()).collect();
+                    thread.concepts.retain(|c| !to_remove.contains(&c.to_lowercase()));
+                }
+                _ => unreachable!(),
+            }
+            ThreadStorage::update(ctx.agent_conn, &thread)?;
+            Ok(serde_json::json!({"thread_id": id, "concepts": thread.concepts}))
         }
-        _ => {
-            // "set" (default) — replace entirely
-            thread.concepts = normalize_concepts(&concepts);
-        }
+        _ => Err(ai_smartness::AiError::InvalidInput(
+            format!("Unknown concepts mode: '{}'. Valid: list, set, add, remove", mode)
+        )),
     }
-    ThreadStorage::update(ctx.agent_conn, &thread)?;
-    Ok(serde_json::json!({"thread_id": id, "concepts": thread.concepts}))
 }
 
 pub fn handle_backfill_concepts(
