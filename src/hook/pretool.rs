@@ -168,7 +168,19 @@ fn try_engram_injection(session_id: Option<&str>, project_hash: &str, agent_id: 
         };
         hint.push_str(&format!("- \"{}\": {}\n", r.title, summary_short));
     }
-    hint.push_str("BIFURCATE: save your current reasoning as a __mind__ thread before continuing.\n");
+    // Collect top thread ID for the directive
+    let top_id = results
+        .iter()
+        .filter(|r| r.pass_count >= 2)
+        .next()
+        .map(|r| r.id.as_str())
+        .unwrap_or("");
+    hint.push_str(&format!(
+        "BIFURCATE: save current reasoning as __mind__ thread, then explore the threads above \
+         (use ai_recall or read thread {}) before continuing. Do NOT resume your original \
+         thought path without integrating this context.\n",
+        top_id
+    ));
     hint.push_str("</engram>");
 
     tracing::info!(

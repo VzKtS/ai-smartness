@@ -56,6 +56,8 @@ pub const MIN_CAPTURE_LENGTH: usize = 20;
 /// Legacy default — now configurable via config.json `capture.min_response_length`.
 pub const MIN_RESPONSE_LENGTH: usize = 50;
 pub const MAX_CONTEXT_SIZE: usize = 15_000;
+/// Maximum characters for transcript capture in __mind__ savepoints.
+pub const MAX_MIND_TRANSCRIPT_CHARS: usize = 8_000;
 pub const MAX_COGNITIVE_MESSAGES: usize = 5;
 
 // === Archiver ===

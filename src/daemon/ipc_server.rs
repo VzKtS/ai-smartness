@@ -532,6 +532,9 @@ fn process_mind_coherence(
     let conn = pool.get_or_open(key).map_err(|e| format!("Pool error: {}", e))?;
     let conn_guard = conn.lock().map_err(|e| format!("Lock error: {}", e))?;
 
+    // 1b. Transcript capture — best-effort, async
+    capture_mind_transcript(pool, key, new_thread_id);
+
     // 2. Find most recent active thread (any type, excluding self)
     let prev_id: String = conn_guard
         .query_row(
@@ -599,6 +602,96 @@ fn process_mind_coherence(
         }
     }
     Ok(())
+}
+
+/// Capture the raw transcript (thinking + text) from the current session
+/// and append it as an additional message to the __mind__ thread.
+/// Best-effort: failures are logged but never propagate.
+fn capture_mind_transcript(pool: &ConnectionPool, key: &AgentKey, thread_id: &str) {
+    // 1. Read beat.json → last_session_id
+    let agent_data = ai_smartness::storage::path_utils::agent_data_dir(
+        &key.project_hash,
+        &key.agent_id,
+    );
+    let beat = ai_smartness::storage::beat::BeatState::load(&agent_data);
+    let session_id = match &beat.last_session_id {
+        Some(sid) if !sid.is_empty() => sid.clone(),
+        _ => {
+            tracing::debug!("Mind transcript capture: no session_id in beat.json");
+            return;
+        }
+    };
+
+    // 2. Extract thinking + text from JSONL transcript
+    let blocks =
+        match ai_smartness::storage::transcript::extract_last_assistant_blocks(&session_id) {
+            Some(b) => b,
+            None => {
+                tracing::debug!("Mind transcript capture: no assistant blocks found");
+                return;
+            }
+        };
+
+    // 3. Format with truncation (thinking gets priority in budget)
+    let max = ai_smartness::constants::MAX_MIND_TRANSCRIPT_CHARS;
+    let mut content = String::new();
+    if let Some(ref thinking) = blocks.thinking {
+        content.push_str("<thinking>\n");
+        let truncated = ai_smartness::constants::truncate_safe(thinking, max);
+        content.push_str(truncated);
+        if truncated.len() < thinking.len() {
+            content.push_str("\n... [truncated]");
+        }
+        content.push_str("\n</thinking>\n");
+    }
+    if let Some(ref text) = blocks.text {
+        let remaining = max.saturating_sub(content.len());
+        if remaining > 200 {
+            content.push_str("<speech>\n");
+            let truncated = ai_smartness::constants::truncate_safe(text, remaining);
+            content.push_str(truncated);
+            if truncated.len() < text.len() {
+                content.push_str("\n... [truncated]");
+            }
+            content.push_str("\n</speech>");
+        }
+    }
+
+    if content.is_empty() {
+        return;
+    }
+
+    // 4. Append as message to __mind__ thread
+    let conn = match pool.get_or_open(key) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let conn_guard = match conn.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+
+    let msg = ai_smartness::thread::ThreadMessage {
+        thread_id: thread_id.to_string(),
+        msg_id: ai_smartness::id_gen::message_id(),
+        content,
+        source: "transcript_capture".into(),
+        source_type: "system".into(),
+        timestamp: ai_smartness::time_utils::now(),
+        metadata: serde_json::json!({
+            "session_id": session_id,
+            "has_thinking": blocks.thinking.is_some(),
+            "has_text": blocks.text.is_some(),
+        }),
+        is_truncated: false,
+        continuity_from: None,
+        continuity_to: None,
+    };
+
+    match ThreadStorage::add_message(&conn_guard, &msg) {
+        Ok(()) => tracing::info!(thread = %thread_id, "Mind transcript captured"),
+        Err(e) => tracing::debug!(error = %e, "Mind transcript capture failed"),
+    }
 }
 
 /// Load GuardianConfig from config.json, falling back to defaults.

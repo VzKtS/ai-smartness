@@ -22,6 +22,13 @@ pub struct ContextInfo {
     pub model: Option<String>,
 }
 
+/// Extracted content blocks from the most recent assistant message.
+#[derive(Debug, Clone)]
+pub struct AssistantBlocks {
+    pub thinking: Option<String>,
+    pub text: Option<String>,
+}
+
 /// Find the transcript JSONL file for a given session_id.
 /// Scans `~/.claude/projects/*/` for `{session_id}.jsonl`.
 pub fn find_transcript(session_id: &str) -> Option<PathBuf> {
@@ -206,6 +213,81 @@ pub fn extract_last_thinking(session_id: &str) -> Option<String> {
     }
 
     last_thinking
+}
+
+/// Extract thinking + text blocks from the last assistant message in transcript.
+/// Uses 64KB tail to capture both blocks (thinking can be large).
+pub fn extract_last_assistant_blocks(session_id: &str) -> Option<AssistantBlocks> {
+    let path = find_transcript(session_id)?;
+    let file = std::fs::File::open(&path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let file_size = metadata.len();
+    if file_size == 0 {
+        return None;
+    }
+
+    let tail = read_tail(&file, file_size, file_size.min(64_000))?;
+
+    let mut result_thinking: Option<String> = None;
+    let mut result_text: Option<String> = None;
+
+    for line in tail.lines().rev() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let data: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let role = data
+            .get("message")
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
+        if role != "assistant" {
+            continue;
+        }
+
+        if let Some(content) = data
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        {
+            for block in content {
+                match block.get("type").and_then(|t| t.as_str()) {
+                    Some("thinking") => {
+                        if let Some(t) = block.get("thinking").and_then(|t| t.as_str()) {
+                            if !t.is_empty() {
+                                result_thinking = Some(t.to_string());
+                            }
+                        }
+                    }
+                    Some("text") => {
+                        if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                            if !t.is_empty() {
+                                result_text = Some(t.to_string());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // First assistant message found — stop (most recent)
+        if result_thinking.is_some() || result_text.is_some() {
+            break;
+        }
+    }
+
+    if result_thinking.is_none() && result_text.is_none() {
+        return None;
+    }
+    Some(AssistantBlocks {
+        thinking: result_thinking,
+        text: result_text,
+    })
 }
 
 #[cfg(test)]
