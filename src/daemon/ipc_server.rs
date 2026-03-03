@@ -24,6 +24,7 @@
 //!   queue_status    → capture queue stats (pending, processed, errors, workers)
 //!   list_active_agents → list all agents in pool
 //!   lock / unlock   → per-agent memory lock
+//!   mind_coherence_chain → async coherence gate for __mind__ threads (instant response)
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -482,11 +483,133 @@ fn dispatch(
             }))
         }
 
+        "mind_coherence_chain" => {
+            let key = extract_agent_key(params)?;
+            let thread_id = params
+                .get("thread_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let content = params
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let pool_clone = Arc::clone(pool);
+
+            tracing::info!(
+                agent = %key.agent_id,
+                thread = %thread_id,
+                "IPC: mind_coherence_chain — spawning background thread"
+            );
+
+            // Spawn background thread — IPC returns instantly
+            std::thread::spawn(move || {
+                if let Err(e) = process_mind_coherence(&pool_clone, &key, &thread_id, &content) {
+                    tracing::debug!(error = %e, thread = %thread_id, "Mind coherence chain failed (background)");
+                }
+            });
+
+            Ok(serde_json::json!({"queued": true}))
+        }
+
         _ => {
             tracing::warn!(method = method, "Unknown IPC method");
             Err(format!("Unknown method: {}", method))
         }
     }
+}
+
+/// Background: run coherence gate on a __mind__ thread, update continuity_parent_id.
+/// Mirrors daemon/processor.rs:214-260 flow. Best-effort, never panics.
+fn process_mind_coherence(
+    pool: &ConnectionPool,
+    key: &AgentKey,
+    new_thread_id: &str,
+    new_content: &str,
+) -> Result<(), String> {
+    // 1. Get DB connection from pool
+    let conn = pool.get_or_open(key).map_err(|e| format!("Pool error: {}", e))?;
+    let conn_guard = conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    // 2. Find most recent active thread (any type, excluding self)
+    let prev_id: String = conn_guard
+        .query_row(
+            "SELECT id FROM threads WHERE id != ?1 AND status = 'active'
+             ORDER BY last_active DESC LIMIT 1",
+            rusqlite::params![new_thread_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("No previous thread: {}", e))?;
+
+    // 3. Get previous thread's content + labels
+    let prev_thread = ThreadStorage::get(&conn_guard, &prev_id)
+        .map_err(|e| format!("{}", e))?
+        .ok_or_else(|| "Previous thread not found".to_string())?;
+    let msgs = ThreadStorage::get_messages(&conn_guard, &prev_id)
+        .map_err(|e| format!("{}", e))?;
+    let prev_content = msgs.last().map(|m| m.content.as_str()).unwrap_or("");
+
+    // 4. Load CoherenceConfig
+    let guardian = load_guardian_config_for_coherence();
+    if !guardian.coherence.enabled {
+        tracing::debug!("Mind coherence: gate disabled, skipping");
+        return Ok(());
+    }
+
+    // 5. Run coherence check (LLM or embedding fallback)
+    let result = ai_smartness::processing::coherence::check_coherence(
+        prev_content,
+        new_content,
+        &prev_thread.labels,
+        &guardian.coherence,
+    )
+    .map_err(|e| format!("Coherence check: {}", e))?;
+
+    // 6. Determine action
+    let action = ai_smartness::processing::coherence::determine_action(
+        result.score,
+        guardian.coherence.child_threshold,
+        guardian.coherence.orphan_threshold,
+    );
+
+    match action {
+        ai_smartness::processing::coherence::CoherenceAction::Child
+        | ai_smartness::processing::coherence::CoherenceAction::Continue => {
+            ThreadStorage::set_continuity_parent(
+                &conn_guard,
+                new_thread_id,
+                &prev_id,
+                Some(result.score),
+            )
+            .map_err(|e| format!("{}", e))?;
+            tracing::info!(
+                new = %new_thread_id,
+                parent = %prev_id,
+                score = result.score,
+                "Mind thread chained via coherence gate (async)"
+            );
+        }
+        _ => {
+            tracing::debug!(
+                score = result.score,
+                action = ?action,
+                "Mind thread: coherence below threshold, new chain"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Load GuardianConfig from config.json, falling back to defaults.
+fn load_guardian_config_for_coherence() -> ai_smartness::config::GuardianConfig {
+    let config_path = ai_smartness::storage::path_utils::data_dir().join("config.json");
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        if let Ok(cfg) = serde_json::from_str(&content) {
+            return cfg;
+        }
+    }
+    ai_smartness::config::GuardianConfig::default()
 }
 
 fn build_global_status(

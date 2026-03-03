@@ -935,17 +935,28 @@ let currentThreads = []; // Stored for client-side origin filtering
 
 function originLabel(type) {
     const map = { Prompt:'Prompt', FileRead:'Read', FileWrite:'Write', Response:'Response',
-                  Task:'Task', Fetch:'Fetch', Command:'Command', Split:'Split', Reactivation:'Reactivation' };
+                  Task:'Task', Fetch:'Fetch', Command:'Command', Split:'Split', Reactivation:'Reactivation',
+                  __mind__:'Mind' };
     return map[type] || type || '\u2014';
 }
 function originBadgeColor(type) {
     const colors = { FileRead:'#4a9eff', FileWrite:'#4ade80', Prompt:'#fbbf24', Response:'#a78bfa',
-                     Task:'#22d3ee', Fetch:'#f472b6', Command:'#94a3b8', Split:'#fb923c', Reactivation:'#86efac' };
+                     Task:'#22d3ee', Fetch:'#f472b6', Command:'#94a3b8', Split:'#fb923c', Reactivation:'#86efac',
+                     __mind__:'#ff6b6b' };
     return colors[type] || '#666';
+}
+// Resolve effective origin: __mind__ tag overrides origin_type for display
+function effectiveOrigin(t) {
+    return (t.tags || []).includes('__mind__') ? '__mind__' : (t.origin_type || '');
 }
 function applyOriginFilter() {
     const origin = document.getElementById('origin-filter').value;
-    const filtered = origin ? currentThreads.filter(t => t.origin_type === origin) : currentThreads;
+    let filtered;
+    if (origin === '__mind__') {
+        filtered = currentThreads.filter(t => (t.tags || []).includes('__mind__'));
+    } else {
+        filtered = origin ? currentThreads.filter(t => t.origin_type === origin) : currentThreads;
+    }
     renderThreads(filtered);
 }
 
@@ -1019,10 +1030,11 @@ function renderThreads(threads) {
         const tr = document.createElement('tr');
         tr.dataset.threadId = t.id;
         tr.style.cursor = 'pointer';
-        const oc = originBadgeColor(t.origin_type);
+        const eo = effectiveOrigin(t);
+        const oc = originBadgeColor(eo);
         tr.innerHTML = `
             <td>${esc(t.title)}</td>
-            <td><span class="badge" style="background:${oc};color:#111;font-size:11px;padding:2px 6px;border-radius:3px">${originLabel(t.origin_type)}</span></td>
+            <td><span class="badge" style="background:${oc};color:#111;font-size:11px;padding:2px 6px;border-radius:3px">${originLabel(eo)}</span></td>
             <td><span class="badge badge-${(t.status||'').toLowerCase()}">${esc(t.status)}</span></td>
             <td>${(t.weight || 0).toFixed(2)}</td>
             <td>${(t.importance || 0).toFixed(2)}</td>
@@ -2223,7 +2235,9 @@ function buildGraph(threads, bridges) {
         if (s === 'suspended' && !fSuspended) return false;
         if (s === 'archived' && !fArchived) return false;
         if ((t.importance || 0.5) < fImpMin) return false;
-        if (fOrigin && (t.origin_type || '') !== fOrigin) return false;
+        if (fOrigin === '__mind__') {
+            if (!(t.tags || []).includes('__mind__')) return false;
+        } else if (fOrigin && (t.origin_type || '') !== fOrigin) return false;
         return true;
     });
 
@@ -2236,6 +2250,7 @@ function buildGraph(threads, bridges) {
         weight: t.weight || 0.5,
         topics: t.topics || [],
         labels: t.labels || [],
+        tags: t.tags || [],
         concepts: t.concepts || [],
         summary: t.summary || '',
         origin_type: t.origin_type || '',
@@ -2610,14 +2625,21 @@ function drawGraph() {
 
         const r = n.radius * scale;
 
-        // Origin type ring (outer circle)
+        // Origin type ring (outer circle) — mind threads get distinctive color + glow
+        const isMind = (n.tags || []).includes('__mind__');
         const ringWidth = Math.max(1.5, 2 * scale);
+        if (isMind && !isDimmed) {
+            ctx.shadowColor = '#ff6b6b';
+            ctx.shadowBlur = 8 * scale;
+        }
         ctx.beginPath();
         ctx.arc(nx, ny, r + ringWidth, 0, Math.PI * 2);
-        ctx.strokeStyle = originBadgeColor(n.origin_type);
+        ctx.strokeStyle = isMind ? '#ff6b6b' : originBadgeColor(n.origin_type);
         ctx.lineWidth = ringWidth;
         ctx.globalAlpha = isDimmed ? 0.15 : 0.85;
         ctx.stroke();
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
         ctx.globalAlpha = 1;
 
         // Inner fill (status color)
@@ -2784,7 +2806,7 @@ if (graphCanvas) {
                         (age ? `<br><span style="color:${GRAPH_COLORS.text_dim}">${age}</span>` : '') +
                         (node.labels.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Labels:</span> ${esc(node.labels.slice(0, 3).join(', '))}` : '') +
                         (node.topics.length > 0 ? `<br><span style="color:${GRAPH_COLORS.info}">Topics:</span> ${esc(node.topics.slice(0, 5).join(', '))}` : '') +
-                        (node.origin_type ? `<br><span style="background:${originBadgeColor(node.origin_type)};color:#111;font-size:10px;padding:1px 5px;border-radius:3px">${originLabel(node.origin_type)}</span>` : '');
+                        (node.origin_type || (node.tags || []).includes('__mind__') ? `<br><span style="background:${originBadgeColor(effectiveOrigin(node))};color:#111;font-size:10px;padding:1px 5px;border-radius:3px">${originLabel(effectiveOrigin(node))}</span>` : '');
                     const containerRect = graphCanvas.parentElement.getBoundingClientRect();
                     let tipX = tipClientX - containerRect.left + 14;
                     let tipY = tipClientY - containerRect.top + 14;
@@ -2841,7 +2863,8 @@ function showGraphDetail(node) {
 
     let meta = `<strong>Status:</strong> <span style="color:${GRAPH_COLORS[node.status] || GRAPH_COLORS.active}">● ${node.status}</span><br>`;
     meta += `<strong>Weight:</strong> ${node.weight.toFixed(2)} &nbsp; <strong>Importance:</strong> ${node.importance.toFixed(2)}<br>`;
-    if (node.origin_type) meta += `<strong>Origin:</strong> <span style="background:${originBadgeColor(node.origin_type)};color:#111;font-size:11px;padding:1px 6px;border-radius:3px">${originLabel(node.origin_type)}</span><br>`;
+    const nodeEo = effectiveOrigin(node);
+    if (nodeEo) meta += `<strong>Origin:</strong> <span style="background:${originBadgeColor(nodeEo)};color:#111;font-size:11px;padding:1px 6px;border-radius:3px">${originLabel(nodeEo)}</span><br>`;
     meta += `<strong>Topics:</strong> ${node.topics.join(', ') || '-'}<br>`;
     if (node.labels.length > 0) {
         meta += `<strong>Labels:</strong> ` + node.labels.map(l =>
@@ -2991,11 +3014,11 @@ function renderGraphLegend() {
         html += `<br><span style="color:${GRAPH_COLORS.text_dim}">— Continuity —</span><br>`;
         html += `<span style="color:rgba(167,139,250,0.7)">- - &rarr;</span> Reasoning chain &nbsp; `;
     }
-    // Origin type legend (ring colors)
-    const activeOrigins = new Set(graphNodes.map(n => n.origin_type).filter(Boolean));
+    // Origin type legend (ring colors) — includes __mind__ via effective origin
+    const activeOrigins = new Set(graphNodes.map(n => effectiveOrigin(n)).filter(Boolean));
     if (activeOrigins.size > 0) {
         html += `<br><span style="color:${GRAPH_COLORS.text_dim}">— Origin (ring) —</span><br>`;
-        const originOrder = ['FileRead', 'FileWrite', 'Prompt', 'Response', 'Command', 'Task', 'Fetch'];
+        const originOrder = ['FileRead', 'FileWrite', 'Prompt', 'Response', 'Command', 'Task', 'Fetch', '__mind__'];
         for (const o of originOrder) {
             if (!activeOrigins.has(o)) continue;
             html += `<span style="color:${originBadgeColor(o)}">◯</span> ${originLabel(o)} &nbsp; `;

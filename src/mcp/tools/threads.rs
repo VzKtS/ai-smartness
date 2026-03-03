@@ -1,5 +1,6 @@
 use ai_smartness::{id_gen, time_utils};
 use ai_smartness::constants::normalize_concepts;
+use ai_smartness::processing::daemon_ipc_client;
 use ai_smartness::thread::{OriginType, Thread, ThreadMessage, ThreadStatus};
 use ai_smartness::AiResult;
 use ai_smartness::registry::registry::AgentRegistry;
@@ -95,6 +96,16 @@ pub fn handle_thread_create(
         continuity_to: None,
     };
     ThreadStorage::add_message(ctx.agent_conn, &msg)?;
+
+    // Auto-chain __mind__ threads: fire-and-forget to daemon (async coherence gate)
+    if thread.tags.contains(&"__mind__".to_string()) {
+        let _ = daemon_ipc_client::send_method("mind_coherence_chain", serde_json::json!({
+            "project_hash": ctx.project_hash,
+            "agent_id": ctx.agent_id,
+            "thread_id": thread_id,
+            "content": msg.content,
+        }));
+    }
 
     Ok(serde_json::json!({
         "thread_id": thread_id,
