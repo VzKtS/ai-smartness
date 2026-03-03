@@ -71,6 +71,20 @@ pub fn remove(hash: &str) -> Result<()> {
     let reg_conn = open_connection(&reg_path, ConnectionRole::Cli)
         .context("Failed to open registry database")?;
 
+    // 0. Resolve project path + strip CLAUDE.md section BEFORE deleting registry entries
+    let project_path: Option<String> = reg_conn
+        .query_row(
+            "SELECT path FROM projects WHERE hash = ?1",
+            rusqlite::params![hash],
+            |row| row.get(0),
+        )
+        .ok();
+    if let Some(ref pp) = project_path {
+        if let Err(e) = ai_smartness::hook_setup::strip_claude_md_section(std::path::Path::new(pp)) {
+            eprintln!("Warning: failed to strip CLAUDE.md section: {}", e);
+        }
+    }
+
     // 1. List agents before deletion (for wake signal cleanup)
     let agents: Vec<String> = reg_conn
         .prepare("SELECT id FROM agents WHERE project_hash = ?1")

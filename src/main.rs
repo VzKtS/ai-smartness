@@ -232,6 +232,32 @@ enum AgentAction {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Update an existing agent
+    Update {
+        id: String,
+        #[arg(long)]
+        project_hash: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        role: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        supervisor_id: Option<String>,
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        thread_mode: Option<String>,
+        #[arg(long)]
+        report_to: Option<String>,
+        #[arg(long)]
+        custom_role: Option<String>,
+        #[arg(long)]
+        full_permissions: Option<bool>,
+        #[arg(long)]
+        expected_model: Option<String>,
+    },
     /// Remove an agent
     Remove {
         id: String,
@@ -414,6 +440,15 @@ fn main() {
             AgentAction::Add { id, project_hash, role, supervisor, description, team } => {
                 cli::agent::add(&id, project_hash.as_deref(), &role, supervisor.as_deref(), &description, team.as_deref())
                     .unwrap_or_else(|e| eprintln!("Error: {}", e));
+            }
+            AgentAction::Update { id, project_hash, name, role, description, supervisor_id, team, thread_mode, report_to, custom_role, full_permissions, expected_model } => {
+                cli::agent::update(
+                    &id, project_hash.as_deref(),
+                    name.as_deref(), role.as_deref(), description.as_deref(),
+                    supervisor_id.as_deref(), team.as_deref(), thread_mode.as_deref(),
+                    report_to.as_deref(), custom_role.as_deref(),
+                    full_permissions, expected_model.as_deref(),
+                ).unwrap_or_else(|e| eprintln!("Error: {}", e));
             }
             AgentAction::Remove { id, project_hash } => {
                 cli::agent::remove(&id, project_hash.as_deref())

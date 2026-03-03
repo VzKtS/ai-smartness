@@ -299,27 +299,9 @@ pub fn add_project(path: String, name: Option<String>) -> Result<serde_json::Val
         Err(e) => tracing::warn!(error = %e, "GUI: failed to install MCP config"),
     }
 
-    // Write CLAUDE.md with agent-switching instructions if it doesn't exist
-    let claude_md_path = project_path.join("CLAUDE.md");
-    if !claude_md_path.exists() {
-        let claude_md = "# ai-smartness — Agent Assignment\n\
-            \n\
-            This project uses [ai-smartness](https://github.com/VzKtS/ai-smartness) for multi-agent memory.\n\
-            \n\
-            ## Assign an agent to this session\n\
-            \n\
-            At the start of each new session, call the `ai_agent_select` MCP tool:\n\
-            \n\
-            ```\n\
-            ai_agent_select(agent_id=\"<agent_id>\", session_id=\"<session_id from context>\")\n\
-            ```\n\
-            \n\
-            Available agents: call `agent_list` to see them.\n\
-            The session_id is injected in your context by the hook (look for session_id in system reminders).\n";
-        match std::fs::write(&claude_md_path, claude_md) {
-            Ok(()) => tracing::info!(path = %claude_md_path.display(), "GUI: CLAUDE.md created"),
-            Err(e) => tracing::warn!(error = %e, "GUI: failed to write CLAUDE.md"),
-        }
+    // Regenerate CLAUDE.md with current agent hierarchy
+    if let Ok(rc) = open_connection(&reg_path, ConnectionRole::Cli) {
+        ai_smartness::hook_setup::refresh_claude_md(&rc, &hash);
     }
 
     // Write default config.json if it doesn't exist
@@ -373,6 +355,21 @@ pub fn remove_project(hash: String) -> Result<serde_json::Value, String> {
     let reg_conn = open_connection(&reg_path, ConnectionRole::Cli)
         .map_err(|e| e.to_string())?;
     migrations::migrate_registry_db(&reg_conn).map_err(|e| e.to_string())?;
+
+    // 0. Resolve project path + strip CLAUDE.md section BEFORE deleting registry entries
+    let project_path: Option<String> = reg_conn
+        .query_row(
+            "SELECT path FROM projects WHERE hash = ?1",
+            rusqlite::params![&hash],
+            |row| row.get(0),
+        )
+        .ok();
+    if let Some(ref pp) = project_path {
+        match ai_smartness::hook_setup::strip_claude_md_section(std::path::Path::new(pp)) {
+            Ok(()) => tracing::info!(path = %pp, "GUI: CLAUDE.md section stripped"),
+            Err(e) => tracing::warn!(error = %e, "GUI: failed to strip CLAUDE.md section"),
+        }
+    }
 
     // 1. List agents before deletion (for wake signal cleanup)
     let agents: Vec<String> = reg_conn
@@ -1157,6 +1154,9 @@ pub fn add_agent(
         tracing::warn!(project = %&project_hash[..8.min(project_hash.len())], "GUI: project not found in registry");
     }
 
+    // Regenerate CLAUDE.md with updated hierarchy
+    ai_smartness::hook_setup::refresh_claude_md(&reg_conn, &project_hash);
+
     tracing::info!(agent = %agent_id, "GUI: add_agent completed successfully");
     Ok(serde_json::json!({ "registered": true, "id": agent_id }))
 }
@@ -1228,6 +1228,9 @@ pub async fn update_agent(
     AgentRegistry::update(&reg_conn, &agent_id, &project_hash, &update)
         .map_err(|e| e.to_string())?;
 
+    // Regenerate CLAUDE.md with updated hierarchy
+    ai_smartness::hook_setup::refresh_claude_md(&reg_conn, &project_hash);
+
     // Sync full_permissions to settings.local.json if changed
     if let Some(fp) = full_permissions {
         use ai_smartness::project_registry::ProjectRegistryTrait;
@@ -1285,6 +1288,9 @@ pub fn remove_agent(project_hash: String, agent_id: String) -> Result<serde_json
 
     AgentRegistry::delete(&reg_conn, &agent_id, &project_hash)
         .map_err(|e| e.to_string())?;
+
+    // Regenerate CLAUDE.md with updated hierarchy
+    ai_smartness::hook_setup::refresh_claude_md(&reg_conn, &project_hash);
 
     tracing::info!(agent = %agent_id, "GUI: agent removed");
     Ok(serde_json::json!({ "removed": true }))

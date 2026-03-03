@@ -117,6 +117,7 @@ pub fn handle_agent_cleanup(
 
     if let Some(agent_id) = remove_agent {
         AgentRegistry::delete(ctx.registry_conn, &agent_id, ctx.project_hash)?;
+        ai_smartness::hook_setup::refresh_claude_md(ctx.registry_conn, ctx.project_hash);
         return Ok(serde_json::json!({"removed": agent_id}));
     }
 
@@ -183,6 +184,7 @@ pub fn handle_agent_configure(
     };
 
     AgentRegistry::update(ctx.registry_conn, &agent_id, project_hash, &update)?;
+    ai_smartness::hook_setup::refresh_claude_md(ctx.registry_conn, project_hash);
     Ok(serde_json::json!({"configured": agent_id}))
 }
 

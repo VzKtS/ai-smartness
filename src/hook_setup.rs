@@ -5,7 +5,10 @@
 //! agent_id is resolved at runtime via the cascade in `mcp/mod.rs`.
 
 use anyhow::{Context, Result};
+use rusqlite::Connection;
 use std::path::Path;
+
+use crate::registry::registry::{AgentRegistry, HierarchyNode};
 
 /// Stale MCP server name patterns from older ai-smartness versions (Python era).
 /// These are purged from allowedTools / permissions.allow on every hook install.
@@ -327,6 +330,169 @@ fn resolve_bin_path() -> String {
         .unwrap_or_else(|_| "ai-smartness".to_string())
 }
 
+// ─── CLAUDE.md dynamic regeneration ─────────────────────────────────────
+
+const CLAUDE_MD_BEGIN: &str = "<!-- ai-smartness:begin -->";
+const CLAUDE_MD_END: &str = "<!-- ai-smartness:end -->";
+
+/// Format hierarchy nodes as a text tree with box-drawing characters.
+///
+/// Example output:
+/// ```text
+/// cor (coordinator)
+/// ├── dev — developer
+/// └── doc — documentation
+/// ```
+pub fn format_hierarchy_tree(nodes: &[HierarchyNode]) -> String {
+    let mut out = String::new();
+    for node in nodes {
+        out.push_str(&format!("{} ({})\n", node.id, node.role));
+        format_subtree(&node.subordinates, "", &mut out);
+    }
+    out
+}
+
+fn format_subtree(children: &[HierarchyNode], prefix: &str, out: &mut String) {
+    for (i, child) in children.iter().enumerate() {
+        let is_last = i == children.len() - 1;
+        let connector = if is_last { "└── " } else { "├── " };
+        let child_prefix = if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}│   ", prefix)
+        };
+        out.push_str(&format!("{}{}{} — {}\n", prefix, connector, child.id, child.role));
+        format_subtree(&child.subordinates, &child_prefix, out);
+    }
+}
+
+/// Generate the content for the ai-smartness marked section.
+fn generate_claude_md_section(tree: &[HierarchyNode]) -> String {
+    let mut s = String::new();
+    s.push_str("# ai-smartness — Agent Assignment\n\n");
+    s.push_str("This project uses [ai-smartness](https://github.com/VzKtS/ai-smartness) for multi-agent memory.\n\n");
+    s.push_str("## Assign an agent to this session\n\n");
+    s.push_str("At the start of each new session, call the `ai_agent_select` MCP tool:\n\n");
+    s.push_str("```\nai_agent_select(agent_id=\"<agent_id>\", session_id=\"<session_id from context>\")\n```\n\n");
+    s.push_str("Available agents: call `agent_list` to see them.\n");
+    s.push_str("The session_id is injected in your context by the hook (look for session_id in system reminders).\n");
+    if !tree.is_empty() {
+        s.push_str("\n## Agent hierarchy\n\n```\n");
+        s.push_str(&format_hierarchy_tree(tree));
+        s.push_str("```\n");
+    }
+    s
+}
+
+/// Split file content at markers, returning (before_begin, after_end).
+fn split_at_markers(content: &str) -> Option<(String, String)> {
+    let begin_pos = content.find(CLAUDE_MD_BEGIN)?;
+    let end_pos = content.find(CLAUDE_MD_END)?;
+    if end_pos <= begin_pos {
+        return None;
+    }
+    let before = content[..begin_pos].to_string();
+    let after = content[end_pos + CLAUDE_MD_END.len()..].to_string();
+    Some((before, after))
+}
+
+/// Resolve the project filesystem path from a project_hash using the registry.
+fn resolve_project_path(registry_conn: &Connection, project_hash: &str) -> Option<std::path::PathBuf> {
+    let path: Option<String> = registry_conn
+        .query_row(
+            "SELECT path FROM projects WHERE hash = ?1",
+            rusqlite::params![project_hash],
+            |row| row.get(0),
+        )
+        .ok();
+    path.map(std::path::PathBuf::from)
+}
+
+/// Regenerate the ai-smartness section in CLAUDE.md for a project.
+///
+/// - Reads the hierarchy from the registry database.
+/// - Replaces content between `<!-- ai-smartness:begin -->` and `<!-- ai-smartness:end -->` markers.
+/// - If markers don't exist, appends the section at the end of the file.
+/// - If CLAUDE.md doesn't exist, creates it with just the marked section.
+/// - Idempotent: safe to call multiple times.
+pub fn regenerate_claude_md(
+    project_path: &Path,
+    registry_conn: &Connection,
+    project_hash: &str,
+) -> Result<()> {
+    let claude_md_path = project_path.join("CLAUDE.md");
+
+    let tree = AgentRegistry::build_hierarchy_tree(registry_conn, project_hash)
+        .map_err(|e| anyhow::anyhow!("Failed to build hierarchy: {}", e))?;
+
+    let section = generate_claude_md_section(&tree);
+
+    let existing = if claude_md_path.exists() {
+        std::fs::read_to_string(&claude_md_path)
+            .with_context(|| format!("Failed to read {}", claude_md_path.display()))?
+    } else {
+        String::new()
+    };
+
+    let new_content = if let Some((before, after)) = split_at_markers(&existing) {
+        format!("{}{}\n{}{}{}", before, CLAUDE_MD_BEGIN, section, CLAUDE_MD_END, after)
+    } else if existing.is_empty() {
+        format!("{}\n{}{}\n", CLAUDE_MD_BEGIN, section, CLAUDE_MD_END)
+    } else {
+        format!("{}\n\n{}\n{}{}\n", existing.trim_end(), CLAUDE_MD_BEGIN, section, CLAUDE_MD_END)
+    };
+
+    std::fs::write(&claude_md_path, new_content)
+        .with_context(|| format!("Failed to write {}", claude_md_path.display()))?;
+
+    Ok(())
+}
+
+/// Remove the ai-smartness section from CLAUDE.md.
+///
+/// Strips content between markers (inclusive). If the file becomes empty, it is deleted.
+pub fn strip_claude_md_section(project_path: &Path) -> Result<()> {
+    let claude_md_path = project_path.join("CLAUDE.md");
+    if !claude_md_path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&claude_md_path)
+        .with_context(|| format!("Failed to read {}", claude_md_path.display()))?;
+
+    if let Some((before, after)) = split_at_markers(&content) {
+        let remaining = format!("{}{}", before.trim_end(), after.trim_start());
+        let trimmed = remaining.trim();
+        if trimmed.is_empty() {
+            std::fs::remove_file(&claude_md_path).ok();
+        } else {
+            std::fs::write(&claude_md_path, format!("{}\n", trimmed))
+                .with_context(|| format!("Failed to write {}", claude_md_path.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Regenerate CLAUDE.md after an agent mutation. Logs errors but never fails.
+pub fn refresh_claude_md(registry_conn: &Connection, project_hash: &str) {
+    let project_path = match resolve_project_path(registry_conn, project_hash) {
+        Some(p) => p,
+        None => {
+            tracing::debug!(
+                project = %&project_hash[..8.min(project_hash.len())],
+                "refresh_claude_md: project path not found"
+            );
+            return;
+        }
+    };
+
+    match regenerate_claude_md(&project_path, registry_conn, project_hash) {
+        Ok(()) => tracing::info!(path = %project_path.display(), "CLAUDE.md regenerated"),
+        Err(e) => tracing::warn!(error = %e, "Failed to regenerate CLAUDE.md"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,5 +532,138 @@ mod tests {
             tool_strs.contains(&"mcp__ai-smartness__*"),
             "current wildcard should remain, got: {:?}", tool_strs
         );
+    }
+
+    // ─── CLAUDE.md tests ──────────────────────────────────
+
+    fn make_tree() -> Vec<HierarchyNode> {
+        vec![HierarchyNode {
+            id: "cor".to_string(),
+            name: "cor".to_string(),
+            role: "coordinator".to_string(),
+            mode: "coordinator".to_string(),
+            team: None,
+            subordinates: vec![
+                HierarchyNode {
+                    id: "dev".to_string(),
+                    name: "dev".to_string(),
+                    role: "developer".to_string(),
+                    mode: "supervised".to_string(),
+                    team: None,
+                    subordinates: vec![],
+                    active_tasks: 0,
+                },
+                HierarchyNode {
+                    id: "doc".to_string(),
+                    name: "doc".to_string(),
+                    role: "documentation".to_string(),
+                    mode: "supervised".to_string(),
+                    team: None,
+                    subordinates: vec![],
+                    active_tasks: 0,
+                },
+            ],
+            active_tasks: 0,
+        }]
+    }
+
+    #[test]
+    fn test_format_hierarchy_tree() {
+        let output = format_hierarchy_tree(&make_tree());
+        assert!(output.contains("cor (coordinator)"));
+        assert!(output.contains("├── dev — developer"));
+        assert!(output.contains("└── doc — documentation"));
+    }
+
+    #[test]
+    fn test_format_hierarchy_tree_empty() {
+        let output = format_hierarchy_tree(&[]);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_split_at_markers_found() {
+        let content = "Hello\n<!-- ai-smartness:begin -->\nstuff\n<!-- ai-smartness:end -->\nBye";
+        let (before, after) = split_at_markers(content).unwrap();
+        assert_eq!(before, "Hello\n");
+        assert_eq!(after, "\nBye");
+    }
+
+    #[test]
+    fn test_split_at_markers_not_found() {
+        assert!(split_at_markers("No markers here").is_none());
+    }
+
+    #[test]
+    fn test_regenerate_creates_file() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::storage::migrations::migrate_registry_db(&conn).unwrap();
+
+        regenerate_claude_md(dir.path(), &conn, "testhash").unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+        assert!(content.contains(CLAUDE_MD_BEGIN));
+        assert!(content.contains(CLAUDE_MD_END));
+        assert!(content.contains("ai_agent_select"));
+    }
+
+    #[test]
+    fn test_regenerate_preserves_user_content() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let claude_md = dir.path().join("CLAUDE.md");
+        std::fs::write(&claude_md, "# My Project\n\nCustom stuff here.\n").unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::storage::migrations::migrate_registry_db(&conn).unwrap();
+
+        regenerate_claude_md(dir.path(), &conn, "testhash").unwrap();
+
+        let content = std::fs::read_to_string(&claude_md).unwrap();
+        assert!(content.contains("# My Project"));
+        assert!(content.contains("Custom stuff here."));
+        assert!(content.contains(CLAUDE_MD_BEGIN));
+    }
+
+    #[test]
+    fn test_regenerate_idempotent() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::storage::migrations::migrate_registry_db(&conn).unwrap();
+
+        regenerate_claude_md(dir.path(), &conn, "testhash").unwrap();
+        let first = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+
+        regenerate_claude_md(dir.path(), &conn, "testhash").unwrap();
+        let second = std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap();
+
+        assert_eq!(first, second, "Regeneration should be idempotent");
+    }
+
+    #[test]
+    fn test_strip_removes_section() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let claude_md = dir.path().join("CLAUDE.md");
+        let content = "# My Project\n\n<!-- ai-smartness:begin -->\ngenerated stuff\n<!-- ai-smartness:end -->\n\n# Other Section\n";
+        std::fs::write(&claude_md, content).unwrap();
+
+        strip_claude_md_section(dir.path()).unwrap();
+
+        let result = std::fs::read_to_string(&claude_md).unwrap();
+        assert!(!result.contains("ai-smartness:begin"));
+        assert!(result.contains("# My Project"));
+        assert!(result.contains("# Other Section"));
+    }
+
+    #[test]
+    fn test_strip_deletes_empty_file() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let claude_md = dir.path().join("CLAUDE.md");
+        let content = "<!-- ai-smartness:begin -->\ngenerated stuff\n<!-- ai-smartness:end -->";
+        std::fs::write(&claude_md, content).unwrap();
+
+        strip_claude_md_section(dir.path()).unwrap();
+
+        assert!(!claude_md.exists(), "Empty CLAUDE.md should be deleted");
     }
 }

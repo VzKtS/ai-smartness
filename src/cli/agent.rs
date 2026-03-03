@@ -62,6 +62,8 @@ pub fn add(
         AgentRegistry::update(&reg_conn, id, &hash, &update)
             .context("Failed to update renamed agent")?;
 
+        ai_smartness::hook_setup::refresh_claude_md(&reg_conn, &hash);
+
         println!("Agent registered: {} (replaced default)", id);
         return Ok(());
     }
@@ -109,6 +111,7 @@ pub fn add(
 
     AgentRegistry::register(&reg_conn, &agent)
         .context("Failed to register agent")?;
+    ai_smartness::hook_setup::refresh_claude_md(&reg_conn, &hash);
     eprintln!("[agent::add] Agent registered in registry");
 
     // Initialize agent DB
@@ -151,6 +154,52 @@ pub fn add(
     Ok(())
 }
 
+pub fn update(
+    id: &str,
+    project_hash: Option<&str>,
+    name: Option<&str>,
+    role: Option<&str>,
+    description: Option<&str>,
+    supervisor_id: Option<&str>,
+    team: Option<&str>,
+    thread_mode: Option<&str>,
+    report_to: Option<&str>,
+    custom_role: Option<&str>,
+    full_permissions: Option<bool>,
+    expected_model: Option<&str>,
+) -> Result<()> {
+    let hash = resolve_project_hash(project_hash)?;
+
+    let reg_path = path_utils::registry_db_path();
+    let reg_conn = open_connection(&reg_path, ConnectionRole::Cli)
+        .context("Failed to open registry database")?;
+
+    let update = AgentUpdate {
+        name: name.map(|s| s.to_string()),
+        role: role.map(|s| s.to_string()),
+        description: description.map(|s| s.to_string()),
+        supervisor_id: supervisor_id.map(|s| Some(s.to_string())),
+        team: team.map(|s| Some(s.to_string())),
+        coordination_mode: None,
+        specializations: None,
+        capabilities: None,
+        thread_mode: thread_mode.map(|s| s.to_string()),
+        report_to: report_to.map(|s| s.to_string()),
+        custom_role: custom_role.map(|s| s.to_string()),
+        workspace_path: None,
+        full_permissions,
+        expected_model: expected_model.map(|s| if s.is_empty() { None } else { Some(s.to_string()) }),
+    };
+
+    AgentRegistry::update(&reg_conn, id, &hash, &update)
+        .context("Failed to update agent")?;
+
+    ai_smartness::hook_setup::refresh_claude_md(&reg_conn, &hash);
+
+    println!("Agent updated: {}", id);
+    Ok(())
+}
+
 pub fn remove(id: &str, project_hash: Option<&str>) -> Result<()> {
     let hash = resolve_project_hash(project_hash)?;
 
@@ -160,6 +209,8 @@ pub fn remove(id: &str, project_hash: Option<&str>) -> Result<()> {
 
     AgentRegistry::delete(&reg_conn, id, &hash)
         .context("Failed to remove agent")?;
+
+    ai_smartness::hook_setup::refresh_claude_md(&reg_conn, &hash);
 
     println!("Agent removed: {}", id);
     Ok(())
