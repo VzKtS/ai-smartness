@@ -215,6 +215,10 @@ pub fn run(action: HookAction) {
         }
     }
 
+    // Flush stdout before exit — process::exit doesn't flush block-buffered pipes.
+    // Without this, PostToolUse stdout hints (engram, continue) are lost when piped.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+
     // ALWAYS exit 0 — hooks must never break the AI session
     std::process::exit(0);
 }
