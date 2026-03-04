@@ -356,17 +356,18 @@ pub fn handle_backfill_concepts(
     let limit = optional_usize(params, "limit").unwrap_or(10);
     let dry_run = optional_bool(params, "dry_run").unwrap_or(false);
 
-    // Find threads with empty concepts
+    // All active threads are candidates — no filter.
+    // When called explicitly by agent/human, re-enrichment is always valid.
+    // Prioritize by importance (higher first), take up to limit.
     let all = ThreadStorage::list_active(ctx.agent_conn)?;
-    let mut candidates: Vec<&Thread> = all.iter().filter(|t| t.concepts.is_empty()).collect();
-    // Prioritize by importance (higher first)
+    let mut candidates: Vec<&Thread> = all.iter().collect();
     candidates.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
     let batch: Vec<&Thread> = candidates.into_iter().take(limit).collect();
 
     if batch.is_empty() {
         return Ok(serde_json::json!({
             "status": "nothing_to_do",
-            "message": "All active threads already have concepts"
+            "message": "No active threads"
         }));
     }
 
@@ -377,12 +378,14 @@ pub fn handle_backfill_concepts(
                 "title": &t.title,
                 "topics": &t.topics,
                 "labels": &t.labels,
+                "has_summary": t.summary.is_some(),
+                "has_concepts": !t.concepts.is_empty(),
             })
         }).collect();
         return Ok(serde_json::json!({
             "dry_run": true,
             "candidates": batch.len(),
-            "total_missing": all.iter().filter(|t| t.concepts.is_empty()).count(),
+            "total_active": all.len(),
             "preview": preview
         }));
     }
@@ -421,7 +424,7 @@ pub fn handle_backfill_concepts(
     Ok(serde_json::json!({
         "queued": queued,
         "failed": failed,
-        "total_missing": all.iter().filter(|t| t.concepts.is_empty()).count(),
+        "total_active": all.len(),
         "results": results
     }))
 }

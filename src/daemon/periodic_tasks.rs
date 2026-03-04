@@ -44,6 +44,7 @@ fn run_task(name: &str, task: impl FnOnce()) {
 /// Main prune loop — iterates all active agents every `prune_interval` seconds.
 pub fn run_prune_loop(
     pool: Arc<ConnectionPool>,
+    capture_queue: Option<Arc<super::capture_queue::CaptureQueue>>,
     running: Arc<AtomicBool>,
     prune_interval_secs: u64,
 ) {
@@ -227,7 +228,10 @@ pub fn run_prune_loop(
                 };
 
                 let data_dir = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
-                run_prune_cycle(&conn, &guardian, &data_dir, &key.project_hash);
+                run_prune_cycle(
+                    &conn, &guardian, &data_dir, &key.project_hash, &key.agent_id,
+                    capture_queue.as_deref(),
+                );
 
                 // 7. Scheduled backup (outside prune cycle — needs key context)
                 run_task("backup", || {
@@ -549,7 +553,14 @@ fn clear_backpressure(key: &AgentKey) {
 
 /// Single prune cycle for one agent — each task acquires/releases the lock
 /// independently to reduce contention (~5s per task instead of ~60s continuous).
-fn run_prune_cycle(conn_mtx: &Mutex<Connection>, guardian: &GuardianConfig, agent_data_dir: &std::path::Path, project_hash: &str) {
+fn run_prune_cycle(
+    conn_mtx: &Mutex<Connection>,
+    guardian: &GuardianConfig,
+    agent_data_dir: &std::path::Path,
+    project_hash: &str,
+    agent_id: &str,
+    capture_queue: Option<&super::capture_queue::CaptureQueue>,
+) {
     // 1. Gossip v2: concept-based bridge discovery (config-driven limits)
     run_task("gossip", || {
         let Ok(conn) = conn_mtx.lock() else { return };
@@ -679,6 +690,45 @@ fn run_prune_cycle(conn_mtx: &Mutex<Connection>, guardian: &GuardianConfig, agen
         }
     }
 
+    // 7b. Quality scan: detect threads with empty/degenerate fields, auto-queue enrichment.
+    // Lightweight scan — no LLM call. Only submits jobs to the capture queue.
+    // Retry max 2x is handled by the capture queue worker (enrichment_retry field).
+    if let Some(cq) = capture_queue {
+        run_task("quality_scan", || {
+            let Ok(conn) = conn_mtx.lock() else { return };
+            let threads = ThreadStorage::list_active(&conn).unwrap_or_default();
+            let mut queued = 0usize;
+
+            for thread in threads.iter().take(20) {
+                if needs_enrichment(thread) {
+                    let job = super::capture_queue::CaptureJob {
+                        key: AgentKey {
+                            project_hash: project_hash.to_string(),
+                            agent_id: agent_id.to_string(),
+                        },
+                        source_type: "quality_scan".to_string(),
+                        content: String::new(),
+                        file_path: None,
+                        is_prompt: false,
+                        session_id: None,
+                        enrich_thread_id: Some(thread.id.clone()),
+                        enrichment_retry: 0,
+                    };
+                    if cq.submit(job).is_ok() {
+                        queued += 1;
+                    } else {
+                        // Queue full — stop submitting this cycle
+                        break;
+                    }
+                }
+            }
+
+            if queued > 0 {
+                tracing::info!(queued, "Quality scan: queued {} threads for enrichment", queued);
+            }
+        });
+    }
+
     // 8. Backup: moved to run_prune_loop (needs key context)
 
     // 9. Shared orphan cleanup: remove shared_threads entries whose source thread is gone
@@ -799,6 +849,41 @@ fn decay_injection_scores(conn: &Connection, active: &[Thread]) -> ai_smartness:
     }
 
     Ok(decayed)
+}
+
+/// Detect if a thread has empty or degenerate fields that need LLM enrichment.
+/// Used by the quality scan task to auto-queue enrichment for incomplete threads.
+fn needs_enrichment(thread: &Thread) -> bool {
+    use ai_smartness::processing::extractor::is_placeholder;
+
+    // Empty fields
+    if thread.summary.is_none() || thread.summary.as_deref() == Some("") {
+        return true;
+    }
+    if thread.labels.is_empty() {
+        return true;
+    }
+    if thread.concepts.is_empty() {
+        return true;
+    }
+    if thread.topics.is_empty() {
+        return true;
+    }
+    if thread.embedding.is_none() {
+        return true;
+    }
+
+    // Degenerate fields (LLM placeholder output)
+    if let Some(ref s) = thread.summary {
+        if is_placeholder(s) {
+            return true;
+        }
+    }
+    if is_placeholder(&thread.title) {
+        return true;
+    }
+
+    false
 }
 
 /// Remove shared_threads entries whose source thread no longer exists in the agent DB.

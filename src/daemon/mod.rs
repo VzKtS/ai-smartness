@@ -160,13 +160,14 @@ pub fn run() {
         })
     };
 
-    // Start prune loop thread
+    // Start prune loop thread (with capture queue for quality scan enrichment)
     let prune_handle = {
         let pool = pool.clone();
+        let cq = capture_queue.clone();
         let running = running.clone();
         let prune_interval = config.prune_interval_secs;
         std::thread::spawn(move || {
-            periodic_tasks::run_prune_loop(pool, running, prune_interval);
+            periodic_tasks::run_prune_loop(pool, Some(cq), running, prune_interval);
         })
     };
 

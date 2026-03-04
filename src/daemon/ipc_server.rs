@@ -294,6 +294,7 @@ fn dispatch(
                 is_prompt: false,
                 session_id: None,
                 enrich_thread_id: None,
+                enrichment_retry: 0,
             };
 
             match capture_queue.submit(job) {
@@ -332,6 +333,7 @@ fn dispatch(
                 is_prompt: true,
                 session_id,
                 enrich_thread_id: None,
+                enrichment_retry: 0,
             };
 
             match capture_queue.submit(job) {
@@ -536,6 +538,7 @@ fn dispatch(
                 is_prompt: false,
                 session_id: None,
                 enrich_thread_id: Some(thread_id),
+                enrichment_retry: 0,
             };
 
             match capture_queue.submit(job) {

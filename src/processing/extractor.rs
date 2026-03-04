@@ -522,7 +522,8 @@ pub fn is_degenerate_extraction(ext: &Extraction) -> bool {
 }
 
 /// Check if a string is a placeholder (LLM couldn't produce real content).
-fn is_placeholder(s: &str) -> bool {
+/// Public for reuse in daemon quality scan (periodic_tasks.rs).
+pub fn is_placeholder(s: &str) -> bool {
     let trimmed = s.trim();
     if trimmed.is_empty() || trimmed.len() < 3 {
         return true;

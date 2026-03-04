@@ -522,30 +522,15 @@ pub fn enrich_existing_thread(
         "Enrichment: extraction complete"
     );
 
-    // 4. Update thread fields (only fill empty fields — don't overwrite manual enrichment)
-    if thread.summary.is_none() || thread.summary.as_deref() == Some("") {
-        thread.summary = Some(extraction.summary.clone());
-    }
-    if thread.labels.is_empty() {
-        thread.labels = extraction.labels.clone();
-    }
-    if thread.concepts.is_empty() {
-        thread.concepts = ai_smartness::constants::normalize_concepts(&extraction.concepts);
-    }
+    // 4. Overwrite ALL fields — explicit enrichment always replaces previous values.
+    // This enables full re-enrichment when upgrading LLM or reprocessing with better hardware.
+    thread.summary = Some(extraction.summary.clone());
+    thread.labels = extraction.labels.clone();
+    thread.concepts = ai_smartness::constants::normalize_concepts(&extraction.concepts);
+    thread.topics = extraction.subjects.clone();
 
-    // Merge topics (dedup case-insensitive)
-    if thread.topics.is_empty() {
-        thread.topics = extraction.subjects.clone();
-    } else {
-        for t in &extraction.subjects {
-            if !thread.topics.iter().any(|existing: &String| existing.to_lowercase() == t.to_lowercase()) {
-                thread.topics.push(t.clone());
-            }
-        }
-    }
-
-    // Update importance only if extraction found higher value
-    if extraction.importance > thread.importance {
+    // Exception: respect importance_manually_set — user/agent intentionally set this value
+    if !thread.importance_manually_set {
         thread.importance = extraction.importance;
     }
 

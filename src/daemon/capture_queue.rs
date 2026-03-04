@@ -33,7 +33,13 @@ pub struct CaptureJob {
     pub session_id: Option<String>,
     /// If Some, enrich an existing thread instead of creating/processing a new capture.
     pub enrich_thread_id: Option<String>,
+    /// Retry count for enrichment jobs. Auto-retry on failure up to MAX_ENRICHMENT_RETRIES.
+    pub enrichment_retry: u8,
 }
+
+/// Maximum automatic retries for enrichment jobs.
+/// Beyond this, the failure is logged and left for user/agent to investigate.
+const MAX_ENRICHMENT_RETRIES: u8 = 2;
 
 /// Live stats for the capture queue, shared across workers.
 pub struct QueueStats {
@@ -74,6 +80,8 @@ impl CaptureQueue {
         let rx = Arc::new(Mutex::new(rx));
         let stats = Arc::new(QueueStats::new(num_workers));
         let mut handles = Vec::with_capacity(num_workers);
+        // Clone tx for retry re-queue inside workers (before moving tx into Self)
+        let tx_retry = tx.clone();
 
         tracing::info!(
             workers = num_workers,
@@ -85,12 +93,13 @@ impl CaptureQueue {
             let rx = rx.clone();
             let pool = pool.clone();
             let stats = stats.clone();
+            let tx_retry = tx_retry.clone();
 
             let handle = match std::thread::Builder::new()
                 .name(format!("capture-worker-{}", worker_id))
                 .spawn(move || {
                     tracing::info!(worker_id, "Capture worker started");
-                    worker_loop(worker_id, rx, pool, stats);
+                    worker_loop(worker_id, rx, pool, stats, tx_retry);
                     tracing::info!(worker_id, "Capture worker stopped");
                 }) {
                 Ok(h) => h,
@@ -211,6 +220,7 @@ fn worker_loop(
     rx: Arc<Mutex<Receiver<CaptureJob>>>,
     pool: Arc<ConnectionPool>,
     stats: Arc<QueueStats>,
+    tx: SyncSender<CaptureJob>,
 ) {
     loop {
         // Lock the receiver briefly to grab one job
@@ -304,15 +314,52 @@ fn worker_loop(
                     );
                 }
                 Err(e) => {
-                    stats.errors.fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!(
-                        worker_id,
-                        agent = %job.key,
-                        thread_id = %tid,
-                        error = %e,
-                        duration_ms = start.elapsed().as_millis() as u64,
-                        "Thread enrichment failed"
-                    );
+                    if job.enrichment_retry < MAX_ENRICHMENT_RETRIES {
+                        let retry_job = CaptureJob {
+                            key: job.key.clone(),
+                            source_type: job.source_type.clone(),
+                            content: job.content.clone(),
+                            file_path: None,
+                            is_prompt: false,
+                            session_id: None,
+                            enrich_thread_id: job.enrich_thread_id.clone(),
+                            enrichment_retry: job.enrichment_retry + 1,
+                        };
+                        stats.pending.fetch_add(1, Ordering::Relaxed);
+                        match tx.try_send(retry_job) {
+                            Ok(()) => tracing::warn!(
+                                worker_id,
+                                agent = %job.key,
+                                thread_id = %tid,
+                                error = %e,
+                                retry = job.enrichment_retry + 1,
+                                max = MAX_ENRICHMENT_RETRIES,
+                                "Enrichment failed, re-queued for retry"
+                            ),
+                            Err(_) => {
+                                stats.pending.fetch_sub(1, Ordering::Relaxed);
+                                stats.errors.fetch_add(1, Ordering::Relaxed);
+                                tracing::error!(
+                                    worker_id,
+                                    thread_id = %tid,
+                                    error = %e,
+                                    "Enrichment retry failed: queue full — ABANDONED"
+                                );
+                            }
+                        }
+                    } else {
+                        stats.errors.fetch_add(1, Ordering::Relaxed);
+                        tracing::error!(
+                            worker_id,
+                            agent = %job.key,
+                            thread_id = %tid,
+                            error = %e,
+                            retries = MAX_ENRICHMENT_RETRIES,
+                            duration_ms = start.elapsed().as_millis() as u64,
+                            "Enrichment ABANDONED after {} retries — user/agent must investigate",
+                            MAX_ENRICHMENT_RETRIES,
+                        );
+                    }
                 }
             }
             drop(conn_guard);
