@@ -58,7 +58,7 @@ fn build_enriched_embed_text(extraction: &Extraction) -> String {
 }
 
 /// Build enriched embedding text from an existing thread's metadata.
-fn build_enriched_embed_text_from_thread(thread: &Thread) -> String {
+pub fn build_enriched_embed_text_from_thread(thread: &Thread) -> String {
     let concepts_limited: Vec<&str> = thread.concepts.iter()
         .take(8).map(|s| s.as_str()).collect();
     format!(
@@ -890,7 +890,7 @@ impl ThreadManager {
     /// Create thinkbridges: immediate concept-based connections at thread creation.
     /// Connects the new/updated thread to existing threads sharing concepts.
     /// Returns the number of bridges created.
-    fn create_thinkbridges(
+    pub fn create_thinkbridges(
         conn: &Connection,
         thread_id: &str,
         concepts: &[String],

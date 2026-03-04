@@ -532,75 +532,105 @@ fn process_mind_coherence(
     let conn = pool.get_or_open(key).map_err(|e| format!("Pool error: {}", e))?;
     let conn_guard = conn.lock().map_err(|e| format!("Lock error: {}", e))?;
 
-    // 1b. Transcript capture — best-effort, uses existing conn_guard (no double lock)
+    // 2. Transcript capture — best-effort, uses existing conn_guard
     capture_mind_transcript(&conn_guard, key, new_thread_id);
 
-    // 2. Find most recent active thread (any type, excluding self)
-    let prev_id: String = conn_guard
+    // 3. Direct continuity chaining (no coherence gate — mind threads are temporal snapshots)
+    let prev_id: Option<String> = conn_guard
         .query_row(
             "SELECT id FROM threads WHERE id != ?1 AND status = 'active'
              ORDER BY last_active DESC LIMIT 1",
             rusqlite::params![new_thread_id],
             |row| row.get(0),
         )
-        .map_err(|e| format!("No previous thread: {}", e))?;
+        .ok();
 
-    // 3. Get previous thread's content + labels
-    let prev_thread = ThreadStorage::get(&conn_guard, &prev_id)
-        .map_err(|e| format!("{}", e))?
-        .ok_or_else(|| "Previous thread not found".to_string())?;
-    let msgs = ThreadStorage::get_messages(&conn_guard, &prev_id)
-        .map_err(|e| format!("{}", e))?;
-    let prev_content = msgs.last().map(|m| m.content.as_str()).unwrap_or("");
-
-    // 4. Load CoherenceConfig
-    let guardian = load_guardian_config_for_coherence();
-    if !guardian.coherence.enabled {
-        tracing::debug!("Mind coherence: gate disabled, skipping");
-        return Ok(());
+    if let Some(ref pid) = prev_id {
+        ThreadStorage::set_continuity_parent(&conn_guard, new_thread_id, pid, None)
+            .map_err(|e| format!("{}", e))?;
+        tracing::info!(
+            new = %new_thread_id,
+            parent = %pid,
+            "Mind thread chained (direct, no gate)"
+        );
     }
 
-    // 5. Run coherence check (LLM or embedding fallback)
-    let result = ai_smartness::processing::coherence::check_coherence(
-        prev_content,
+    // 4. LLM extraction (labels, topics, summary, concepts, importance)
+    let guardian = load_guardian_config_for_coherence();
+    let extraction = match ai_smartness::processing::extractor::extract(
         new_content,
-        &prev_thread.labels,
-        &guardian.coherence,
-    )
-    .map_err(|e| format!("Coherence check: {}", e))?;
+        ai_smartness::processing::extractor::ExtractionSource::Response,
+        &guardian.extraction,
+        &guardian.label_suggestion,
+        &guardian.importance_rating,
+        None,
+    ) {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            tracing::debug!("Mind enrichment: extraction returned None");
+            return Ok(());
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "Mind enrichment: extraction failed");
+            return Ok(());
+        }
+    };
 
-    // 6. Determine action
-    let action = ai_smartness::processing::coherence::determine_action(
-        result.score,
-        guardian.coherence.child_threshold,
-        guardian.coherence.orphan_threshold,
+    tracing::info!(
+        thread = %new_thread_id,
+        title = %extraction.title,
+        labels = ?extraction.labels,
+        concepts = extraction.concepts.len(),
+        "Mind enrichment: extraction complete"
     );
 
-    match action {
-        ai_smartness::processing::coherence::CoherenceAction::Child
-        | ai_smartness::processing::coherence::CoherenceAction::Continue => {
-            ThreadStorage::set_continuity_parent(
-                &conn_guard,
-                new_thread_id,
-                &prev_id,
-                Some(result.score),
-            )
-            .map_err(|e| format!("{}", e))?;
-            tracing::info!(
-                new = %new_thread_id,
-                parent = %prev_id,
-                score = result.score,
-                "Mind thread chained via coherence gate (async)"
-            );
-        }
-        _ => {
-            tracing::debug!(
-                score = result.score,
-                action = ?action,
-                "Mind thread: coherence below threshold, new chain"
-            );
+    // 5. Update existing thread with extraction results
+    let mut thread = ThreadStorage::get(&conn_guard, new_thread_id)
+        .map_err(|e| format!("{}", e))?
+        .ok_or_else(|| format!("Mind thread {} not found", new_thread_id))?;
+
+    thread.summary = Some(extraction.summary.clone());
+    thread.labels = extraction.labels.clone();
+    thread.concepts = ai_smartness::constants::normalize_concepts(&extraction.concepts);
+    thread.importance = extraction.importance;
+
+    // Merge topics (dedup case-insensitive)
+    if thread.topics.is_empty() {
+        thread.topics = extraction.subjects.clone();
+    } else {
+        for t in &extraction.subjects {
+            if !thread.topics.iter().any(|existing| existing.to_lowercase() == t.to_lowercase()) {
+                thread.topics.push(t.clone());
+            }
         }
     }
+
+    // Compute embedding from enriched text
+    let embed_text =
+        ai_smartness::intelligence::thread_manager::build_enriched_embed_text_from_thread(&thread);
+    let mgr = ai_smartness::processing::embeddings::EmbeddingManager::global();
+    let embedding = mgr.embed(&embed_text);
+    thread.embedding = Some(embedding);
+
+    ThreadStorage::update(&conn_guard, &thread).map_err(|e| format!("{}", e))?;
+
+    // 6. Create thinkbridges (concept-based connections)
+    if !thread.concepts.is_empty() {
+        let bridge_count =
+            ai_smartness::intelligence::thread_manager::ThreadManager::create_thinkbridges(
+                &conn_guard,
+                new_thread_id,
+                &thread.concepts,
+                &guardian.gossip,
+            )
+            .unwrap_or(0);
+        tracing::info!(
+            thread = %new_thread_id,
+            bridges = bridge_count,
+            "Mind enrichment: thinkbridges created"
+        );
+    }
+
     Ok(())
 }
 
