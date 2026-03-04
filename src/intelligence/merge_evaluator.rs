@@ -50,6 +50,28 @@ impl MergeEvaluator {
         let thread_b = ThreadStorage::get(conn, &candidate.thread_b)?
             .ok_or_else(|| AiError::ThreadNotFound(candidate.thread_b.clone()))?;
 
+        // Origin-type compatibility gate — reject before LLM call if incompatible
+        if !thread_a.origin_type.is_compatible_with(&thread_b.origin_type) {
+            tracing::info!(
+                thread_a = %&candidate.thread_a[..8.min(candidate.thread_a.len())],
+                thread_b = %&candidate.thread_b[..8.min(candidate.thread_b.len())],
+                origin_a = %thread_a.origin_type.as_str(),
+                origin_b = %thread_b.origin_type.as_str(),
+                "MergeEvaluator: incompatible origin types, rejecting without LLM call"
+            );
+            // Reduce bridge confidence (same penalty as LLM rejection)
+            if let Ok(Some(bridge)) = BridgeStorage::get(conn, &candidate.bridge_id) {
+                let new_confidence = (bridge.confidence - GOSSIP_MERGE_REJECTION_PENALTY).max(0.0);
+                let new_reason = format!("{};origin_incompatible:{}+{}",
+                    bridge.reason, thread_a.origin_type.as_str(), thread_b.origin_type.as_str());
+                let mut updated = bridge;
+                updated.confidence = new_confidence;
+                updated.reason = new_reason;
+                BridgeStorage::update(conn, &updated)?;
+            }
+            return Ok(false);
+        }
+
         let decision = Self::evaluate_via_llm(&thread_a, &thread_b, candidate, conn)?;
 
         match decision {

@@ -16,6 +16,17 @@ pub fn handle_merge(
     let absorbed = ThreadStorage::get(ctx.agent_conn, &absorbed_id)?
         .ok_or_else(|| ai_smartness::AiError::ThreadNotFound(absorbed_id.clone()))?;
 
+    // Origin-type compatibility gate
+    if !survivor.origin_type.is_compatible_with(&absorbed.origin_type) {
+        return Err(ai_smartness::AiError::InvalidInput(format!(
+            "Cannot merge incompatible origin types: survivor={} ({}), absorbed={} ({})",
+            survivor.origin_type.as_str(),
+            survivor.origin_type.compatibility_group(),
+            absorbed.origin_type.as_str(),
+            absorbed.origin_type.compatibility_group(),
+        )));
+    }
+
     // Move messages
     let msgs = ThreadStorage::get_messages(ctx.agent_conn, &absorbed_id)?;
     for mut msg in msgs {

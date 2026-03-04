@@ -80,6 +80,40 @@ impl OriginType {
             Self::Reactivation => "reactivation",
         }
     }
+
+    /// Compatibility group — threads within the same group can be merged.
+    /// Groups:
+    ///   "conversational" — Prompt, Response
+    ///   "file"           — FileRead, FileWrite
+    ///   "command"        — Command
+    ///   "task"           — Task
+    ///   "web"            — Fetch
+    ///   "system"         — Split, Reactivation (universally compatible)
+    pub fn compatibility_group(&self) -> &'static str {
+        match self {
+            Self::Prompt | Self::Response => "conversational",
+            Self::FileRead | Self::FileWrite => "file",
+            Self::Command => "command",
+            Self::Task => "task",
+            Self::Fetch => "web",
+            Self::Split | Self::Reactivation => "system",
+        }
+    }
+
+    /// Check if two origin types are compatible for merging/continuing.
+    /// "system" group (Split, Reactivation) is universally compatible
+    /// because these are lifecycle markers, not content types.
+    pub fn is_compatible_with(&self, other: &OriginType) -> bool {
+        let g1 = self.compatibility_group();
+        let g2 = other.compatibility_group();
+        g1 == g2 || g1 == "system" || g2 == "system"
+    }
+
+    /// Parse a source_type string into OriginType and check compatibility with self.
+    pub fn is_compatible_with_source(&self, source_type: &str) -> bool {
+        let source_origin = source_type.parse::<OriginType>().unwrap_or(OriginType::Prompt);
+        self.is_compatible_with(&source_origin)
+    }
 }
 
 impl std::str::FromStr for OriginType {
@@ -241,4 +275,80 @@ pub struct ThreadMessage {
     /// Thread ID leaving this changelog waypoint (backfilled).
     #[serde(default)]
     pub continuity_to: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compatibility_same_group() {
+        assert!(OriginType::Prompt.is_compatible_with(&OriginType::Response));
+        assert!(OriginType::Response.is_compatible_with(&OriginType::Prompt));
+        assert!(OriginType::FileRead.is_compatible_with(&OriginType::FileWrite));
+        assert!(OriginType::FileWrite.is_compatible_with(&OriginType::FileRead));
+        assert!(OriginType::Command.is_compatible_with(&OriginType::Command));
+        assert!(OriginType::Task.is_compatible_with(&OriginType::Task));
+        assert!(OriginType::Fetch.is_compatible_with(&OriginType::Fetch));
+    }
+
+    #[test]
+    fn test_compatibility_cross_group_rejected() {
+        assert!(!OriginType::Prompt.is_compatible_with(&OriginType::FileRead));
+        assert!(!OriginType::Prompt.is_compatible_with(&OriginType::Command));
+        assert!(!OriginType::Prompt.is_compatible_with(&OriginType::Task));
+        assert!(!OriginType::Prompt.is_compatible_with(&OriginType::Fetch));
+        assert!(!OriginType::FileRead.is_compatible_with(&OriginType::Command));
+        assert!(!OriginType::FileRead.is_compatible_with(&OriginType::Task));
+        assert!(!OriginType::Task.is_compatible_with(&OriginType::Fetch));
+        assert!(!OriginType::Command.is_compatible_with(&OriginType::Response));
+        assert!(!OriginType::Fetch.is_compatible_with(&OriginType::FileWrite));
+    }
+
+    #[test]
+    fn test_system_universally_compatible() {
+        // Split is compatible with everything
+        assert!(OriginType::Split.is_compatible_with(&OriginType::Prompt));
+        assert!(OriginType::Split.is_compatible_with(&OriginType::FileRead));
+        assert!(OriginType::Split.is_compatible_with(&OriginType::Command));
+        assert!(OriginType::Split.is_compatible_with(&OriginType::Task));
+        assert!(OriginType::Split.is_compatible_with(&OriginType::Fetch));
+        // Reactivation is compatible with everything
+        assert!(OriginType::Reactivation.is_compatible_with(&OriginType::Prompt));
+        assert!(OriginType::Reactivation.is_compatible_with(&OriginType::FileWrite));
+        assert!(OriginType::Reactivation.is_compatible_with(&OriginType::Command));
+        // System ↔ System
+        assert!(OriginType::Split.is_compatible_with(&OriginType::Reactivation));
+        // Reverse direction
+        assert!(OriginType::Prompt.is_compatible_with(&OriginType::Split));
+        assert!(OriginType::Command.is_compatible_with(&OriginType::Reactivation));
+    }
+
+    #[test]
+    fn test_is_compatible_with_source_string() {
+        assert!(OriginType::Prompt.is_compatible_with_source("response"));
+        assert!(OriginType::Prompt.is_compatible_with_source("Response"));
+        assert!(!OriginType::Prompt.is_compatible_with_source("Bash"));
+        assert!(!OriginType::Prompt.is_compatible_with_source("Read"));
+        assert!(OriginType::FileRead.is_compatible_with_source("Write"));
+        assert!(OriginType::FileRead.is_compatible_with_source("Edit"));
+        assert!(!OriginType::FileRead.is_compatible_with_source("prompt"));
+        assert!(OriginType::Command.is_compatible_with_source("Bash"));
+        assert!(OriginType::Task.is_compatible_with_source("Agent"));
+        assert!(OriginType::Fetch.is_compatible_with_source("WebFetch"));
+        assert!(OriginType::Fetch.is_compatible_with_source("WebSearch"));
+    }
+
+    #[test]
+    fn test_compatibility_group_names() {
+        assert_eq!(OriginType::Prompt.compatibility_group(), "conversational");
+        assert_eq!(OriginType::Response.compatibility_group(), "conversational");
+        assert_eq!(OriginType::FileRead.compatibility_group(), "file");
+        assert_eq!(OriginType::FileWrite.compatibility_group(), "file");
+        assert_eq!(OriginType::Command.compatibility_group(), "command");
+        assert_eq!(OriginType::Task.compatibility_group(), "task");
+        assert_eq!(OriginType::Fetch.compatibility_group(), "web");
+        assert_eq!(OriginType::Split.compatibility_group(), "system");
+        assert_eq!(OriginType::Reactivation.compatibility_group(), "system");
+    }
 }
