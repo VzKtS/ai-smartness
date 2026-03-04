@@ -146,18 +146,28 @@ impl ThreadManager {
             Self::decide_action(conn, extraction, embeddings, embed_mode, &guardian.thread_matching)?
         };
 
-        // Origin-type compatibility gate: tool captures must NOT merge into conversational threads
+        // Origin-type compatibility gate: tool ↔ conversational captures must NOT cross-merge
         let action = match &action {
             ThreadAction::Continue { thread_id } | ThreadAction::Reactivate { thread_id } => {
-                let target_is_conversational = ThreadStorage::get(conn, thread_id)?
-                    .map(|t| matches!(t.origin_type, OriginType::Prompt | OriginType::Response))
+                let target_origin = ThreadStorage::get(conn, thread_id)?
+                    .map(|t| t.origin_type);
+                let target_is_conversational = target_origin
+                    .as_ref()
+                    .map(|o| matches!(o, OriginType::Prompt | OriginType::Response))
+                    .unwrap_or(false);
+                let target_is_tool = target_origin
+                    .as_ref()
+                    .map(|o| !matches!(o, OriginType::Prompt | OriginType::Response | OriginType::Split | OriginType::Reactivation))
                     .unwrap_or(false);
                 let source_is_tool = !matches!(source_type, "prompt" | "response");
-                if target_is_conversational && source_is_tool {
+                let source_is_conversational = matches!(source_type, "prompt" | "response");
+                if (target_is_conversational && source_is_tool)
+                    || (target_is_tool && source_is_conversational)
+                {
                     tracing::info!(
                         source_type = %source_type,
                         target_thread = %thread_id,
-                        "Origin mismatch: tool capture → conversational thread, forcing NewThread"
+                        "Origin mismatch: cross-type merge blocked, forcing NewThread"
                     );
                     ThreadAction::NewThread
                 } else {
