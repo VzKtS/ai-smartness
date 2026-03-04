@@ -464,3 +464,117 @@ fn try_changelog_shortcut(
 
     Ok(result)
 }
+
+/// Enrich an existing thread with LLM-generated metadata (summary, labels, concepts, topics).
+/// Skips thread creation/merging — only updates the existing thread in place.
+/// Called by capture queue workers for `enrich_thread` jobs.
+pub fn enrich_existing_thread(
+    conn: &Connection,
+    thread_id: &str,
+    _hint_content: &str,
+    guardian: &GuardianConfig,
+) -> AiResult<()> {
+    let start = Instant::now();
+
+    // 1. Load existing thread
+    let mut thread = ThreadStorage::get(conn, thread_id)?
+        .ok_or_else(|| ai_smartness::AiError::ThreadNotFound(
+            format!("{} (enrichment)", thread_id),
+        ))?;
+
+    tracing::info!(
+        thread_id = %thread_id,
+        title = %thread.title,
+        "Enrichment: starting LLM extraction"
+    );
+
+    // 2. Build enrichment content from thread metadata
+    let content = format!(
+        "Title: {}\nTopics: {}\nLabels: {}\nSummary: {}",
+        thread.title,
+        thread.topics.join(", "),
+        thread.labels.join(", "),
+        thread.summary.as_deref().unwrap_or("(none)"),
+    );
+
+    // 3. LLM extraction (via call_llm → goes through circuit breaker + Auto fallback)
+    let extraction = match extractor::extract(
+        &content,
+        ExtractionSource::Response,
+        &guardian.extraction,
+        &guardian.label_suggestion,
+        &guardian.importance_rating,
+        None,
+    )? {
+        Some(e) => e,
+        None => {
+            tracing::debug!(thread_id = %thread_id, "Enrichment: extraction returned None");
+            return Ok(());
+        }
+    };
+
+    tracing::info!(
+        thread_id = %thread_id,
+        title = %extraction.title,
+        labels = ?extraction.labels,
+        concepts = extraction.concepts.len(),
+        elapsed_ms = start.elapsed().as_millis(),
+        "Enrichment: extraction complete"
+    );
+
+    // 4. Update thread fields (only fill empty fields — don't overwrite manual enrichment)
+    if thread.summary.is_none() || thread.summary.as_deref() == Some("") {
+        thread.summary = Some(extraction.summary.clone());
+    }
+    if thread.labels.is_empty() {
+        thread.labels = extraction.labels.clone();
+    }
+    if thread.concepts.is_empty() {
+        thread.concepts = ai_smartness::constants::normalize_concepts(&extraction.concepts);
+    }
+
+    // Merge topics (dedup case-insensitive)
+    if thread.topics.is_empty() {
+        thread.topics = extraction.subjects.clone();
+    } else {
+        for t in &extraction.subjects {
+            if !thread.topics.iter().any(|existing: &String| existing.to_lowercase() == t.to_lowercase()) {
+                thread.topics.push(t.clone());
+            }
+        }
+    }
+
+    // Update importance only if extraction found higher value
+    if extraction.importance > thread.importance {
+        thread.importance = extraction.importance;
+    }
+
+    // 5. Recompute embedding with enriched text
+    let embed_text =
+        ai_smartness::intelligence::thread_manager::build_enriched_embed_text_from_thread(&thread);
+    let mgr = ai_smartness::processing::embeddings::EmbeddingManager::global();
+    let embedding = mgr.embed(&embed_text);
+    thread.embedding = Some(embedding);
+
+    // 6. Persist
+    ThreadStorage::update(conn, &thread)?;
+
+    // 7. Create thinkbridges from new concepts
+    if !thread.concepts.is_empty() {
+        let bridge_count = ThreadManager::create_thinkbridges(
+            conn,
+            thread_id,
+            &thread.concepts,
+            &guardian.gossip,
+        )
+        .unwrap_or(0);
+        tracing::info!(
+            thread_id = %thread_id,
+            bridges = bridge_count,
+            total_ms = start.elapsed().as_millis(),
+            "Enrichment: complete"
+        );
+    }
+
+    Ok(())
+}

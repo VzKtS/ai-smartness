@@ -387,72 +387,41 @@ pub fn handle_backfill_concepts(
         }));
     }
 
-    let mut processed = 0usize;
+    // Submit enrichment jobs via IPC → daemon capture queue (async, non-blocking)
+    let mut queued = 0usize;
     let mut failed = 0usize;
     let mut results = Vec::new();
 
     for thread in &batch {
-        let prompt = format!(
-            r#"Generate a semantic concept cloud for this thread.
+        let ipc_params = serde_json::json!({
+            "project_hash": ctx.project_hash,
+            "agent_id": ctx.agent_id,
+            "thread_id": thread.id,
+            "content": "",
+        });
 
-Title: {}
-Topics: {}
-Labels: {}
-Summary: {}
-
-Rules:
-- Include: synonyms, related domains, hypernyms, hyponyms, adjacent technologies/tools
-- Single lowercase words only, in English only
-- IMPORTANT: prefer single generic words over multi-word phrases
-- Good: "rust", "memory", "config", "daemon". Bad: "database connection pooling"
-- No duplicates, do NOT repeat topics or labels
-- Between 5 and 25 items
-
-Output JSON only: {{"concepts":["word1","word2",...]}}"#,
-            thread.title,
-            serde_json::to_string(&thread.topics).unwrap_or_default(),
-            serde_json::to_string(&thread.labels).unwrap_or_default(),
-            thread.summary.as_deref().unwrap_or("(none)"),
-        );
-
-        match ai_smartness::processing::llm_subprocess::call_llm(&prompt) {
-            Ok(response) => {
-                // Parse concepts from response
-                if let Some(start) = response.find('{') {
-                    if let Some(end) = response.rfind('}') {
-                        let json_str = &response[start..=end];
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
-                            if let Some(concepts) = parsed.get("concepts").and_then(|v| v.as_array()) {
-                                let raw: Vec<String> = concepts.iter()
-                                    .filter_map(|v| v.as_str().map(String::from))
-                                    .collect();
-                                let concept_vec = normalize_concepts(&raw);
-                                if !concept_vec.is_empty() {
-                                    let mut t = (*thread).clone();
-                                    t.concepts = concept_vec.clone();
-                                    ThreadStorage::update(ctx.agent_conn, &t)?;
-                                    results.push(serde_json::json!({
-                                        "id": &thread.id[..8.min(thread.id.len())],
-                                        "title": &thread.title,
-                                        "concepts": concept_vec.len(),
-                                    }));
-                                    processed += 1;
-                                    continue;
-                                }
-                            }
-                        }
-                    }
+        match ai_smartness::processing::daemon_ipc_client::send_method("enrich_thread", ipc_params) {
+            Ok(resp) => {
+                let was_queued = resp.get("queued").and_then(|v| v.as_bool()).unwrap_or(false);
+                if was_queued {
+                    queued += 1;
+                    results.push(serde_json::json!({
+                        "id": &thread.id[..8.min(thread.id.len())],
+                        "title": &thread.title,
+                        "status": "queued",
+                    }));
+                } else {
+                    failed += 1;
                 }
-                failed += 1;
             }
             Err(_) => { failed += 1; }
         }
     }
 
     Ok(serde_json::json!({
-        "processed": processed,
+        "queued": queued,
         "failed": failed,
-        "total_missing": all.iter().filter(|t| t.concepts.is_empty()).count() - processed,
+        "total_missing": all.iter().filter(|t| t.concepts.is_empty()).count(),
         "results": results
     }))
 }

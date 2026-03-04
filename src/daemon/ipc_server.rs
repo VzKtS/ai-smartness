@@ -293,6 +293,7 @@ fn dispatch(
                 file_path,
                 is_prompt: false,
                 session_id: None,
+                enrich_thread_id: None,
             };
 
             match capture_queue.submit(job) {
@@ -330,6 +331,7 @@ fn dispatch(
                 file_path: None,
                 is_prompt: true,
                 session_id,
+                enrich_thread_id: None,
             };
 
             match capture_queue.submit(job) {
@@ -511,6 +513,35 @@ fn dispatch(
             });
 
             Ok(serde_json::json!({"queued": true}))
+        }
+
+        "enrich_thread" => {
+            let key = extract_agent_key(params)?;
+            let thread_id = params
+                .get("thread_id")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing required param: thread_id")?
+                .to_string();
+            let content = params
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let job = CaptureJob {
+                key,
+                source_type: "enrichment".to_string(),
+                content,
+                file_path: None,
+                is_prompt: false,
+                session_id: None,
+                enrich_thread_id: Some(thread_id),
+            };
+
+            match capture_queue.submit(job) {
+                Ok(()) => Ok(serde_json::json!({"queued": true})),
+                Err(_) => Ok(serde_json::json!({"queued": false, "reason": "queue_full"})),
+            }
         }
 
         _ => {

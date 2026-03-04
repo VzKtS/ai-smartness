@@ -31,6 +31,8 @@ pub struct CaptureJob {
     pub is_prompt: bool,
     /// Optional session_id for prompt captures.
     pub session_id: Option<String>,
+    /// If Some, enrich an existing thread instead of creating/processing a new capture.
+    pub enrich_thread_id: Option<String>,
 }
 
 /// Live stats for the capture queue, shared across workers.
@@ -265,6 +267,57 @@ fn worker_loop(
                 .and_then(|s| serde_json::from_str::<GuardianConfig>(&s).ok())
                 .unwrap_or_default()
         };
+
+        // --- Enrichment path: update existing thread via LLM, no new capture ---
+        if let Some(ref thread_id) = job.enrich_thread_id {
+            let conn = match pool.get_or_open(&job.key) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(worker_id, agent = %job.key, error = %e,
+                        "Enrichment: failed to get DB connection");
+                    stats.errors.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            };
+            let conn_guard = match conn.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::error!(worker_id, error = %e,
+                        "Enrichment: failed to lock DB connection");
+                    stats.errors.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            };
+
+            let tid = thread_id.clone();
+            match processor::enrich_existing_thread(
+                &conn_guard, &tid, &job.content, &guardian,
+            ) {
+                Ok(()) => {
+                    stats.processed.fetch_add(1, Ordering::Relaxed);
+                    tracing::info!(
+                        worker_id,
+                        agent = %job.key,
+                        thread_id = %tid,
+                        duration_ms = start.elapsed().as_millis() as u64,
+                        "Thread enrichment complete"
+                    );
+                }
+                Err(e) => {
+                    stats.errors.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        worker_id,
+                        agent = %job.key,
+                        thread_id = %tid,
+                        error = %e,
+                        duration_ms = start.elapsed().as_millis() as u64,
+                        "Thread enrichment failed"
+                    );
+                }
+            }
+            drop(conn_guard);
+            continue;
+        }
 
         // Non-prompt captures: write to pool and continue (fast, non-blocking).
         // The pool consumer thread processes .pending files at LLM speed.
