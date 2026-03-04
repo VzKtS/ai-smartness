@@ -4,8 +4,8 @@
 //!   - LLM-based: extraction, coherence, reactivation, synthesis, labels, importance
 //!   - Embedding-based: gossip, recall, thread matching
 //!
-//! Design: LOCAL LLM ONLY — no fallback, no heuristics, no API calls.
-//! Zero cost. If local LLM is unavailable, extraction fails cleanly.
+//! Design: Local LLM (default), Remote API, or Auto (local + remote fallback).
+//! Backend selected explicitly via `llm_backend` in config.json.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -23,16 +23,99 @@ pub struct TaskLlmConfig {
 }
 
 // ============================================================================
-// LLM BACKEND (local llama.cpp only)
+// LLM BACKEND
 // ============================================================================
 
 /// LLM backend for Guardian inference tasks.
-/// Only local llama.cpp is supported. No API fallback.
+/// User selects explicitly in config.json.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub enum LlmBackend {
-    /// In-process llama.cpp (zero API cost). Only option.
+    /// In-process llama.cpp (zero API cost). Requires local GGUF model.
     #[default]
     Local,
+    /// Remote API provider only. Requires API key in env var.
+    Remote,
+    /// Try local first, fallback to remote if unavailable or circuit-breaker open.
+    Auto,
+}
+
+// ============================================================================
+// REMOTE LLM CONFIG
+// ============================================================================
+
+/// Remote LLM provider selection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+pub enum RemoteProvider {
+    /// Anthropic Messages API (api.anthropic.com).
+    /// Env: ANTHROPIC_API_KEY
+    Anthropic,
+    /// OpenAI Chat Completions API (api.openai.com).
+    /// Env: OPENAI_API_KEY
+    OpenAI,
+    /// Custom OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, etc.).
+    /// Env: AI_SMARTNESS_LLM_API_KEY
+    Custom { url: String },
+}
+
+impl Default for RemoteProvider {
+    fn default() -> Self {
+        Self::OpenAI
+    }
+}
+
+/// Configuration for remote LLM API calls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteLlmConfig {
+    /// Which remote provider to use.
+    #[serde(default)]
+    pub provider: RemoteProvider,
+    /// Model identifier (e.g. "claude-3-haiku-20240307", "gpt-4o-mini").
+    #[serde(default = "default_remote_model")]
+    pub model: String,
+    /// Max output tokens for remote generation.
+    #[serde(default = "default_remote_max_tokens")]
+    pub max_tokens: u32,
+    /// Timeout in seconds for remote API calls.
+    #[serde(default = "default_remote_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_remote_model() -> String { "gpt-4o-mini".into() }
+fn default_remote_max_tokens() -> u32 { 768 }
+fn default_remote_timeout() -> u64 { 30 }
+
+impl Default for RemoteLlmConfig {
+    fn default() -> Self {
+        Self {
+            provider: RemoteProvider::default(),
+            model: default_remote_model(),
+            max_tokens: default_remote_max_tokens(),
+            timeout_secs: default_remote_timeout(),
+        }
+    }
+}
+
+// ============================================================================
+// LOCAL LLM CONFIG (hardware overrides)
+// ============================================================================
+
+/// Local LLM hardware configuration — overrides for adaptive VRAM management.
+/// All fields default to 0 which means "auto-detect".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LocalLlmConfig {
+    /// Context size in tokens. 0 = auto (VRAM-adaptive).
+    #[serde(default)]
+    pub ctx_size: u32,
+    /// Number of model layers offloaded to GPU. 0 = auto.
+    #[serde(default)]
+    pub gpu_layers: u32,
+    /// Max output tokens per generation. 0 = default (768).
+    #[serde(default)]
+    pub max_tokens: u32,
+    /// Inference threads for llama.cpp. 0 = auto (cpu_cores/2, max 4).
+    #[serde(default)]
+    pub inference_threads: u32,
 }
 
 /// Local GGUF model selection.
@@ -69,6 +152,25 @@ impl LocalModelSize {
             Self::ThreeB => "Qwen2.5-3B-Instruct (Q4_K_M, ~2.1 GB)",
             Self::SevenB => "Qwen2.5-7B-Instruct (Q4_K_M, ~4.7 GB)",
             Self::Phi4Mini => "Phi-4-mini-instruct (Q4_K_M, ~2.5 GB)",
+        }
+    }
+
+    /// Approximate VRAM used by model weights (Q4_K_M quantization) in MB.
+    pub fn model_vram_mb(&self) -> u64 {
+        match self {
+            Self::ThreeB => 2100,
+            Self::SevenB => 4700,
+            Self::Phi4Mini => 2500,
+        }
+    }
+
+    /// Approximate KV cache + compute buffer bytes per token.
+    /// Measured empirically (includes Vulkan overhead).
+    pub fn kv_bytes_per_token(&self) -> u64 {
+        match self {
+            Self::ThreeB => 64 * 1024,    // ~64 KB/token
+            Self::SevenB => 128 * 1024,   // ~128 KB/token
+            Self::Phi4Mini => 210 * 1024, // ~210 KB/token (measured: 860MB/4096tok)
         }
     }
 
@@ -807,12 +909,18 @@ pub struct GuardianConfig {
 
     // --- Global settings ---
     pub enabled: bool,
-    /// LLM backend: Local llama.cpp only. No fallback.
+    /// LLM backend selection: Local, Remote, or Auto.
     #[serde(default)]
     pub llm_backend: LlmBackend,
-    /// Local model size: ThreeB (default, ~2.1GB) or SevenB (~4.7GB).
+    /// Local model size for llama.cpp.
     #[serde(default)]
     pub local_model_size: LocalModelSize,
+    /// Local LLM hardware overrides (ctx_size, gpu_layers, etc.). 0 = auto.
+    #[serde(default)]
+    pub local_llm: LocalLlmConfig,
+    /// Remote LLM API configuration (provider, model, timeout).
+    #[serde(default)]
+    pub remote_llm: RemoteLlmConfig,
     pub hook_guard_env: String,
 }
 
@@ -836,6 +944,8 @@ impl Default for GuardianConfig {
             enabled: true,
             llm_backend: LlmBackend::Local,
             local_model_size: LocalModelSize::Phi4Mini,
+            local_llm: LocalLlmConfig::default(),
+            remote_llm: RemoteLlmConfig::default(),
             hook_guard_env: "AI_SMARTNESS_HOOK_RUNNING".to_string(),
         }
     }

@@ -1,6 +1,6 @@
 [package]
 name = "ai-smartness"
-version = "5.6.5-alpha"
+version = "5.7.0-alpha"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -55,11 +55,12 @@ ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "l
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 ndarray = "0.16"
 
-# Local LLM inference (llama.cpp — zero API cost extraction)
-# TODO: enable Vulkan GPU once vulkan-sdk >= 1.3.280 is installed
-# Local LLM inference (Vulkan GPU acceleration — GTX 1650)
+# Local LLM inference (llama.cpp with Vulkan GPU acceleration)
 llama-cpp-2 = { version = "0.1", features = ["vulkan"] }
 encoding_rs = "0.8"
+
+# HTTP client for remote LLM providers (Anthropic, OpenAI, Custom)
+ureq = { version = "3", features = ["json"] }
 
 # System monitoring (CPU, RAM, process metrics)
 sysinfo = "0.33"

@@ -55,29 +55,12 @@ fn collect_cpu_ram() -> (f64, u64, u64, u64) {
     (cpu, ram_used, ram_total, ram_available)
 }
 
-/// Collect GPU VRAM via nvidia-smi subprocess (best-effort, 2s timeout).
-/// Returns (used_mb, total_mb). Both None if nvidia-smi unavailable.
+/// Collect GPU VRAM via shared vram_probe module.
+/// Returns (used_mb, total_mb). Both None if no GPU detected.
 fn collect_gpu_vram() -> (Option<u64>, Option<u64>) {
-    let output = match std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return (None, None),
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Format: "2371, 3911\n" (first GPU)
-    let line = stdout.lines().next().unwrap_or("");
-    let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-    if parts.len() >= 2 {
-        let used = parts[0].parse::<u64>().ok();
-        let total = parts[1].parse::<u64>().ok();
-        (used, total)
-    } else {
-        (None, None)
+    match ai_smartness::processing::vram_probe::probe_vram() {
+        Some(info) => (Some(info.used_mb), Some(info.total_mb)),
+        None => (None, None),
     }
 }
 

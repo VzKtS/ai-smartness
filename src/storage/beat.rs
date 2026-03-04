@@ -106,6 +106,19 @@ pub struct BeatState {
     /// Agents read this for situational awareness (CPU/RAM/GPU state).
     #[serde(default)]
     pub system_metrics: Option<SystemMetrics>,
+    // ── LLM observability ──
+    /// LLM operational status: available|degraded|cooldown|unavailable
+    #[serde(default)]
+    pub llm_status: Option<String>,
+    /// LLM backend in use: Local|Remote|Auto
+    #[serde(default)]
+    pub llm_backend: Option<String>,
+    /// Current KV cache context size (local LLM).
+    #[serde(default)]
+    pub llm_ctx_size: Option<u32>,
+    /// Current GPU layers offloaded (local LLM).
+    #[serde(default)]
+    pub llm_gpu_layers: Option<u32>,
 }
 
 /// System resource snapshot — written to beat.json each prune cycle by the daemon watchdog.
@@ -172,6 +185,10 @@ impl Default for BeatState {
             processing_backpressure: false,
             backpressure_since: None,
             system_metrics: None,
+            llm_status: None,
+            llm_backend: None,
+            llm_ctx_size: None,
+            llm_gpu_layers: None,
         }
     }
 }

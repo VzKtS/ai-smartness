@@ -135,7 +135,7 @@ pub fn run() {
             let emb = ai_smartness::processing::embeddings::EmbeddingManager::global();
             tracing::info!(use_onnx = emb.use_onnx, "EmbeddingManager initialized (eager)");
 
-            // 3. Eagerly initialize local LLM with configured model size.
+            // 3. Eagerly initialize local LLM with configured model size + routing.
             let guardian_cfg = {
                 let cfg_path = data_dir.join("config.json");
                 std::fs::read_to_string(&cfg_path)
@@ -145,11 +145,17 @@ pub fn run() {
             };
             let llm = ai_smartness::processing::local_llm::LocalLlm::init_with_size(
                 &guardian_cfg.local_model_size,
+                &guardian_cfg.local_llm,
             );
+            ai_smartness::processing::llm_subprocess::init_routing(&guardian_cfg);
             tracing::info!(
+                backend = ?guardian_cfg.llm_backend,
                 available = llm.is_available(),
+                status = llm.status(),
+                ctx_size = llm.current_ctx_size(),
+                gpu_layers = llm.current_gpu_layers(),
                 model = %llm.model_path().display(),
-                "LocalLlm initialized (eager)"
+                "LLM initialized (eager)"
             );
         })
     };

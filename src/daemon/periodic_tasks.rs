@@ -108,7 +108,7 @@ pub fn run_prune_loop(
                     continue;
                 }
 
-                // 0. Beat increment + watchdog metrics + backpressure auto-clear
+                // 0. Beat increment + watchdog metrics + LLM status + backpressure auto-clear
                 let metrics_clone = system_metrics.clone();
                 run_task("beat", || {
                     let data_dir = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
@@ -116,6 +116,19 @@ pub fn run_prune_loop(
                     beat.increment();
                     // Write system watchdog metrics into beat.json
                     beat.system_metrics = Some(metrics_clone);
+                    // Write LLM observability into beat.json
+                    let llm = ai_smartness::processing::local_llm::LocalLlm::global();
+                    beat.llm_status = Some(llm.status().to_string());
+                    let guardian_cfg = {
+                        let cfg_path = path_utils::data_dir().join("config.json");
+                        std::fs::read_to_string(&cfg_path)
+                            .ok()
+                            .and_then(|s| serde_json::from_str::<GuardianConfig>(&s).ok())
+                            .unwrap_or_default()
+                    };
+                    beat.llm_backend = Some(format!("{:?}", guardian_cfg.llm_backend));
+                    beat.llm_ctx_size = Some(llm.current_ctx_size());
+                    beat.llm_gpu_layers = Some(llm.current_gpu_layers());
                     // Auto-clear backpressure if stale (> 10 min safety timeout)
                     if beat.processing_backpressure {
                         if let Some(ref since) = beat.backpressure_since {
