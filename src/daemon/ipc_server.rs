@@ -532,8 +532,8 @@ fn process_mind_coherence(
     let conn = pool.get_or_open(key).map_err(|e| format!("Pool error: {}", e))?;
     let conn_guard = conn.lock().map_err(|e| format!("Lock error: {}", e))?;
 
-    // 1b. Transcript capture — best-effort, async
-    capture_mind_transcript(pool, key, new_thread_id);
+    // 1b. Transcript capture — best-effort, uses existing conn_guard (no double lock)
+    capture_mind_transcript(&conn_guard, key, new_thread_id);
 
     // 2. Find most recent active thread (any type, excluding self)
     let prev_id: String = conn_guard
@@ -607,7 +607,12 @@ fn process_mind_coherence(
 /// Capture the raw transcript (thinking + text) from the current session
 /// and append it as an additional message to the __mind__ thread.
 /// Best-effort: failures are logged but never propagate.
-fn capture_mind_transcript(pool: &ConnectionPool, key: &AgentKey, thread_id: &str) {
+/// Takes an existing conn_guard to avoid deadlock (caller already holds the lock).
+fn capture_mind_transcript(
+    conn: &rusqlite::Connection,
+    key: &AgentKey,
+    thread_id: &str,
+) {
     // 1. Read beat.json → last_session_id
     let agent_data = ai_smartness::storage::path_utils::agent_data_dir(
         &key.project_hash,
@@ -661,16 +666,7 @@ fn capture_mind_transcript(pool: &ConnectionPool, key: &AgentKey, thread_id: &st
         return;
     }
 
-    // 4. Append as message to __mind__ thread
-    let conn = match pool.get_or_open(key) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let conn_guard = match conn.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-
+    // 4. Append as message to __mind__ thread (using caller's connection)
     let msg = ai_smartness::thread::ThreadMessage {
         thread_id: thread_id.to_string(),
         msg_id: ai_smartness::id_gen::message_id(),
@@ -688,7 +684,7 @@ fn capture_mind_transcript(pool: &ConnectionPool, key: &AgentKey, thread_id: &st
         continuity_to: None,
     };
 
-    match ThreadStorage::add_message(&conn_guard, &msg) {
+    match ThreadStorage::add_message(conn, &msg) {
         Ok(()) => tracing::info!(thread = %thread_id, "Mind transcript captured"),
         Err(e) => tracing::debug!(error = %e, "Mind transcript capture failed"),
     }

@@ -151,68 +151,11 @@ fn find_last_json_string(content: &str, key: &str) -> Option<String> {
 }
 
 /// Extract the last thinking block from a transcript JSONL file.
-/// Uses seek-from-end to read only the last ~32KB, then scans for the last
-/// assistant message with a `thinking` content block.
+/// Delegates to `extract_last_assistant_blocks` to avoid code duplication.
 ///
 /// Returns None if no thinking block found or file unreadable.
 pub fn extract_last_thinking(session_id: &str) -> Option<String> {
-    let path = find_transcript(session_id)?;
-    let file = std::fs::File::open(&path).ok()?;
-    let metadata = file.metadata().ok()?;
-    let file_size = metadata.len();
-
-    if file_size == 0 {
-        return None;
-    }
-
-    // Read last 32KB — thinking blocks are in recent assistant messages
-    let tail = read_tail(&file, file_size, file_size.min(32_000))?;
-
-    // Scan lines in reverse to find the last assistant message with thinking
-    let mut last_thinking: Option<String> = None;
-    for line in tail.lines().rev() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let data: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        // Only look at assistant messages
-        let role = data
-            .get("message")
-            .and_then(|m| m.get("role"))
-            .and_then(|r| r.as_str())
-            .unwrap_or("");
-        if role != "assistant" {
-            continue;
-        }
-
-        // Check content array for thinking blocks
-        if let Some(content) = data
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array())
-        {
-            for block in content {
-                if block.get("type").and_then(|t| t.as_str()) == Some("thinking") {
-                    if let Some(thinking_text) = block.get("thinking").and_then(|t| t.as_str()) {
-                        if !thinking_text.is_empty() {
-                            last_thinking = Some(thinking_text.to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Found an assistant message — stop scanning (we want the most recent)
-        if last_thinking.is_some() {
-            break;
-        }
-    }
-
-    last_thinking
+    extract_last_assistant_blocks(session_id).and_then(|b| b.thinking)
 }
 
 /// Extract thinking + text blocks from the last assistant message in transcript.

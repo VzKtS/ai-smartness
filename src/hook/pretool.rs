@@ -124,11 +124,7 @@ fn try_engram_injection(session_id: Option<&str>, project_hash: &str, agent_id: 
     std::fs::write(&state_path, hash.to_string()).ok();
 
     // Truncate thinking for query (engram doesn't need the full block)
-    let query_text = if thinking.len() > 2000 {
-        &thinking[..2000]
-    } else {
-        &thinking
-    };
+    let query_text = ai_smartness::constants::truncate_safe(&thinking, 2000);
 
     // Query engram via daemon IPC (timeout handled by daemon_ipc_client: 2s)
     let results = match daemon_ipc_client::engram_query(project_hash, agent_id, query_text, 5) {
