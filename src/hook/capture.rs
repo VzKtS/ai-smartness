@@ -83,23 +83,6 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
     let output = extract_tool_output(tool_response);
     tracing::info!(output_len = output.len(), output_preview = &output[..output.len().min(100)], "Capture: extracted tool output");
 
-    // 4.5 Bash preprocessing — skip short successful commands (not worth GPU time)
-    if tool_name == "Bash" {
-        let exit_code = data
-            .get("tool_response")
-            .and_then(|r| r.get("exitCode"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        if exit_code == 0 && output.len() < 200 {
-            tracing::debug!(
-                exit_code = exit_code,
-                output_len = output.len(),
-                "Capture: Bash skipped (success + short output)"
-            );
-            print_continue();
-            return;
-        }
-    }
 
     // 5. Noise filtering (heuristic, not LLM)
     let cleaned = cleaner::clean_tool_output(&output);

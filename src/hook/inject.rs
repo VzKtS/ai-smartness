@@ -26,8 +26,13 @@ pub fn run(project_hash: &str, agent_id: &str, input: &str, session_id: Option<&
 
     beat.save(&agent_data);
 
-    // Strip IDE/system-injected tags before capture (they pollute memory)
-    let clean_message = strip_system_tags(&message);
+    // Strip IDE/system-injected tags for small configs (limited context window).
+    // Larger models (SevenB+) keep tags for richer captured context.
+    let clean_message = if should_strip_system_tags() {
+        strip_system_tags(&message)
+    } else {
+        message.clone()
+    };
 
     // Send prompt to daemon for capture (non-blocking, ignore errors)
     let _ = daemon_ipc_client::send_prompt_capture(project_hash, agent_id, &clean_message, session_id);
@@ -104,4 +109,22 @@ fn strip_system_tags(text: &str) -> String {
         result = result.replace("\n\n\n", "\n\n");
     }
     result.trim().to_string()
+}
+
+/// Check if system tags should be stripped based on hardware profile.
+/// Small configs (ThreeB, Phi4Mini) → strip to preserve context budget.
+/// Larger configs (SevenB+) → keep tags for richer captured content.
+fn should_strip_system_tags() -> bool {
+    let config_path = ai_smartness::storage::path_utils::data_dir().join("config.json");
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(size_str) = v.get("local_model_size").and_then(|v| v.as_str()) {
+                return match size_str {
+                    "SevenB" => false,
+                    _ => true, // ThreeB, Phi4Mini, unknown → strip
+                };
+            }
+        }
+    }
+    true // Default: strip (assume small config if no config found)
 }

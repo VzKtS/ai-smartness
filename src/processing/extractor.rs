@@ -33,12 +33,12 @@ pub struct Extraction {
     pub subjects: Vec<String>,
     #[serde(default)]
     pub summary: String,
-    #[serde(default = "default_truncated_score")]
+    #[serde(default = "default_truncated_score", deserialize_with = "deserialize_score_lenient")]
     pub confidence: f64,
     pub labels: Vec<String>,
     #[serde(default)]
     pub concepts: Vec<String>,
-    #[serde(default = "default_truncated_score")]
+    #[serde(default = "default_truncated_score", deserialize_with = "deserialize_score_lenient")]
     pub importance: f64,
     /// How the LLM processed this content.
     #[serde(default)]
@@ -53,6 +53,35 @@ pub struct Extraction {
 /// 0.0 = pipeline will drop at confidence gate — better than polluting engram with fake scores.
 fn default_truncated_score() -> f64 {
     0.0
+}
+
+/// Lenient deserializer for score fields (confidence, importance).
+/// Accepts f64, i64, u64, and strings. Non-numeric strings → 0.0.
+/// Prevents serde crash when LLM returns placeholders like "[Insert confidence value here]".
+fn deserialize_score_lenient<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct ScoreVisitor;
+    impl<'de> serde::de::Visitor<'de> for ScoreVisitor {
+        type Value = f64;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a number or string parseable as f64")
+        }
+        fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<f64, E> {
+            Ok(v)
+        }
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<f64, E> {
+            Ok(v as f64)
+        }
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<f64, E> {
+            Ok(v as f64)
+        }
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<f64, E> {
+            Ok(v.parse::<f64>().unwrap_or(0.0))
+        }
+    }
+    deserializer.deserialize_any(ScoreVisitor)
 }
 
 /// Source type for extraction prompts.
@@ -112,37 +141,56 @@ pub fn extract(
         return Ok(None);
     }
 
-    match extract_via_llm(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context) {
-        Ok(ExtractionResult::Skip) => {
-            tracing::info!(mode = "llm_skip", "Extraction: LLM decided to skip");
-            Ok(None)
-        }
-        Ok(ExtractionResult::Extracted(mut extraction)) => {
-            // Gate: detect degenerate extraction (LLM returned placeholders like "...").
-            if is_degenerate_extraction(&extraction) {
-                tracing::warn!(
-                    title = %extraction.title,
-                    summary = %extraction.summary,
-                    "Extraction: degenerate output detected — dropping"
-                );
+    // Retry loop: up to 3 attempts (2 retries max) on degenerate extraction
+    for attempt in 0..3u8 {
+        match extract_via_llm(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context) {
+            Ok(ExtractionResult::Skip) => {
+                tracing::info!(mode = "llm_skip", "Extraction: LLM decided to skip");
                 return Ok(None);
             }
-            // Prompt and Response: use verbatim fallback ONLY if LLM didn't produce a summary.
-            // When the LLM succeeds, its summary (max 250 chars per prompt spec) is better
-            // than raw content for agent consumption (Engram scanning).
-            if matches!(source, ExtractionSource::Prompt | ExtractionSource::Response)
-                && extraction.summary.trim().is_empty()
-            {
-                extraction.summary = truncate_safe(content, crate::constants::VERBATIM_SUMMARY_LIMIT).to_string();
+            Ok(ExtractionResult::Extracted(mut extraction)) => {
+                // Gate: detect degenerate extraction (LLM returned placeholders like "...").
+                if is_degenerate_extraction(&extraction) {
+                    if attempt < 2 {
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            title = %extraction.title,
+                            summary = %extraction.summary,
+                            "Extraction: degenerate output detected, retrying"
+                        );
+                        continue;
+                    }
+                    tracing::warn!(
+                        title = %extraction.title,
+                        summary = %extraction.summary,
+                        "Extraction: degenerate output after 3 attempts — dropping"
+                    );
+                    return Ok(None);
+                }
+                // Prompt and Response: use verbatim fallback ONLY if LLM didn't produce a summary.
+                if matches!(source, ExtractionSource::Prompt | ExtractionSource::Response)
+                    && extraction.summary.trim().is_empty()
+                {
+                    extraction.summary = truncate_safe(content, crate::constants::VERBATIM_SUMMARY_LIMIT).to_string();
+                }
+                tracing::info!(mode = "llm", title = %extraction.title, confidence = extraction.confidence, "Extraction complete");
+                return Ok(Some(extraction));
             }
-            tracing::info!(mode = "llm", title = %extraction.title, confidence = extraction.confidence, "Extraction complete");
-            Ok(Some(extraction))
-        }
-        Err(e) => {
-            tracing::warn!("LLM extraction failed: {} — dropping capture (no heuristic fallback)", e);
-            Ok(None)
+            Err(e) => {
+                if attempt < 2 {
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        error = %e,
+                        "Extraction: LLM/parse failed, retrying"
+                    );
+                    continue;
+                }
+                tracing::warn!("Extraction failed after 3 attempts: {} — dropping capture", e);
+                return Ok(None);
+            }
         }
     }
+    Ok(None)
 }
 
 /// LLM-based extraction via local LLM.
@@ -164,47 +212,62 @@ fn extract_via_llm(
         "Extraction: prompt built, calling LLM"
     );
 
-    match super::llm_subprocess::call_llm(&prompt) {
-        Ok(response) => {
-            tracing::info!(
-                response_len = response.len(),
-                elapsed_ms = start.elapsed().as_millis(),
-                "Extraction: LLM response received"
-            );
-            tracing::debug!(raw_response = %response, "Extraction: LLM raw output");
-            let parse_result = parse_extraction_response(&response);
-            match &parse_result {
-                Ok(ExtractionResult::Skip) => {
-                    tracing::info!(elapsed_ms = start.elapsed().as_millis(), "Extraction: parsed → Skip");
+    // Retry loop: up to 3 attempts (2 retries max) on LLM transport failure
+    let mut last_err = None;
+    for attempt in 0..3u8 {
+        match super::llm_subprocess::call_llm(&prompt) {
+            Ok(response) => {
+                tracing::info!(
+                    response_len = response.len(),
+                    attempt = attempt + 1,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "Extraction: LLM response received"
+                );
+                tracing::debug!(raw_response = %response, "Extraction: LLM raw output");
+                let parse_result = parse_extraction_response(&response);
+                match &parse_result {
+                    Ok(ExtractionResult::Skip) => {
+                        tracing::info!(elapsed_ms = start.elapsed().as_millis(), "Extraction: parsed → Skip");
+                    }
+                    Ok(ExtractionResult::Extracted(e)) => {
+                        tracing::info!(
+                            title = %e.title,
+                            confidence = e.confidence,
+                            action = ?e.extraction_mode,
+                            elapsed_ms = start.elapsed().as_millis(),
+                            "Extraction: parsed → Extracted"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            response_preview = %&response[..response.len().min(200)],
+                            "Extraction: JSON parse failed"
+                        );
+                    }
                 }
-                Ok(ExtractionResult::Extracted(e)) => {
-                    tracing::info!(
-                        title = %e.title,
-                        confidence = e.confidence,
-                        action = ?e.extraction_mode,
+                return parse_result;
+            }
+            Err(e) => {
+                if attempt < 2 {
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        error = %e,
                         elapsed_ms = start.elapsed().as_millis(),
-                        "Extraction: parsed → Extracted"
+                        "Extraction: LLM call failed, retrying"
                     );
-                }
-                Err(e) => {
+                } else {
                     tracing::warn!(
                         error = %e,
-                        response_preview = %&response[..response.len().min(200)],
-                        "Extraction: JSON parse failed"
+                        elapsed_ms = start.elapsed().as_millis(),
+                        "Extraction: LLM call failed after 3 attempts"
                     );
                 }
+                last_err = Some(e);
             }
-            parse_result
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                elapsed_ms = start.elapsed().as_millis(),
-                "Extraction: LLM call failed"
-            );
-            Err(e)
         }
     }
+    Err(last_err.unwrap())
 }
 
 fn build_extraction_prompt(
@@ -496,6 +559,17 @@ fn repair_truncated_json(raw: &str) -> Option<String> {
 
     // Verify it actually parses
     if serde_json::from_str::<serde_json::Value>(&result).is_err() {
+        return None;
+    }
+
+    // Ratio guard: reject repair if >66% of JSON content was lost.
+    // A 3435→251 repair is a false success — syntactically valid but semantically empty.
+    if result.len() < json_part.len() / 3 {
+        tracing::warn!(
+            repaired_len = result.len(),
+            original_len = json_part.len(),
+            "JSON repair rejected: too much content lost (ratio < 0.33)"
+        );
         return None;
     }
 
@@ -936,5 +1010,67 @@ mod tests {
         assert!(is_placeholder("ab")); // < 3 chars
         assert!(!is_placeholder("abc")); // 3 chars, not a placeholder
         assert!(!is_placeholder("Real title here"));
+    }
+
+    // --- deserialize_score_lenient (F2) ---
+
+    #[test]
+    fn test_deserialize_score_f64() {
+        let json = r#"{"title":"T","subjects":[],"confidence":0.8,"labels":[],"importance":0.5}"#;
+        let ext: Extraction = serde_json::from_str(json).unwrap();
+        assert!((ext.confidence - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_deserialize_score_string_numeric() {
+        let json = r#"{"title":"T","subjects":[],"confidence":"0.8","labels":[],"importance":"0.5"}"#;
+        let ext: Extraction = serde_json::from_str(json).unwrap();
+        assert!((ext.confidence - 0.8).abs() < f64::EPSILON);
+        assert!((ext.importance - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_deserialize_score_string_placeholder() {
+        let json = r#"{"title":"T","subjects":[],"confidence":"[Insert confidence value here]","labels":[],"importance":"TBD"}"#;
+        let ext: Extraction = serde_json::from_str(json).unwrap();
+        assert!((ext.confidence - 0.0).abs() < f64::EPSILON);
+        assert!((ext.importance - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_deserialize_score_integer() {
+        let json = r#"{"title":"T","subjects":[],"confidence":1,"labels":[],"importance":0}"#;
+        let ext: Extraction = serde_json::from_str(json).unwrap();
+        assert!((ext.confidence - 1.0).abs() < f64::EPSILON);
+        assert!((ext.importance - 0.0).abs() < f64::EPSILON);
+    }
+
+    // --- ratio guard (F1) ---
+
+    #[test]
+    fn test_repair_ratio_guard_rejects_aggressive_cut() {
+        // Craft input where Strategy 2 cuts aggressively:
+        // - in_string=false at end (so Strategy 1 is skipped)
+        // - last_value_end is early (only first field completed)
+        // - json_part is long (500+ chars of whitespace padding)
+        //
+        // {"a":"b", followed by 500 spaces → not in a string, stack=['}']
+        // last_value_end ≈ 8 (after "b"). json_part.len() ≈ 510.
+        // Strategy 2 result = {"a":"b"} ≈ 9 chars → 9 < 510/3 = 170 → REJECTED.
+        let mut input = String::from(r#"{"a":"b","#);
+        input.push_str(&" ".repeat(500));
+        let result = repair_truncated_json(&input);
+        assert!(result.is_none(), "Ratio guard should reject repair that loses >66% content");
+    }
+
+    #[test]
+    fn test_repair_ratio_guard_accepts_minor_cut() {
+        // JSON where only a small tail is truncated — repair keeps most content
+        let json = r#"{"action":"extract","title":"Good Title","subjects":["rust","memory"],"confidence":0.8,"importance":0.7,"labels":["dev","architecture"],"concepts":["config","thread","engram","serde","parse"#;
+        let result = repair_truncated_json(json);
+        assert!(result.is_some(), "Ratio guard should accept repair that keeps >33% content");
+        let repaired = result.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(v["title"], "Good Title");
     }
 }

@@ -49,69 +49,97 @@ pub fn summarize_tool_output(
         "Tool extraction: calling LLM"
     );
 
-    let response = match llm_subprocess::call_llm(&prompt) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "Tool extraction: LLM call failed"
-            );
-            return Err(e);
-        }
-    };
+    // Retry loop: up to 3 attempts (2 retries max) on LLM failure or degenerate output
+    let mut last_err = None;
+    for attempt in 0..3u8 {
+        let response = match llm_subprocess::call_llm(&prompt) {
+            Ok(r) => r,
+            Err(e) => {
+                if attempt < 2 {
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        error = %e,
+                        "Tool extraction: LLM call failed, retrying"
+                    );
+                    last_err = Some(e);
+                    continue;
+                }
+                tracing::warn!(error = %e, "Tool extraction: LLM call failed after 3 attempts");
+                return Err(e);
+            }
+        };
 
-    tracing::info!(
-        response_len = response.len(),
-        "Tool extraction: LLM response received"
-    );
+        tracing::info!(
+            response_len = response.len(),
+            attempt = attempt + 1,
+            "Tool extraction: LLM response received"
+        );
 
-    // Reuse the same parser as extractor.rs (handles JSON repair, etc.)
-    match extractor::parse_tool_extraction_response(&response) {
-        Ok(ExtractionResult::Extracted(mut ext)) => {
-            // Force Summary mode for all tool extractions
-            ext.extraction_mode = ExtractionMode::Summary;
+        // Reuse the same parser as extractor.rs (handles JSON repair, etc.)
+        match extractor::parse_tool_extraction_response(&response) {
+            Ok(ExtractionResult::Extracted(mut ext)) => {
+                // Force Summary mode for all tool extractions
+                ext.extraction_mode = ExtractionMode::Summary;
 
-            // Gate 1: detect degenerate extraction (LLM returned placeholders like "...").
-            // Must run BEFORE from_partial rescue — no point rescuing garbage.
-            if extractor::is_degenerate_extraction(&ext) {
-                tracing::warn!(
+                // Gate 1: detect degenerate extraction (LLM returned placeholders like "...").
+                if extractor::is_degenerate_extraction(&ext) {
+                    if attempt < 2 {
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            title = %ext.title,
+                            summary = %ext.summary,
+                            "Tool extraction: degenerate output detected, retrying"
+                        );
+                        continue;
+                    }
+                    tracing::warn!(
+                        title = %ext.title,
+                        summary = %ext.summary,
+                        "Tool extraction: degenerate output after 3 attempts — dropping"
+                    );
+                    return Ok(None);
+                }
+
+                // Gate 2: detect truncated JSON (both fields at serde default 0.0).
+                if ext.confidence == 0.0 && ext.importance == 0.0 {
+                    ext.confidence = 0.3;
+                    ext.importance = 0.3;
+                    ext.from_partial = true;
+                    tracing::warn!(
+                        title = %ext.title,
+                        "Tool extraction: truncated output detected — from_partial=true, scores set to 0.3"
+                    );
+                }
+
+                tracing::info!(
                     title = %ext.title,
-                    summary = %ext.summary,
-                    "Tool extraction: degenerate output detected — dropping"
+                    confidence = ext.confidence,
+                    importance = ext.importance,
+                    "Tool extraction: success"
                 );
+                return Ok(Some(ext));
+            }
+            Ok(ExtractionResult::Skip) => {
+                tracing::info!("Tool extraction: LLM decided to skip");
                 return Ok(None);
             }
-
-            // Gate 2: detect truncated JSON (both fields at serde default 0.0).
-            // Pattern is impossible from real LLM output — assign reduced scores
-            // so the thread exists but with lower engram weight.
-            if ext.confidence == 0.0 && ext.importance == 0.0 {
-                ext.confidence = 0.3;
-                ext.importance = 0.3;
-                ext.from_partial = true;
-                tracing::warn!(
-                    title = %ext.title,
-                    "Tool extraction: truncated output detected — from_partial=true, scores set to 0.3"
-                );
+            Err(e) => {
+                if attempt < 2 {
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        error = %e,
+                        "Tool extraction: parse failed, retrying"
+                    );
+                    last_err = Some(e);
+                    continue;
+                }
+                tracing::warn!(error = %e, "Tool extraction: parse failed after 3 attempts");
+                return Err(e);
             }
-
-            tracing::info!(
-                title = %ext.title,
-                confidence = ext.confidence,
-                importance = ext.importance,
-                "Tool extraction: success"
-            );
-            Ok(Some(ext))
-        }
-        Ok(ExtractionResult::Skip) => {
-            tracing::info!("Tool extraction: LLM decided to skip");
-            Ok(None)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Tool extraction: parse failed");
-            Err(e)
         }
     }
+    // All retries exhausted (should not reach here, but safety net)
+    Err(last_err.unwrap_or_else(|| crate::AiError::Provider("All retries exhausted".into())))
 }
 
 /// Build the tool-specific prompt (shorter than extractor.rs prompt).

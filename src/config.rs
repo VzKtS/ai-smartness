@@ -155,6 +155,15 @@ impl LocalModelSize {
         }
     }
 
+    /// Whether this model size is considered a "small config" (limited context window).
+    /// Small configs benefit from stripping system tags to preserve context budget.
+    pub fn is_small_config(&self) -> bool {
+        match self {
+            Self::ThreeB | Self::Phi4Mini => true,
+            Self::SevenB => false,
+        }
+    }
+
     /// Approximate VRAM used by model weights (Q4_K_M quantization) in MB.
     pub fn model_vram_mb(&self) -> u64 {
         match self {
@@ -305,7 +314,7 @@ impl Default for ExtractionConfig {
         Self {
             llm: TaskLlmConfig { enabled: true },
             max_content_chars: 15000,
-            min_capture_length: 20,
+            min_capture_length: 10,
             topic_noise_words: vec![
                 "message", "contenu", "analyse", "fichier",
                 "response", "result", "data", "type", "value",
@@ -357,7 +366,7 @@ impl Default for CoherenceConfig {
             enabled: true,
             max_context_chars: 1500,
             child_threshold: 0.6,
-            orphan_threshold: 0.2,
+            orphan_threshold: 0.1,
             fallback_score: 0.5,
         }
     }
@@ -990,8 +999,8 @@ pub struct CaptureConfig {
     pub min_response_length: usize,
 }
 
-fn default_min_prompt_length() -> usize { 50 }
-fn default_min_response_length() -> usize { 50 }
+fn default_min_prompt_length() -> usize { 10 }
+fn default_min_response_length() -> usize { 10 }
 
 impl Default for CaptureConfig {
     fn default() -> Self {
@@ -1037,19 +1046,19 @@ pub struct CaptureToolToggles {
     /// Capture agent responses (Stop hook).
     #[serde(default = "default_true")]
     pub agent_response: bool,
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub read: bool,
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub edit: bool,
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub write: bool,
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub bash: bool,
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub web_fetch: bool,
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub web_search: bool,
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub task: bool,
     #[serde(default = "default_false")]
     pub notebook_edit: bool,
@@ -1060,13 +1069,13 @@ impl Default for CaptureToolToggles {
         Self {
             user_prompt: true,
             agent_response: true,
-            read: false,
-            edit: false,
-            write: false,
-            bash: false,
-            web_fetch: false,
-            web_search: false,
-            task: false,
+            read: true,
+            edit: true,
+            write: true,
+            bash: true,
+            web_fetch: true,
+            web_search: true,
+            task: true,
             notebook_edit: false,
         }
     }
@@ -1588,20 +1597,21 @@ mod tests {
     }
 
     #[test]
-    fn test_capture_tool_toggles_noisy_disabled_by_default() {
+    fn test_capture_tool_toggles_defaults() {
         let toggles = CaptureToolToggles::default();
         // User prompt and agent response enabled by default
         assert!(toggles.is_enabled("UserPrompt"));
         assert!(toggles.is_enabled("Response"));
-        // All tool captures disabled by default (prompt-only mode)
-        assert!(!toggles.is_enabled("Read"));
-        assert!(!toggles.is_enabled("Edit"));
-        assert!(!toggles.is_enabled("Write"));
-        assert!(!toggles.is_enabled("Task"));
+        // All tool captures enabled by default (except NotebookEdit)
+        assert!(toggles.is_enabled("Read"));
+        assert!(toggles.is_enabled("Edit"));
+        assert!(toggles.is_enabled("Write"));
+        assert!(toggles.is_enabled("Task"));
+        assert!(toggles.is_enabled("Bash"));
+        assert!(toggles.is_enabled("WebFetch"));
+        assert!(toggles.is_enabled("WebSearch"));
+        // NotebookEdit disabled (not yet prepared)
         assert!(!toggles.is_enabled("NotebookEdit"));
-        assert!(!toggles.is_enabled("Bash"));
-        assert!(!toggles.is_enabled("WebFetch"));
-        assert!(!toggles.is_enabled("WebSearch"));
         // Unknown tools still default to enabled
         assert!(toggles.is_enabled("UnknownTool"));
     }
