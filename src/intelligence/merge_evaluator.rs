@@ -12,10 +12,11 @@
 //!
 //! Atomicity: merge is wrapped in transaction (conn.transaction()).
 
-use crate::config::EmbeddingMode;
+use crate::config::{EmbeddingMode, LocalModelSize};
 use crate::constants::*;
 use crate::processing::embeddings::EmbeddingManager;
 use crate::processing::llm_subprocess;
+use crate::processing::prompt_loader::{self, PromptName};
 use crate::storage::bridges::BridgeStorage;
 use crate::storage::threads::ThreadStorage;
 use crate::thread::Thread;
@@ -44,7 +45,7 @@ pub struct MergeEvaluator;
 impl MergeEvaluator {
     /// Evaluate a merge candidate and execute if approved.
     /// Returns Ok(true) if merge was executed, Ok(false) if rejected.
-    pub fn evaluate_and_execute(conn: &Connection, candidate: &MergeCandidate, embed_mode: &EmbeddingMode) -> AiResult<bool> {
+    pub fn evaluate_and_execute(conn: &Connection, candidate: &MergeCandidate, embed_mode: &EmbeddingMode, model: &LocalModelSize) -> AiResult<bool> {
         let thread_a = ThreadStorage::get(conn, &candidate.thread_a)?
             .ok_or_else(|| AiError::ThreadNotFound(candidate.thread_a.clone()))?;
         let thread_b = ThreadStorage::get(conn, &candidate.thread_b)?
@@ -72,7 +73,7 @@ impl MergeEvaluator {
             return Ok(false);
         }
 
-        let decision = Self::evaluate_via_llm(&thread_a, &thread_b, candidate, conn)?;
+        let decision = Self::evaluate_via_llm(&thread_a, &thread_b, candidate, conn, model)?;
 
         match decision {
             MergeDecision::Merge {
@@ -119,8 +120,9 @@ impl MergeEvaluator {
         thread_b: &Thread,
         candidate: &MergeCandidate,
         conn: &Connection,
+        model: &LocalModelSize,
     ) -> AiResult<MergeDecision> {
-        let prompt = Self::build_prompt(thread_a, thread_b, candidate, conn)?;
+        let prompt = Self::build_prompt(thread_a, thread_b, candidate, conn, model)?;
 
         let response = match llm_subprocess::call_llm(&prompt) {
             Ok(r) => r,
@@ -142,31 +144,55 @@ impl MergeEvaluator {
         thread_b: &Thread,
         candidate: &MergeCandidate,
         conn: &Connection,
+        model: &LocalModelSize,
     ) -> AiResult<String> {
         let msgs_a = Self::format_messages(conn, &thread_a.id)?;
         let msgs_b = Self::format_messages(conn, &thread_b.id)?;
 
-        let prompt = format!(
-            r#"You are a memory merge evaluator. Two memory threads share {shared_count} concepts.
+        let replacements = |template: String| -> String {
+            template
+                .replace("{shared_count}", &candidate.shared_concepts.len().to_string())
+                .replace("{title_a}", &thread_a.title)
+                .replace("{topics_a}", &thread_a.topics.join(", "))
+                .replace("{labels_a}", &thread_a.labels.join(", "))
+                .replace("{concepts_a}", &thread_a.concepts.join(", "))
+                .replace("{summary_a}", thread_a.summary.as_deref().unwrap_or("(no summary)"))
+                .replace("{msgs_a}", &msgs_a)
+                .replace("{title_b}", &thread_b.title)
+                .replace("{topics_b}", &thread_b.topics.join(", "))
+                .replace("{labels_b}", &thread_b.labels.join(", "))
+                .replace("{concepts_b}", &thread_b.concepts.join(", "))
+                .replace("{summary_b}", thread_b.summary.as_deref().unwrap_or("(no summary)"))
+                .replace("{msgs_b}", &msgs_b)
+                .replace("{shared}", &candidate.shared_concepts.join(", "))
+                .replace("{score}", &format!("{:.2}", candidate.overlap_score))
+        };
 
-## Thread A — "{title_a}"
-Topics: {topics_a}
-Labels: {labels_a}
-Concepts: {concepts_a}
-Summary: {summary_a}
+        let prompt = match prompt_loader::get_template(model, PromptName::MergeEvaluator) {
+            Ok(template) => replacements(template),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load merge_evaluator template, using hardcoded fallback");
+                replacements(format!(
+                    r#"You are a memory merge evaluator. Two memory threads share {{shared_count}} concepts.
+
+## Thread A — "{{title_a}}"
+Topics: {{topics_a}}
+Labels: {{labels_a}}
+Concepts: {{concepts_a}}
+Summary: {{summary_a}}
 Messages (recent):
-{msgs_a}
+{{msgs_a}}
 
-## Thread B — "{title_b}"
-Topics: {topics_b}
-Labels: {labels_b}
-Concepts: {concepts_b}
-Summary: {summary_b}
+## Thread B — "{{title_b}}"
+Topics: {{topics_b}}
+Labels: {{labels_b}}
+Concepts: {{concepts_b}}
+Summary: {{summary_b}}
 Messages (recent):
-{msgs_b}
+{{msgs_b}}
 
-## Shared concepts: {shared}
-## Overlap score: {score:.2}
+## Shared concepts: {{shared}}
+## Overlap score: {{score}}
 
 ## Decision
 
@@ -180,24 +206,10 @@ Rules:
 Return JSON only:
 {{"decision":"merge","survivor":"A"|"B","title":"<merged title>","summary":"<1-sentence merged summary>"}}
 or
-{{"decision":"reject","reason":"<why different>"}}
-"#,
-            shared_count = candidate.shared_concepts.len(),
-            title_a = thread_a.title,
-            topics_a = thread_a.topics.join(", "),
-            labels_a = thread_a.labels.join(", "),
-            concepts_a = thread_a.concepts.join(", "),
-            summary_a = thread_a.summary.as_deref().unwrap_or("(no summary)"),
-            msgs_a = msgs_a,
-            title_b = thread_b.title,
-            topics_b = thread_b.topics.join(", "),
-            labels_b = thread_b.labels.join(", "),
-            concepts_b = thread_b.concepts.join(", "),
-            summary_b = thread_b.summary.as_deref().unwrap_or("(no summary)"),
-            msgs_b = msgs_b,
-            shared = candidate.shared_concepts.join(", "),
-            score = candidate.overlap_score,
-        );
+{{"decision":"reject","reason":"<why different>"}}"#
+                ))
+            }
+        };
 
         // Truncate if too long
         if prompt.len() > MERGE_EVALUATOR_MAX_CHARS {

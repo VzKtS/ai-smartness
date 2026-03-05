@@ -598,6 +598,7 @@ fn process_mind_coherence(
         &guardian.label_suggestion,
         &guardian.importance_rating,
         None,
+        &guardian.local_model_size,
     ) {
         Ok(Some(e)) => e,
         Ok(None) => {

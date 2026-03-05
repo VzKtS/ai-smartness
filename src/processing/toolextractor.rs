@@ -4,11 +4,12 @@
 //! Produces a single-pass summary + reference (file_path/URL) for memory storage.
 //! The agent keeps a concise summary and can re-access full data via the reference.
 
-use crate::config::ExtractionConfig;
+use crate::config::{ExtractionConfig, LocalModelSize};
 use crate::processing::extractor::{
     self, Extraction, ExtractionMode, ExtractionResult,
 };
 use crate::processing::llm_subprocess;
+use crate::processing::prompt_loader::{self, PromptName};
 use crate::AiResult;
 
 /// Summarize tool output in a single LLM pass.
@@ -21,6 +22,7 @@ pub fn summarize_tool_output(
     file_path: Option<&str>,
     agent_context: Option<&str>,
     extraction_cfg: &ExtractionConfig,
+    model: &LocalModelSize,
 ) -> AiResult<Option<Extraction>> {
     if !extraction_cfg.llm.enabled {
         tracing::info!(mode = "disabled", "Tool extraction: LLM disabled, skipping");
@@ -39,7 +41,7 @@ pub fn summarize_tool_output(
         content.to_string()
     };
 
-    let prompt = build_tool_prompt(&truncated, source_type, file_path, agent_context);
+    let prompt = build_tool_prompt(&truncated, source_type, file_path, agent_context, model);
 
     tracing::info!(
         source_type = source_type,
@@ -148,6 +150,7 @@ fn build_tool_prompt(
     source_type: &str,
     file_path: Option<&str>,
     agent_context: Option<&str>,
+    model: &LocalModelSize,
 ) -> String {
     let tool_desc = match source_type {
         "Read" | "file_read" => "file content that was read",
@@ -178,8 +181,20 @@ fn build_tool_prompt(
         _ => String::from("No agent context available. Score based on content richness alone."),
     };
 
-    format!(
-        r#"You are a memory assistant. Summarize the following tool output.
+    // Try loading template from .toml file; fall back to hardcoded on error
+    match prompt_loader::get_template(model, PromptName::ToolExtractor) {
+        Ok(template) => {
+            template
+                .replace("{source_type}", source_type)
+                .replace("{tool_desc}", tool_desc)
+                .replace("{ref_line}", &ref_line)
+                .replace("{content}", content)
+                .replace("{context_block}", &context_block)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load toolextractor prompt template, using hardcoded fallback");
+            format!(
+                r#"You are a memory assistant. Summarize the following tool output.
 
 ## Step 1 — Classification (analyze content below, NO external context)
 
@@ -206,7 +221,9 @@ Content:
 
 Output ONLY a single JSON object, nothing else:
 {{"title":"...","summary":"...","subjects":[...],"labels":[...],"concepts":[...],"confidence":0.0,"importance":0.0}}"#
-    )
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -215,11 +232,13 @@ mod tests {
 
     #[test]
     fn test_build_tool_prompt_with_file_path() {
+        let model = LocalModelSize::Phi4Mini;
         let prompt = build_tool_prompt(
             "fn main() { println!(\"hello\"); }",
             "Read",
             Some("src/main.rs"),
             None,
+            &model,
         );
         assert!(prompt.contains("Reference: src/main.rs"));
         assert!(prompt.contains("file content that was read"));
@@ -228,18 +247,21 @@ mod tests {
 
     #[test]
     fn test_build_tool_prompt_without_file_path() {
-        let prompt = build_tool_prompt("search results here", "WebSearch", None, None);
+        let model = LocalModelSize::Phi4Mini;
+        let prompt = build_tool_prompt("search results here", "WebSearch", None, None, &model);
         assert!(prompt.contains("Reference: none"));
         assert!(prompt.contains("web search results"));
     }
 
     #[test]
     fn test_build_tool_prompt_with_agent_context() {
+        let model = LocalModelSize::Phi4Mini;
         let prompt = build_tool_prompt(
             "test content",
             "Task",
             None,
             Some("Working on refactoring the config module"),
+            &model,
         );
         assert!(prompt.contains("agent was recently working on"));
         assert!(prompt.contains("refactoring the config module"));
@@ -247,17 +269,20 @@ mod tests {
 
     #[test]
     fn test_build_tool_prompt_bash() {
+        let model = LocalModelSize::Phi4Mini;
         let prompt = build_tool_prompt(
             "error: cannot find module",
             "Bash",
             None,
             None,
+            &model,
         );
         assert!(prompt.contains("terminal command output"));
     }
 
     #[test]
     fn test_build_tool_prompt_all_source_types() {
+        let model = LocalModelSize::Phi4Mini;
         let types = [
             ("Read", "file content that was read"),
             ("Write", "file content that was written"),
@@ -269,7 +294,7 @@ mod tests {
             ("NotebookEdit", "Jupyter notebook"),
         ];
         for (src, expected_desc) in types {
-            let prompt = build_tool_prompt("content", src, None, None);
+            let prompt = build_tool_prompt("content", src, None, None, &model);
             assert!(
                 prompt.contains(expected_desc),
                 "Source type '{}' should contain '{}'",

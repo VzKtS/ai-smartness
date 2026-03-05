@@ -589,7 +589,7 @@ fn run_prune_cycle(
                     let auto_threshold = guardian.gossip.merge_auto_threshold;
                     for candidate in merge_candidates.iter().take(max_per_cycle) {
                         if candidate.overlap_score >= auto_threshold {
-                            match MergeEvaluator::evaluate_and_execute(&conn, candidate, &guardian.gossip.embedding.mode) {
+                            match MergeEvaluator::evaluate_and_execute(&conn, candidate, &guardian.gossip.embedding.mode, &guardian.local_model_size) {
                                 Ok(true) => tracing::info!(
                                     "MergeEvaluator: auto-merged (score={:.2})",
                                     candidate.overlap_score

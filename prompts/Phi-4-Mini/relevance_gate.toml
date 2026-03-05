@@ -1,0 +1,19 @@
+[meta]
+version = 1
+max_tokens = 32
+description = "Short prompt relevance gate — optimized for Phi-4-Mini 3.8B"
+
+[template]
+prompt = """Evaluate whether this user message contains extractable information (concepts, decisions, facts, intentions).
+
+Message:
+"{message}"
+{context_block}
+
+Reply ONLY with JSON: {{"relevant": true}} or {{"relevant": false}}
+- true = contains at least one concept, fact, decision or actionable intention
+- false = purely procedural message, confirmation, acknowledgment, or conversational noise
+
+Examples false: "yes that's good", "ok perfect", "go", "dispatch", "thanks", "I just wanted to make sure"
+Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", "add a 30s timeout"
+"""

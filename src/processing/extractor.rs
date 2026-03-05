@@ -4,8 +4,9 @@
 //! Config-driven: model, truncation, prompt quality all from GuardianConfig.
 //! No heuristic fallback — quality over quantity.
 
-use crate::config::{ExtractionConfig, ImportanceRatingConfig, LabelSuggestionConfig};
+use crate::config::{ExtractionConfig, ImportanceRatingConfig, LabelSuggestionConfig, LocalModelSize};
 use crate::constants::truncate_safe;
+use crate::processing::prompt_loader::{self, PromptName};
 use crate::AiResult;
 use serde::{Deserialize, Serialize};
 
@@ -135,6 +136,7 @@ pub fn extract(
     label_cfg: &LabelSuggestionConfig,
     importance_cfg: &ImportanceRatingConfig,
     agent_context: Option<&str>,
+    model: &LocalModelSize,
 ) -> AiResult<Option<Extraction>> {
     if !extraction_cfg.llm.enabled {
         tracing::info!(mode = "disabled", "Extraction: LLM disabled, skipping");
@@ -143,7 +145,7 @@ pub fn extract(
 
     // Retry loop: up to 3 attempts (2 retries max) on degenerate extraction
     for attempt in 0..3u8 {
-        match extract_via_llm(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context) {
+        match extract_via_llm(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context, model) {
             Ok(ExtractionResult::Skip) => {
                 tracing::info!(mode = "llm_skip", "Extraction: LLM decided to skip");
                 return Ok(None);
@@ -201,9 +203,10 @@ fn extract_via_llm(
     label_cfg: &LabelSuggestionConfig,
     importance_cfg: &ImportanceRatingConfig,
     agent_context: Option<&str>,
+    model: &LocalModelSize,
 ) -> AiResult<ExtractionResult> {
     let start = std::time::Instant::now();
-    let prompt = build_extraction_prompt(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context);
+    let prompt = build_extraction_prompt(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context, model);
     tracing::info!(
         prompt_len = prompt.len(),
         content_len = content.len(),
@@ -277,6 +280,7 @@ fn build_extraction_prompt(
     label_cfg: &LabelSuggestionConfig,
     importance_cfg: &ImportanceRatingConfig,
     agent_context: Option<&str>,
+    model: &LocalModelSize,
 ) -> String {
     let max_chars = extraction_cfg.max_content_chars;
     let truncated: String = if content.chars().count() > max_chars {
@@ -312,9 +316,41 @@ Higher alignment = higher importance. No alignment does NOT mean low importance 
         _ => String::from("\nNo additional context available. Score based on acquisition source and content richness alone."),
     };
 
+    // Try loading template from .toml file; fall back to hardcoded on error
+    match prompt_loader::get_template(model, PromptName::Extractor) {
+        Ok(template) => {
+            template
+                .replace("{noise_words}", &noise_words.join(", "))
+                .replace("{label_hint}", &label_hint)
+                .replace("{source_type}", source.as_str())
+                .replace("{source_desc}", source.description())
+                .replace("{content}", &truncated)
+                .replace("{context_block}", &context_block)
+                .replace("{critical}", &format!("{:.1}", score_map.critical))
+                .replace("{high}", &format!("{:.1}", score_map.high))
+                .replace("{normal}", &format!("{:.1}", score_map.normal))
+                .replace("{low}", &format!("{:.1}", score_map.low))
+                .replace("{disposable}", &format!("{:.1}", score_map.disposable))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load extractor prompt template, using hardcoded fallback");
+            build_extraction_prompt_fallback(&truncated, source, &noise_words, &label_hint, &context_block, score_map)
+        }
+    }
+}
+
+/// Hardcoded fallback prompt — used when .toml file is missing or unreadable.
+fn build_extraction_prompt_fallback(
+    content: &str,
+    source: ExtractionSource,
+    noise_words: &[&str],
+    label_hint: &str,
+    context_block: &str,
+    score_map: &crate::config::ImportanceScoreMap,
+) -> String {
     format!(
         r#"Your role is to process the content provided and follow these rules:
-        
+
         1. If not humanly comprehensible = skip
         2. If the number of humanly comprehensible characters is less than 150 characters = skip
         3. If the humanly comprehensible ratio is less than 20% of the capture = skip
@@ -322,7 +358,7 @@ Higher alignment = higher importance. No alignment does NOT mean low importance 
         5. If the number of humanly comprehensible characters is greater than 150 characters and less than 500 = verbatim
         6. If the number of humanly comprehensible characters is greater than or equal to 500 characters = extract
 
-## ÉTAPE 1 — Classification (analysez le contenu ci-dessous, SANS contexte externe)
+## STEP 1 — Classification (analyze the content below, WITHOUT external context)
 
 ### title (max 50 chars)
 Specific, descriptive title capturing the core subject of the content.
@@ -387,7 +423,7 @@ If action is "verbatim" or "extract":
         label_hint = label_hint,
         source_type = source.as_str(),
         source_desc = source.description(),
-        content = truncated,
+        content = content,
         context_block = context_block,
         critical = score_map.critical,
         high = score_map.high,

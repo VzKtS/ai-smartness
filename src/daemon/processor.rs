@@ -129,6 +129,7 @@ pub fn process_capture(
             file_path,
             agent_context,
             &guardian.extraction,
+            &guardian.local_model_size,
         )? {
             Some(e) => e,
             None => {
@@ -184,6 +185,7 @@ pub fn process_capture(
             &guardian.label_suggestion,
             &guardian.importance_rating,
             agent_context,
+            &guardian.local_model_size,
         )? {
             Some(e) => e,
             None => {
@@ -370,7 +372,7 @@ fn is_tool_source(source_type: &str) -> bool {
 fn check_prompt_relevance(
     prompt: &str,
     agent_context: Option<&str>,
-    _guardian: &GuardianConfig,
+    guardian: &GuardianConfig,
 ) -> ai_smartness::AiResult<bool> {
     let context_block = match agent_context {
         Some(ctx) if !ctx.is_empty() => format!(
@@ -380,8 +382,19 @@ fn check_prompt_relevance(
         _ => String::new(),
     };
 
-    let gate_prompt = format!(
-        r#"Evaluate whether this user message contains extractable information (concepts, decisions, facts, intentions).
+    let gate_prompt = match ai_smartness::processing::prompt_loader::get_template(
+        &guardian.local_model_size,
+        ai_smartness::processing::prompt_loader::PromptName::RelevanceGate,
+    ) {
+        Ok(template) => {
+            template
+                .replace("{message}", prompt)
+                .replace("{context_block}", &context_block)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load relevance_gate template, using hardcoded fallback");
+            format!(
+                r#"Evaluate whether this user message contains extractable information (concepts, decisions, facts, intentions).
 
 Message:
 "{}"
@@ -393,8 +406,10 @@ Reply ONLY with JSON: {{"relevant": true}} or {{"relevant": false}}
 
 Examples false: "yes that's good", "ok perfect", "go", "dispatch", "thanks", "I just wanted to make sure"
 Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", "add a 30s timeout""#,
-        prompt, context_block
-    );
+                prompt, context_block
+            )
+        }
+    };
 
     let response = ai_smartness::processing::llm_subprocess::call_llm(&gate_prompt)?;
 
@@ -525,6 +540,7 @@ pub fn enrich_existing_thread(
         &guardian.label_suggestion,
         &guardian.importance_rating,
         None,
+        &guardian.local_model_size,
     )? {
         Some(e) => e,
         None => {
