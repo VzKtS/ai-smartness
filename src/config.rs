@@ -339,9 +339,10 @@ fn default_prompt_relevance_gate_max_chars() -> usize { 150 }
 // ============================================================================
 
 /// Coherence-specific configuration.
-/// Controls how the Guardian scores thematic coherence between consecutive captures.
+/// Controls how the Guardian scores subject coherence between consecutive captures.
 ///
-/// Decision thresholds: >0.6=child, 0.4-0.6=orphan, <0.4=forget
+/// Binary decision: score > 0.3 = Child (same subject), score <= 0.3 = Orphan (new subject).
+/// Uses extraction metadata (title, subjects, concepts) instead of raw text.
 ///
 /// Frequency: HIGH — called on every capture with pending context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,10 +352,11 @@ pub struct CoherenceConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,                       // default: true
     pub max_context_chars: usize,            // default: 1500
-    /// Threshold for child decision (content related to parent).
-    pub child_threshold: f64,                // default: 0.6
-    /// Threshold for orphan decision (unrelated but substantial).
-    pub orphan_threshold: f64,               // default: 0.2
+    /// Threshold for child decision (same subject → continuity chain continues).
+    pub child_threshold: f64,                // default: 0.3
+    /// Deprecated — kept for backward compat with existing config files. No longer used.
+    #[serde(default)]
+    pub orphan_threshold: f64,               // unused since v5.7.7
     /// Fallback score returned on LLM error.
     pub fallback_score: f64,                 // default: 0.5
 }
@@ -365,8 +367,8 @@ impl Default for CoherenceConfig {
             llm: TaskLlmConfig { enabled: true },
             enabled: true,
             max_context_chars: 1500,
-            child_threshold: 0.6,
-            orphan_threshold: 0.1,
+            child_threshold: 0.3,
+            orphan_threshold: 0.0,
             fallback_score: 0.5,
         }
     }
@@ -1589,7 +1591,7 @@ mod tests {
         assert!(gc.enabled);
         assert!(gc.extraction.llm.enabled);
         assert_eq!(gc.extraction.max_content_chars, 15000);
-        assert_eq!(gc.coherence.child_threshold, 0.6);
+        assert_eq!(gc.coherence.child_threshold, 0.3);
         assert_eq!(gc.decay.thread_suspend_threshold, 0.1);
         assert_eq!(gc.engram.strong_inject_min_votes, 5);
         assert_eq!(gc.llm_backend, LlmBackend::Local);

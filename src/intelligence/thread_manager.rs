@@ -1,12 +1,12 @@
 //! Thread Manager -- thread lifecycle management.
 //!
-//! Handles: NewThread / Continue / Fork / Reactivate decisions.
-//! Called by the daemon processor after extraction + coherence.
+//! All captures create new threads (NewThread only).
+//! Thread grouping is handled upstream by changelog shortcut (processor.rs stage 1.5).
+//! Continuity is tracked via continuity_parent_id, not thread merging.
 
-use std::collections::HashSet;
 use crate::{id_gen, time_utils};
 use crate::bridge::{BridgeStatus, BridgeType, ThinkBridge};
-use crate::config::{EmbeddingMode, GossipConfig, GuardianConfig};
+use crate::config::{EmbeddingMode, GossipConfig, GuardianConfig, ThreadMatchingConfig};
 use crate::constants::*;
 use crate::thread::{Thread, ThreadMessage, ThreadStatus, OriginType, WorkContext};
 use crate::AiResult;
@@ -21,15 +21,11 @@ use chrono::Utc;
 use rusqlite::Connection;
 
 /// Action decided by the thread manager.
+/// All captures create new threads — grouping is handled by changelog shortcut upstream.
 #[derive(Debug)]
 pub enum ThreadAction {
     NewThread,
-    Continue { thread_id: String },
-    Fork { parent_id: String },
-    Reactivate { thread_id: String },
 }
-
-use crate::config::ThreadMatchingConfig;
 
 // LABEL_BLOCKLIST and filter_blocked_labels imported via `use crate::constants::*`
 
@@ -84,7 +80,6 @@ impl ThreadManager {
         content: &str,
         source_type: &str,
         file_path: Option<&str>,
-        parent_hint: Option<&str>,
         continuity_previous_id: Option<&str>,
         coherence_score: Option<f64>,
         thread_quota: usize,
@@ -101,159 +96,29 @@ impl ThreadManager {
             "ThreadManager: processing input"
         );
 
-        // confidence == 0.0 gate is centralized in processor.rs (stage 3)
-
+        // All captures that reach process_input create their own thread.
+        // Thread grouping is handled upstream by changelog shortcut (processor.rs stage 1.5).
+        // Continuity is tracked via continuity_parent_id, not thread merging.
         let embeddings = EmbeddingManager::global();
         let embed_mode = &guardian.thread_matching.embedding.mode;
 
-        // Force NewThread for prompt/response — these NEVER merge into existing threads.
-        // Continuity is tracked via continuity_parent_id instead of thread merging.
-        let force_new_thread = matches!(source_type, "prompt" | "response");
-
-        let action = if force_new_thread {
-            tracing::info!(source_type = %source_type, "Force NewThread for prompt/response");
-            ThreadAction::NewThread
-        } else if let Some(parent_id) = parent_hint {
-            // Dual gate: coherent (already validated by processor) + similar?
-            // If embedding similarity to parent is high enough, CONTINUE in parent.
-            // If not similar despite coherence, search for a better match.
-            let embed_text = build_enriched_embed_text(extraction);
-            let query_emb = embeddings.embed_with_mode(&embed_text, embed_mode);
-
-            let parent_sim = match &query_emb {
-                Some(qe) => ThreadStorage::get(conn, parent_id)?
-                    .and_then(|p| p.embedding.as_ref().map(|e| embeddings.similarity(qe, e)))
-                    .unwrap_or(0.0),
-                None => 0.0, // Embeddings disabled → skip similarity
-            };
-
-            let tm_config = &guardian.thread_matching;
-            tracing::debug!(
-                parent_id = %parent_id,
-                parent_sim = parent_sim,
-                threshold = tm_config.continue_threshold,
-                "Dual gate: checking parent similarity"
-            );
-
-            if parent_sim >= tm_config.continue_threshold {
-                // Coherent AND similar → continue in parent thread
-                ThreadAction::Continue { thread_id: parent_id.to_string() }
-            } else {
-                // Coherent but not similar → search for better match
-                Self::decide_action(conn, extraction, embeddings, embed_mode, tm_config)?
-            }
-        } else {
-            Self::decide_action(conn, extraction, embeddings, embed_mode, &guardian.thread_matching)?
-        };
-
-        // Origin-type compatibility gate: group-based check (v5.7.4)
-        let action = match &action {
-            ThreadAction::Continue { thread_id } | ThreadAction::Reactivate { thread_id } => {
-                if let Some(target) = ThreadStorage::get(conn, thread_id)? {
-                    if !target.origin_type.is_compatible_with_source(source_type) {
-                        tracing::info!(
-                            source_type = %source_type,
-                            target_thread = %thread_id,
-                            target_origin = %target.origin_type.as_str(),
-                            target_group = %target.origin_type.compatibility_group(),
-                            "Origin-type incompatible: forcing NewThread"
-                        );
-                        ThreadAction::NewThread
-                    } else {
-                        action
-                    }
-                } else {
-                    action
-                }
-            }
-            _ => action,
-        };
-
-        match action {
-            ThreadAction::NewThread => {
-                tracing::info!(action = "NewThread", "Action decided");
-                Self::ensure_capacity(conn, thread_quota, embeddings, &guardian.thread_matching)?;
-                let id = Self::create_thread(
-                    conn, extraction, content, source_type, None, file_path, embed_mode,
-                    continuity_previous_id, coherence_score,
-                )?;
-                // Backfill continuity_to on previous thread's last message
-                if let Some(prev_id) = continuity_previous_id {
-                    let _ = ThreadStorage::update_last_message_continuity_to(conn, prev_id, &id);
-                }
-                // Thinkbridges: immediate concept connections
-                let normalized = normalize_concepts(&extraction.concepts);
-                let thinkbridges = Self::create_thinkbridges(conn, &id, &normalized, &guardian.gossip)?;
-                if thinkbridges > 0 {
-                    tracing::info!(thread_id = %id, bridges = thinkbridges, "Thinkbridges");
-                }
-                Ok(Some(id))
-            }
-            ThreadAction::Continue { thread_id } => {
-                tracing::info!(action = "Continue", thread_id = %thread_id, "Action decided");
-                // Detect new concepts before merge
-                let old_concepts: HashSet<String> = ThreadStorage::get(conn, &thread_id)?
-                    .map(|t| t.concepts.into_iter().collect())
-                    .unwrap_or_default();
-                Self::update_thread(conn, &thread_id, extraction, content, source_type, file_path, embed_mode)?;
-                // Thinkbridges for NEW concepts only
-                let new_concepts: Vec<String> = normalize_concepts(&extraction.concepts)
-                    .into_iter()
-                    .filter(|c| !old_concepts.contains(c))
-                    .collect();
-                if !new_concepts.is_empty() {
-                    let thinkbridges = Self::create_thinkbridges(conn, &thread_id, &new_concepts, &guardian.gossip)?;
-                    if thinkbridges > 0 {
-                        tracing::info!(thread_id = %thread_id, bridges = thinkbridges, "Incremental thinkbridges");
-                    }
-                }
-                Ok(Some(thread_id))
-            }
-            ThreadAction::Fork { parent_id } => {
-                tracing::info!(action = "Fork", parent_id = %parent_id, "Action decided");
-                Self::ensure_capacity(conn, thread_quota, embeddings, &guardian.thread_matching)?;
-                let id = Self::create_thread(
-                    conn,
-                    extraction,
-                    content,
-                    source_type,
-                    Some(&parent_id),
-                    file_path,
-                    embed_mode,
-                    continuity_previous_id,
-                    coherence_score,
-                )?;
-                // Backfill continuity_to on previous thread's last message
-                if let Some(prev_id) = continuity_previous_id {
-                    let _ = ThreadStorage::update_last_message_continuity_to(conn, prev_id, &id);
-                }
-                // Thinkbridges: immediate concept connections
-                let normalized = normalize_concepts(&extraction.concepts);
-                let thinkbridges = Self::create_thinkbridges(conn, &id, &normalized, &guardian.gossip)?;
-                if thinkbridges > 0 {
-                    tracing::info!(thread_id = %id, bridges = thinkbridges, "Thinkbridges (fork)");
-                }
-                Ok(Some(id))
-            }
-            ThreadAction::Reactivate { thread_id } => {
-                tracing::info!(action = "Reactivate", thread_id = %thread_id, "Action decided");
-                Self::reactivate_thread(conn, &thread_id)?;
-                // Set continuity link on reactivated thread (preserve existing chain)
-                if let Some(prev_id) = continuity_previous_id {
-                    if let Some(mut t) = ThreadStorage::get(conn, &thread_id)? {
-                        if t.continuity_parent_id.is_none() {
-                            t.continuity_parent_id = Some(prev_id.to_string());
-                            t.subject_coherence = coherence_score;
-                            ThreadStorage::update(conn, &t)?;
-                        }
-                    }
-                    // Always backfill continuity_to on the previous thread
-                    let _ = ThreadStorage::update_last_message_continuity_to(conn, prev_id, &thread_id);
-                }
-                Self::update_thread(conn, &thread_id, extraction, content, source_type, file_path, embed_mode)?;
-                Ok(Some(thread_id))
-            }
+        tracing::info!(action = "NewThread", "Action decided");
+        Self::ensure_capacity(conn, thread_quota, embeddings, &guardian.thread_matching)?;
+        let id = Self::create_thread(
+            conn, extraction, content, source_type, None, file_path, embed_mode,
+            continuity_previous_id, coherence_score,
+        )?;
+        // Backfill continuity_to on previous thread's last message
+        if let Some(prev_id) = continuity_previous_id {
+            let _ = ThreadStorage::update_last_message_continuity_to(conn, prev_id, &id);
         }
+        // Thinkbridges: immediate concept connections
+        let normalized = normalize_concepts(&extraction.concepts);
+        let thinkbridges = Self::create_thinkbridges(conn, &id, &normalized, &guardian.gossip)?;
+        if thinkbridges > 0 {
+            tracing::info!(thread_id = %id, bridges = thinkbridges, "Thinkbridges");
+        }
+        Ok(Some(id))
     }
 
     /// Create a new thread from extraction.
@@ -379,7 +244,14 @@ impl ThreadManager {
             source: msg_source,
             source_type: source_type.to_string(),
             timestamp: now,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: {
+                let mut meta = serde_json::Map::new();
+                if let Some(fp) = file_path {
+                    meta.insert("file_path".to_string(), serde_json::Value::String(fp.to_string()));
+                    meta.insert("content_hash".to_string(), serde_json::Value::String(content_hash(content)));
+                }
+                serde_json::Value::Object(meta)
+            },
             is_truncated: truncated,
             continuity_from: None,
             continuity_to: None,
@@ -527,78 +399,6 @@ impl ThreadManager {
         tracing::info!(thread_id = %thread_id, weight = thread.weight, "Thread updated");
 
         Ok(())
-    }
-
-    /// Decide what action to take based on similarity search.
-    fn decide_action(
-        conn: &Connection,
-        extraction: &Extraction,
-        embeddings: &EmbeddingManager,
-        embed_mode: &EmbeddingMode,
-        config: &ThreadMatchingConfig,
-    ) -> AiResult<ThreadAction> {
-        let embed_text = build_enriched_embed_text(extraction);
-        let query_emb = match embeddings.embed_with_mode(&embed_text, embed_mode) {
-            Some(emb) => emb,
-            None => {
-                // Embeddings disabled → always create new thread
-                tracing::debug!("Embeddings disabled, creating new thread");
-                return Ok(ThreadAction::NewThread);
-            }
-        };
-
-        // Search active threads
-        let active = ThreadStorage::list_active(conn)?;
-        tracing::debug!(candidates = active.len(), "ThreadManager: searching active threads");
-        let mut best_sim = 0.0f64;
-        let mut best_id = None;
-
-        for thread in &active {
-            if let Some(ref emb) = thread.embedding {
-                let sim = embeddings.similarity(&query_emb, emb);
-                if sim > best_sim {
-                    best_sim = sim;
-                    best_id = Some(thread.id.clone());
-                }
-            }
-        }
-
-        tracing::debug!(best_sim = best_sim, threshold = config.continue_threshold, "Active similarity search");
-
-        if best_sim >= config.continue_threshold {
-            if let Some(id) = best_id {
-                tracing::debug!(action = "Continue", thread_id = %id, similarity = best_sim, "Decided by similarity");
-                return Ok(ThreadAction::Continue { thread_id: id });
-            }
-        }
-
-        // Search suspended threads for reactivation
-        let suspended = ThreadStorage::list_by_status(conn, &ThreadStatus::Suspended)?;
-        tracing::debug!(candidates = suspended.len(), "ThreadManager: searching suspended threads");
-        let mut best_susp_sim = 0.0f64;
-        let mut best_susp_id = None;
-
-        for thread in &suspended {
-            if let Some(ref emb) = thread.embedding {
-                let sim = embeddings.similarity(&query_emb, emb);
-                if sim > best_susp_sim {
-                    best_susp_sim = sim;
-                    best_susp_id = Some(thread.id.clone());
-                }
-            }
-        }
-
-        tracing::debug!(best_susp_sim = best_susp_sim, threshold = config.reactivate_threshold, "Suspended similarity search");
-
-        if best_susp_sim >= config.reactivate_threshold {
-            if let Some(id) = best_susp_id {
-                tracing::debug!(action = "Reactivate", thread_id = %id, similarity = best_susp_sim, "Decided by similarity");
-                return Ok(ThreadAction::Reactivate { thread_id: id });
-            }
-        }
-
-        tracing::debug!(action = "NewThread", "No similar thread found, creating new");
-        Ok(ThreadAction::NewThread)
     }
 
     /// Ensure capacity for a new thread by merging or suspending.
@@ -824,8 +624,14 @@ impl ThreadManager {
             "Write" | "file_write" => {
                 format!("[changelog] Write {} ({} lines)", file_path, line_count)
             }
-            "Edit" => {
-                format!("[changelog] Edit {}", file_path)
+            "Edit" | "NotebookEdit" => {
+                format!("[changelog] {} {}", source_type, file_path)
+            }
+            "WebFetch" | "fetch" => {
+                format!("[changelog] WebFetch '{}' (content updated)", file_path)
+            }
+            "WebSearch" => {
+                format!("[changelog] WebSearch '{}' (results updated)", file_path)
             }
             _ => {
                 format!("[changelog] {} {}", source_type, file_path)

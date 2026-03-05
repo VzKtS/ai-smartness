@@ -27,6 +27,11 @@ pub struct PendingContext {
     pub labels: Vec<String>,
     pub coherence_score: Option<f64>,
     pub timestamp: Instant,
+    /// Extraction metadata for subject-aware coherence
+    pub title: String,
+    pub subjects: Vec<String>,
+    pub concepts: Vec<String>,
+    pub summary: Option<String>,
 }
 
 impl PendingContext {
@@ -211,60 +216,63 @@ pub fn process_capture(
     }
     tracing::debug!(confidence = extraction.confidence, "Stage 3/6: Confidence gate passed");
 
-    // 4. Coherence gate — determine relationship with pending context
-    //    Returns: parent_hint (for similarity-based action), continuity_previous_id (for chain),
-    //    coherence_score (subject coherence with previous thread).
+    // 4. Coherence gate — subject-aware comparison with pending context
+    //    Uses extraction metadata (title, subjects, concepts) instead of raw text.
+    //    Returns: continuity_previous_id, coherence_score.
     let coherence_cfg = &guardian.coherence;
-    let (parent_hint, continuity_previous_id, coherence_score): (Option<String>, Option<String>, Option<f64>) =
+    let (continuity_previous_id, coherence_score): (Option<String>, Option<f64>) =
         if !coherence_cfg.enabled {
             tracing::debug!("Coherence gate disabled, skipping coherence check");
-            (None, None, None)
+            (None, None)
         } else if let Some(ctx) = pending.as_ref().filter(|p| !p.is_expired(ttl)) {
+            let coherence_input = coherence::CoherenceInput {
+                prev_title: &ctx.title,
+                prev_subjects: &ctx.subjects,
+                prev_concepts: &ctx.concepts,
+                prev_labels: &ctx.labels,
+                prev_content: &ctx.content,
+                new_title: &extraction.title,
+                new_subjects: &extraction.subjects,
+                new_concepts: &extraction.concepts,
+                new_content: &cleaned,
+            };
+
             let coherence_result = coherence::check_coherence(
-                &ctx.content,
-                &cleaned,
-                &ctx.labels,
+                &coherence_input,
                 coherence_cfg,
             )?;
 
             let action = coherence::determine_action(
                 coherence_result.score,
                 coherence_cfg.child_threshold,
-                coherence_cfg.orphan_threshold,
             );
 
             match action {
-                CoherenceAction::Forget => {
+                CoherenceAction::Child => {
                     tracing::debug!(
                         score = coherence_result.score,
-                        "Coherence: Forget — content below orphan threshold, skipping"
-                    );
-                    return Ok(None);
-                }
-                CoherenceAction::Child | CoherenceAction::Continue => {
-                    tracing::debug!(
-                        score = coherence_result.score,
-                        action = ?action,
                         parent = %ctx.thread_id,
-                        "Coherence: linked to parent (continuity chain)"
+                        "Coherence: Child — continuity edge created"
                     );
-                    (Some(ctx.thread_id.clone()), Some(ctx.thread_id.clone()), Some(coherence_result.score))
+                    // parent_hint NEVER set — coherence drives continuity edges, not thread grouping.
+                    // Thread grouping is handled by changelog shortcut (stage 1.5) only.
+                    (Some(ctx.thread_id.clone()), Some(coherence_result.score))
                 }
                 CoherenceAction::Orphan => {
                     tracing::debug!(
                         score = coherence_result.score,
-                        "Coherence: Orphan — new thread, new chain"
+                        "Coherence: Orphan — subject changed, chain breaks"
                     );
-                    (None, None, None)
+                    (None, None)
                 }
             }
         } else {
-            (None, None, None)
+            (None, None)
         };
 
-    // 5. Thread management (NewThread / Continue / Fork / Reactivate)
+    // 5. Thread management (always NewThread — grouping handled by changelog shortcut)
     tracing::info!(
-        parent_hint = ?parent_hint,
+        continuity = ?continuity_previous_id,
         elapsed_ms = pipeline_start.elapsed().as_millis(),
         "Stage 5/6: Thread management"
     );
@@ -274,7 +282,6 @@ pub fn process_capture(
         &cleaned,
         source_type,
         file_path,
-        parent_hint.as_deref(),
         continuity_previous_id.as_deref(),
         coherence_score,
         thread_quota,
@@ -298,6 +305,10 @@ pub fn process_capture(
             labels: labels.clone(),
             coherence_score,
             timestamp: Instant::now(),
+            title: extraction.title.clone(),
+            subjects: extraction.subjects.clone(),
+            concepts: extraction.concepts.clone(),
+            summary: Some(extraction.summary.clone()),
         });
         tracing::debug!(
             thread_id = %tid,
@@ -407,7 +418,10 @@ Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", 
 fn is_file_tool_source(source_type: &str) -> bool {
     matches!(
         source_type,
-        "Read" | "file_read" | "Write" | "file_write" | "Edit" | "WebFetch" | "fetch"
+        "Read" | "file_read" | "Write" | "file_write" | "Edit"
+            | "WebFetch" | "fetch"
+            | "WebSearch"
+            | "NotebookEdit"
     )
 }
 
@@ -450,15 +464,21 @@ fn try_changelog_shortcut(
 
     // Update PendingContext to preserve coherence chain
     if let Some(ref tid) = result {
-        let labels = ThreadStorage::get(conn, tid)?
-            .map(|t| t.labels)
-            .unwrap_or_default();
+        let thread = ThreadStorage::get(conn, tid)?;
+        let (labels, title, subjects, concepts, summary) = match thread {
+            Some(t) => (t.labels, t.title, t.topics, t.concepts, t.summary),
+            None => (vec![], String::new(), vec![], vec![], None),
+        };
         *pending = Some(PendingContext {
             content: truncate_safe(content, 4000).to_string(),
             thread_id: tid.clone(),
             labels,
             coherence_score: None,
             timestamp: Instant::now(),
+            title,
+            subjects,
+            concepts,
+            summary,
         });
     }
 
