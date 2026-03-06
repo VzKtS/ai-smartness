@@ -1,4 +1,5 @@
 pub mod cleaner;
+pub mod hardware;
 pub mod coherence;
 pub mod daemon_ipc_client;
 pub mod embeddings;

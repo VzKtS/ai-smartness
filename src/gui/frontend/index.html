@@ -296,6 +296,7 @@
                 <button class="sub-tab" data-stab="stab-capture">Capture</button>
                 <button class="sub-tab" data-stab="stab-profile">Profile</button>
                 <button class="sub-tab" data-stab="stab-backup">Backup</button>
+                <button class="sub-tab" data-stab="stab-hardware" data-i18n="stab.hardware">Hardware</button>
             </div>
 
             <!-- ── General ── -->
@@ -773,6 +774,49 @@
                             </tr></thead>
                             <tbody id="backup-history-body"></tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Hardware ── -->
+            <div id="stab-hardware" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hw-detected">Detected Hardware</h3>
+                    <div id="section-hw-detected" class="section-body open">
+                        <div class="hw-info-block">
+                            <strong>CPU:</strong> <span id="hw-cpu-model">Detecting...</span>
+                            (<span id="hw-cpu-cores">-</span> cores / <span id="hw-cpu-threads">-</span> threads)
+                        </div>
+                        <div class="hw-info-block">
+                            <strong>RAM:</strong> <span id="hw-ram-total">-</span> MB total,
+                            <span id="hw-ram-available">-</span> MB available
+                        </div>
+                        <div id="hw-gpu-list"></div>
+                        <button class="btn-sm" id="btn-hw-refresh" style="margin-top:8px" title="Re-detect hardware">Refresh</button>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hw-assign">Device Assignment</h3>
+                    <div id="section-hw-assign" class="section-body open">
+                        <div class="form-grid">
+                            <label title="GPU (or CPU) used for ai-smartness runtime: ONNX embeddings, engram retrieval, coherence scoring.">
+                                Runtime Device
+                                <select id="hw-runtime-device" data-path="hardware.runtime_device">
+                                    <option value="auto">Auto</option>
+                                    <option value="cpu">CPU Only</option>
+                                </select>
+                            </label>
+                            <label title="GPU (or CPU) used for local LLM inference (llama.cpp). This is where your GGUF model runs.">
+                                Provider Device
+                                <select id="hw-provider-device" data-path="hardware.provider_device">
+                                    <option value="auto">Auto</option>
+                                    <option value="cpu">CPU Only</option>
+                                </select>
+                            </label>
+                        </div>
+                        <p style="font-size:11px; color:var(--text-dim); margin-top:8px">
+                            Changes take effect after daemon restart. Runtime and Provider can use different GPUs.
+                        </p>
                     </div>
                 </div>
             </div>

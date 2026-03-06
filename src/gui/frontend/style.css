@@ -556,6 +556,48 @@ tbody tr:hover { background: var(--surface); }
     background: var(--success);
 }
 
+/* ─── Hardware detection panel ─── */
+.hw-info-block {
+    padding: 6px 0;
+    font-size: 13px;
+    color: var(--text-dim);
+}
+.hw-info-block strong { color: var(--text); }
+.hw-gpu-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 8px 0;
+}
+.hw-gpu-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.hw-gpu-header strong { font-size: 13px; color: var(--text); }
+.hw-gpu-vendor { font-size: 11px; color: var(--text-dim); }
+.vram-bar {
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 4px 0;
+}
+.vram-fill {
+    height: 100%;
+    background: var(--primary);
+    border-radius: 4px;
+    transition: width 0.3s;
+}
+.vram-label {
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
 /* ─── Prompt editor fields (full-width textareas) ─── */
 .prompt-fields {
     display: flex;

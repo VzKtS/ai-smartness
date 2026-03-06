@@ -149,12 +149,29 @@ pub fn handle_sysinfo(
         .map(|m| m.len())
         .unwrap_or(0);
 
+    // Hardware detection
+    let hw = ai_smartness::processing::hardware::detect();
+    let gpus: Vec<serde_json::Value> = hw.gpus.iter().map(|g| {
+        serde_json::json!({
+            "index": g.index,
+            "name": g.name,
+            "vendor": g.vendor,
+            "vram_total_mb": g.vram_total_mb,
+            "vram_used_mb": g.vram_used_mb,
+        })
+    }).collect();
+
     Ok(serde_json::json!({
         "threads": total_threads,
         "bridges": total_bridges,
         "disk_usage_bytes": disk_usage,
         "embedding_backend": "tfidf_hash",
         "version": env!("CARGO_PKG_VERSION"),
+        "hardware": {
+            "cpu": { "model": hw.cpu.model, "cores": hw.cpu.cores, "threads": hw.cpu.threads },
+            "ram": { "total_mb": hw.ram.total_mb, "available_mb": hw.ram.available_mb },
+            "gpus": gpus,
+        },
     }))
 }
 

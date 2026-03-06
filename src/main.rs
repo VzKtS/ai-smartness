@@ -101,6 +101,11 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Detect and configure hardware devices
+    Hardware {
+        #[command(subcommand)]
+        action: HardwareAction,
+    },
     /// Download local LLM model for zero-cost inference
     SetupModel {
         /// Force re-download even if already installed
@@ -109,6 +114,21 @@ enum Commands {
         /// Download the 7B model (~4.7GB) instead of 3B default (~2.1GB)
         #[arg(long = "7b")]
         size_7b: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HardwareAction {
+    /// Detect and display all hardware (CPU, RAM, GPUs)
+    Detect,
+    /// Show current device assignments
+    Show,
+    /// Assign a device to a computation tier
+    Set {
+        /// Tier: "runtime" or "provider"
+        tier: String,
+        /// Device: "auto", "cpu", "gpu:0", "gpu:1", etc.
+        device: String,
     },
 }
 
@@ -491,6 +511,14 @@ fn main() {
             };
             result.unwrap_or_else(|e| eprintln!("Error: {}", e));
         },
+        Some(Commands::Hardware { action }) => {
+            let result = match action {
+                HardwareAction::Detect => cli::hardware::detect(),
+                HardwareAction::Show => cli::hardware::show(),
+                HardwareAction::Set { tier, device } => cli::hardware::set(&tier, &device),
+            };
+            result.unwrap_or_else(|e| eprintln!("Error: {}", e));
+        }
         Some(Commands::SetupOnnx { force }) => {
             cli::setup_onnx::run(force)
                 .unwrap_or_else(|e| eprintln!("Error: {}", e));

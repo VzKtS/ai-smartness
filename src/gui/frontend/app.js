@@ -9,7 +9,7 @@ en: {
     'tab.dashboard':'Dashboard','tab.threads':'Threads','tab.agents':'Agents','tab.graph':'Graph','tab.settings':'Settings',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Thread Matching',
     'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decay & Lifecycle','stab.alerts':'Alerts',
-    'stab.network':'Network','stab.updates':'Updates',
+    'stab.hardware':'Hardware','stab.network':'Network','stab.updates':'Updates',
     'dash.daemon':'Daemon','dash.active':'Active Threads','dash.suspended':'Suspended',
     'dash.archived':'Archived','dash.bridges':'Bridges','dash.version':'Version',
     'dash.cpu':'CPU','dash.memory':'Memory','dash.pool':'Pool','dash.queue':'Queue',
@@ -60,7 +60,7 @@ fr: {
     'tab.dashboard':'Tableau de bord','tab.threads':'Threads','tab.agents':'Agents','tab.graph':'Graphe','tab.settings':'Parametres',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Correspondance',
     'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decroissance & Cycle de vie','stab.alerts':'Alertes',
-    'stab.network':'Reseau','stab.updates':'Mises a jour',
+    'stab.hardware':'Materiel','stab.network':'Reseau','stab.updates':'Mises a jour',
     'dash.daemon':'Daemon','dash.active':'Threads actifs','dash.suspended':'Suspendus',
     'dash.archived':'Archives','dash.bridges':'Ponts','dash.version':'Version',
     'dash.cpu':'CPU','dash.memory':'Memoire','dash.pool':'Pool','dash.queue':'File',
@@ -111,7 +111,7 @@ es: {
     'tab.dashboard':'Panel','tab.threads':'Hilos','tab.agents':'Agentes','tab.graph':'Grafo','tab.settings':'Configuracion',
     'stab.general':'General','stab.guardian':'Guardian LLM','stab.matching':'Correspondencia',
     'stab.gossip':'Gossip','stab.engram':'Engram','stab.decay':'Decaimiento & Ciclo de vida','stab.alerts':'Alertas',
-    'stab.network':'Red','stab.updates':'Actualizaciones',
+    'stab.hardware':'Hardware','stab.network':'Red','stab.updates':'Actualizaciones',
     'dash.daemon':'Daemon','dash.active':'Hilos activos','dash.suspended':'Suspendidos',
     'dash.archived':'Archivados','dash.bridges':'Puentes','dash.version':'Version',
     'dash.cpu':'CPU','dash.memory':'Memoria','dash.pool':'Pool','dash.queue':'Cola',
@@ -1796,6 +1796,71 @@ document.querySelector('[data-stab="stab-backup"]')?.addEventListener('click', (
         }).catch(() => {});
     }
 });
+
+// ═══════════════════════════════════════════════════════════════
+// HARDWARE DETECTION
+// ═══════════════════════════════════════════════════════════════
+
+document.querySelector('[data-stab="stab-hardware"]')?.addEventListener('click', loadHardwareInfo);
+document.getElementById('btn-hw-refresh')?.addEventListener('click', loadHardwareInfo);
+
+async function loadHardwareInfo() {
+    try {
+        const hw = await invoke('detect_hardware', {});
+        // CPU
+        document.getElementById('hw-cpu-model').textContent = hw.cpu.model;
+        document.getElementById('hw-cpu-cores').textContent = hw.cpu.cores;
+        document.getElementById('hw-cpu-threads').textContent = hw.cpu.threads;
+        // RAM
+        document.getElementById('hw-ram-total').textContent = hw.ram.total_mb.toLocaleString();
+        document.getElementById('hw-ram-available').textContent = hw.ram.available_mb.toLocaleString();
+        // GPUs
+        const gpuList = document.getElementById('hw-gpu-list');
+        gpuList.innerHTML = '';
+        const runtimeSel = document.getElementById('hw-runtime-device');
+        const providerSel = document.getElementById('hw-provider-device');
+        // Remove old dynamic GPU options (keep auto + cpu)
+        [runtimeSel, providerSel].forEach(sel => {
+            while (sel.options.length > 2) sel.remove(2);
+        });
+        hw.gpus.forEach(gpu => {
+            // GPU card
+            const card = document.createElement('div');
+            card.className = 'hw-gpu-card';
+            const freeMb = gpu.vram_total_mb - gpu.vram_used_mb;
+            const pct = gpu.vram_total_mb > 0 ? (gpu.vram_used_mb / gpu.vram_total_mb * 100).toFixed(1) : 0;
+            const vramBar = gpu.vram_total_mb > 0
+                ? `<div class="vram-bar"><div class="vram-fill" style="width:${pct}%"></div></div>
+                   <span class="vram-label">${gpu.vram_used_mb} / ${gpu.vram_total_mb} MB (${freeMb} MB free)</span>`
+                : `<span class="vram-label">No dedicated VRAM (integrated)</span>`;
+            card.innerHTML = `
+                <div class="hw-gpu-header">
+                    <strong>GPU ${gpu.index}: ${gpu.name}</strong>
+                    <span class="hw-gpu-vendor">${gpu.vendor}${gpu.driver_version ? ' — Driver ' + gpu.driver_version : ''}</span>
+                </div>
+                ${vramBar}
+            `;
+            gpuList.appendChild(card);
+            // Add to dropdowns
+            const optVal = `gpu:${gpu.index}`;
+            const optLabel = `GPU ${gpu.index}: ${gpu.name}${gpu.vram_total_mb > 0 ? ' (' + gpu.vram_total_mb + ' MB)' : ''}`;
+            [runtimeSel, providerSel].forEach(sel => {
+                const opt = document.createElement('option');
+                opt.value = optVal;
+                opt.textContent = optLabel;
+                sel.appendChild(opt);
+            });
+        });
+        // Restore saved selections
+        if (currentSettings?.hardware) {
+            if (currentSettings.hardware.runtime_device) runtimeSel.value = currentSettings.hardware.runtime_device;
+            if (currentSettings.hardware.provider_device) providerSel.value = currentSettings.hardware.provider_device;
+        }
+    } catch (e) {
+        console.error('Hardware detection error:', e);
+        document.getElementById('hw-cpu-model').textContent = 'Detection failed';
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // REINDEX

@@ -1479,6 +1479,13 @@ pub fn get_system_resources() -> Result<serde_json::Value, String> {
     }))
 }
 
+#[tauri::command]
+pub fn detect_hardware() -> Result<serde_json::Value, String> {
+    tracing::info!("GUI: detect_hardware");
+    let hw = ai_smartness::processing::hardware::detect();
+    serde_json::to_value(&hw).map_err(|e| e.to_string())
+}
+
 fn dir_size_mb(path: &std::path::Path) -> f64 {
     use std::sync::Mutex;
     use std::time::Instant;

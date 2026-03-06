@@ -3,6 +3,7 @@ pub mod bridges;
 pub mod config;
 pub mod controller;
 pub mod daemon;
+pub mod hardware;
 pub mod init;
 pub mod project;
 pub mod rule;

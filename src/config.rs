@@ -118,6 +118,85 @@ pub struct LocalLlmConfig {
     pub inference_threads: u32,
 }
 
+// ============================================================================
+// HARDWARE DEVICE ASSIGNMENT
+// ============================================================================
+
+/// Device selection for a computation tier.
+/// Serializes as flat string: "auto", "cpu", "gpu:0", "gpu:1", etc.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum DeviceSelection {
+    /// Auto-detect best available GPU.
+    #[default]
+    Auto,
+    /// Force CPU-only processing (no GPU).
+    CpuOnly,
+    /// Use specific GPU by index.
+    Gpu(u32),
+}
+
+impl std::fmt::Display for DeviceSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::CpuOnly => write!(f, "cpu"),
+            Self::Gpu(idx) => write!(f, "gpu:{}", idx),
+        }
+    }
+}
+
+impl std::str::FromStr for DeviceSelection {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "auto" => Ok(Self::Auto),
+            "cpu" => Ok(Self::CpuOnly),
+            other if other.starts_with("gpu:") => {
+                let idx = other[4..].parse::<u32>().map_err(|e| e.to_string())?;
+                Ok(Self::Gpu(idx))
+            }
+            _ => Err(format!("Invalid device selection: '{}'. Expected: auto, cpu, gpu:N", s)),
+        }
+    }
+}
+
+impl Serialize for DeviceSelection {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceSelection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Hardware assignment for computation tiers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HardwareConfig {
+    /// Device for ai-smartness runtime processing (ONNX embeddings, engram).
+    #[serde(default)]
+    pub runtime_device: DeviceSelection,
+    /// Device for local LLM inference (llama.cpp).
+    #[serde(default)]
+    pub provider_device: DeviceSelection,
+}
+
+impl Default for HardwareConfig {
+    fn default() -> Self {
+        Self {
+            runtime_device: DeviceSelection::Auto,
+            provider_device: DeviceSelection::Auto,
+        }
+    }
+}
+
+// ============================================================================
+// LOCAL MODEL SELECTION
+// ============================================================================
+
 /// Local GGUF model selection.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub enum LocalModelSize {
@@ -932,6 +1011,9 @@ pub struct GuardianConfig {
     /// Remote LLM API configuration (provider, model, timeout).
     #[serde(default)]
     pub remote_llm: RemoteLlmConfig,
+    /// Hardware device assignment for computation tiers.
+    #[serde(default)]
+    pub hardware: HardwareConfig,
     pub hook_guard_env: String,
 }
 
@@ -957,6 +1039,7 @@ impl Default for GuardianConfig {
             local_model_size: LocalModelSize::Phi4Mini,
             local_llm: LocalLlmConfig::default(),
             remote_llm: RemoteLlmConfig::default(),
+            hardware: HardwareConfig::default(),
             hook_guard_env: "AI_SMARTNESS_HOOK_RUNNING".to_string(),
         }
     }
