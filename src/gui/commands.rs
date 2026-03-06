@@ -1486,6 +1486,14 @@ pub fn detect_hardware() -> Result<serde_json::Value, String> {
     serde_json::to_value(&hw).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn restart_daemon() -> Result<String, String> {
+    tracing::info!("GUI: restart_daemon");
+    ai_smartness::processing::daemon_ipc_client::restart()
+        .map(|v| v.to_string())
+        .map_err(|e| e.to_string())
+}
+
 fn dir_size_mb(path: &std::path::Path) -> f64 {
     use std::sync::Mutex;
     use std::time::Instant;

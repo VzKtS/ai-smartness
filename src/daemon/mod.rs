@@ -146,6 +146,7 @@ pub fn run() {
             let llm = ai_smartness::processing::local_llm::LocalLlm::init_with_size(
                 &guardian_cfg.local_model_size,
                 &guardian_cfg.local_llm,
+                &guardian_cfg.hardware.runtime_device,
             );
             ai_smartness::processing::llm_subprocess::init_routing(&guardian_cfg);
             tracing::info!(
@@ -214,17 +215,72 @@ pub fn run() {
         tracing::warn!("Capture queue still referenced — workers will stop when channel drops");
     }
 
-    // Cleanup PID file
-    let _ = std::fs::remove_file(&pid_path);
+    let restarting = ipc_server::restart_requested();
 
-    // Wait for threads
-    let _ = ipc_handle.join();
-    let _ = prune_handle.join();
-    let _ = pool_consumer_handle.join();
-    let _ = controller_handle.join();
-    let _ = init_handle.join();
+    // Cleanup PID file (skip if restarting — re-exec keeps same PID)
+    if !restarting {
+        let _ = std::fs::remove_file(&pid_path);
+    }
+
+    // Wait for threads with timeout (don't block restart on stuck threads)
+    let join_timeout = if restarting {
+        Duration::from_secs(3)
+    } else {
+        Duration::from_secs(10)
+    };
+    let join_deadline = std::time::Instant::now() + join_timeout;
+
+    for (name, handle) in [
+        ("ipc", ipc_handle),
+        ("prune", prune_handle),
+        ("pool_consumer", pool_consumer_handle),
+        ("controller", controller_handle),
+        ("init", init_handle),
+    ] {
+        let remaining = join_deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            tracing::warn!(thread = name, "Skipping join — deadline exceeded");
+            continue;
+        }
+        // Can't set timeout on JoinHandle::join(), so use a parking thread
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = handle.join();
+            let _ = tx.send(());
+        });
+        if rx.recv_timeout(remaining).is_err() {
+            tracing::warn!(thread = name, "Thread join timed out — proceeding");
+        }
+    }
 
     tracing::info!("Global daemon shutdown complete");
+
+    // Re-exec if restart was requested (apply config changes)
+    if restarting {
+        tracing::info!("Restart requested — re-executing daemon");
+        std::thread::sleep(Duration::from_millis(500)); // socket cleanup grace period
+        // Clean socket file before re-exec (new process will create a fresh one)
+        let _ = std::fs::remove_file(&socket_path);
+        if let Ok(exe) = std::env::current_exe() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                let err = std::process::Command::new(&exe)
+                    .args(["daemon", "run-foreground"])
+                    .exec();
+                // exec() only returns on failure
+                tracing::error!("Re-exec failed: {}", err);
+            }
+            #[cfg(not(unix))]
+            {
+                tracing::warn!("Daemon restart not supported on this platform — please restart manually");
+            }
+        } else {
+            tracing::error!("Failed to get current executable path for restart");
+        }
+        // If we get here, re-exec failed — clean up PID file
+        let _ = std::fs::remove_file(&pid_path);
+    }
 }
 
 /// Startup validation: integrity check on all agent DBs + missed backup catch-up.

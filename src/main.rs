@@ -156,6 +156,8 @@ enum DaemonAction {
     Start,
     /// Stop the daemon
     Stop,
+    /// Restart the daemon (apply config changes)
+    Restart,
     /// Show daemon status
     Status,
     /// Run daemon in foreground (used internally by 'start')
@@ -389,6 +391,10 @@ fn main() {
             }
             DaemonAction::Stop => {
                 cli::daemon::stop()
+                    .unwrap_or_else(|e| eprintln!("Error: {}", e));
+            }
+            DaemonAction::Restart => {
+                cli::daemon::restart()
                     .unwrap_or_else(|e| eprintln!("Error: {}", e));
             }
             DaemonAction::Status => {

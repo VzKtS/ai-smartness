@@ -123,7 +123,7 @@ pub struct LocalLlmConfig {
 // ============================================================================
 
 /// Device selection for a computation tier.
-/// Serializes as flat string: "auto", "cpu", "gpu:0", "gpu:1", etc.
+/// Serializes as flat string: "auto", "cpu", "gpu:0", "gpu:1", "disabled".
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum DeviceSelection {
     /// Auto-detect best available GPU.
@@ -133,6 +133,8 @@ pub enum DeviceSelection {
     CpuOnly,
     /// Use specific GPU by index.
     Gpu(u32),
+    /// Tier is disabled (e.g. provider when using external agents only).
+    Disabled,
 }
 
 impl std::fmt::Display for DeviceSelection {
@@ -141,6 +143,7 @@ impl std::fmt::Display for DeviceSelection {
             Self::Auto => write!(f, "auto"),
             Self::CpuOnly => write!(f, "cpu"),
             Self::Gpu(idx) => write!(f, "gpu:{}", idx),
+            Self::Disabled => write!(f, "disabled"),
         }
     }
 }
@@ -151,11 +154,12 @@ impl std::str::FromStr for DeviceSelection {
         match s.trim() {
             "auto" => Ok(Self::Auto),
             "cpu" => Ok(Self::CpuOnly),
+            "disabled" => Ok(Self::Disabled),
             other if other.starts_with("gpu:") => {
                 let idx = other[4..].parse::<u32>().map_err(|e| e.to_string())?;
                 Ok(Self::Gpu(idx))
             }
-            _ => Err(format!("Invalid device selection: '{}'. Expected: auto, cpu, gpu:N", s)),
+            _ => Err(format!("Invalid device selection: '{}'. Expected: auto, cpu, gpu:N, disabled", s)),
         }
     }
 }
@@ -176,10 +180,10 @@ impl<'de> Deserialize<'de> for DeviceSelection {
 /// Hardware assignment for computation tiers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardwareConfig {
-    /// Device for ai-smartness runtime processing (ONNX embeddings, engram).
+    /// Device for ai-smartness runtime: LLM extraction/coherence/synthesis + ONNX embeddings.
     #[serde(default)]
     pub runtime_device: DeviceSelection,
-    /// Device for local LLM inference (llama.cpp).
+    /// Device for future local agent LLM provider (not yet wired).
     #[serde(default)]
     pub provider_device: DeviceSelection,
 }
@@ -188,7 +192,7 @@ impl Default for HardwareConfig {
     fn default() -> Self {
         Self {
             runtime_device: DeviceSelection::Auto,
-            provider_device: DeviceSelection::Auto,
+            provider_device: DeviceSelection::Disabled,
         }
     }
 }

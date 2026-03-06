@@ -84,6 +84,23 @@ pub fn stop() -> Result<()> {
     Ok(())
 }
 
+/// Restart the daemon (graceful shutdown + re-exec to apply config changes).
+pub fn restart() -> Result<()> {
+    match daemon_ipc_client::restart() {
+        Ok(_) => {
+            println!("Daemon restarting...");
+            Ok(())
+        }
+        Err(_) => {
+            // Daemon not running or IPC failed — try stop + start
+            println!("IPC restart failed — trying stop + start...");
+            let _ = stop();
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            start()
+        }
+    }
+}
+
 pub fn status() -> Result<()> {
     let data_dir = path_utils::data_dir();
 

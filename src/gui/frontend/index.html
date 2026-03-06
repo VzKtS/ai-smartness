@@ -799,16 +799,17 @@
                     <h3 class="section-toggle open" data-section="hw-assign">Device Assignment</h3>
                     <div id="section-hw-assign" class="section-body open">
                         <div class="form-grid">
-                            <label title="GPU (or CPU) used for ai-smartness runtime: ONNX embeddings, engram retrieval, coherence scoring.">
+                            <label title="GPU (or CPU) for ai-smartness internal processing: LLM extraction, coherence, synthesis, ONNX embeddings.">
                                 Runtime Device
                                 <select id="hw-runtime-device" data-path="hardware.runtime_device">
                                     <option value="auto">Auto</option>
                                     <option value="cpu">CPU Only</option>
                                 </select>
                             </label>
-                            <label title="GPU (or CPU) used for local LLM inference (llama.cpp). This is where your GGUF model runs.">
+                            <label title="GPU (or CPU) for future local agent inference. Not yet implemented.">
                                 Provider Device
                                 <select id="hw-provider-device" data-path="hardware.provider_device">
+                                    <option value="disabled">Disabled</option>
                                     <option value="auto">Auto</option>
                                     <option value="cpu">CPU Only</option>
                                 </select>

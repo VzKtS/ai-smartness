@@ -6,7 +6,7 @@
 //! Model: GGUF format, auto-downloaded to {data_dir}/models/ on first use.
 //! Singleton pattern (OnceLock) — same as EmbeddingManager.
 
-use crate::config::{LocalLlmConfig, LocalModelSize};
+use crate::config::{DeviceSelection, LocalLlmConfig, LocalModelSize};
 use crate::{AiError, AiResult};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -15,7 +15,7 @@ use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
-use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::model::params::{LlamaModelParams, LlamaSplitMode};
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
@@ -177,21 +177,29 @@ unsafe impl Sync for LlmInner {}
 impl LocalLlm {
     /// Global singleton (initialized once on first access).
     pub fn global() -> &'static Self {
-        GLOBAL.get_or_init(|| Self::new(None, LocalLlmConfig::default()))
+        GLOBAL.get_or_init(|| Self::new(None, LocalLlmConfig::default(), DeviceSelection::Auto))
     }
 
-    /// Initialize with explicit model size and config. Called by daemon.
-    pub fn init_with_size(size: &LocalModelSize, config: &LocalLlmConfig) -> &'static Self {
-        GLOBAL.get_or_init(|| Self::new(Some(size.clone()), config.clone()))
+    /// Initialize with explicit model size, config, and device selection. Called by daemon.
+    pub fn init_with_size(
+        size: &LocalModelSize,
+        config: &LocalLlmConfig,
+        runtime_device: &DeviceSelection,
+    ) -> &'static Self {
+        GLOBAL.get_or_init(|| Self::new(Some(size.clone()), config.clone(), runtime_device.clone()))
     }
 
     /// Initialize: probe VRAM, find/download model, load with adaptive GPU layers.
-    pub fn new(model_size: Option<LocalModelSize>, llm_config: LocalLlmConfig) -> Self {
+    pub fn new(
+        model_size: Option<LocalModelSize>,
+        llm_config: LocalLlmConfig,
+        runtime_device: DeviceSelection,
+    ) -> Self {
         let size = model_size.unwrap_or_default();
         let model_dir = crate::storage::path_utils::data_dir().join("models");
         let model_path = model_dir.join(size.filename());
 
-        let profile = Self::compute_resource_profile(&size, &llm_config);
+        let profile = Self::compute_resource_profile(&size, &llm_config, &runtime_device);
         tracing::info!(
             gpu_layers = profile.gpu_layers,
             ctx_size = profile.ctx_size,
@@ -230,7 +238,7 @@ impl LocalLlm {
 
         // Load model with adaptive GPU layers — cascade: full → half → CPU-only
         let target_layers = profile.gpu_layers;
-        let (model, actual_layers) = match Self::load_model_cascade(&backend, &model_path, target_layers) {
+        let (model, actual_layers) = match Self::load_model_cascade(&backend, &model_path, target_layers, &runtime_device) {
             Some(result) => result,
             None => {
                 tracing::warn!("All model load attempts failed, local LLM unavailable");
@@ -301,6 +309,7 @@ impl LocalLlm {
     fn compute_resource_profile(
         model_size: &LocalModelSize,
         config: &LocalLlmConfig,
+        runtime_device: &DeviceSelection,
     ) -> LlmResourceProfile {
         let inference_threads = if config.inference_threads != 0 {
             config.inference_threads as i32
@@ -319,8 +328,26 @@ impl LocalLlm {
             };
         }
 
-        // Auto-detect based on VRAM probe
-        let vram = vram_probe::probe_vram();
+        // CpuOnly: skip VRAM probe entirely
+        if matches!(runtime_device, DeviceSelection::CpuOnly) {
+            tracing::info!("runtime_device=cpu — forcing CPU-only mode");
+            return LlmResourceProfile {
+                gpu_layers: 0,
+                ctx_size: FALLBACK_CTX_SIZE,
+                max_tokens: if config.max_tokens != 0 { config.max_tokens } else { FALLBACK_MAX_TOKENS },
+                inference_threads,
+                source: ProfileSource::UserOverride,
+            };
+        }
+
+        // Auto-detect based on VRAM probe (target specific GPU if configured)
+        let vram = match runtime_device {
+            DeviceSelection::Gpu(idx) => {
+                tracing::info!(gpu_index = idx, "runtime_device=gpu:{} — probing specific GPU", idx);
+                vram_probe::probe_vram_for_gpu(*idx)
+            }
+            _ => vram_probe::probe_vram(),
+        };
 
         match vram {
             None => {
@@ -413,9 +440,22 @@ impl LocalLlm {
         backend: &LlamaBackend,
         model_path: &PathBuf,
         target_layers: u32,
+        runtime_device: &DeviceSelection,
     ) -> Option<(LlamaModel, u32)> {
+        // Apply GPU device selection to model params
+        let apply_device = |params: LlamaModelParams| -> LlamaModelParams {
+            if let DeviceSelection::Gpu(idx) = runtime_device {
+                tracing::info!(main_gpu = idx, "Pinning model to GPU {}", idx);
+                params
+                    .with_split_mode(LlamaSplitMode::None)
+                    .with_main_gpu(*idx as i32)
+            } else {
+                params
+            }
+        };
+
         // Attempt 1: target layers
-        let params = LlamaModelParams::default().with_n_gpu_layers(target_layers);
+        let params = apply_device(LlamaModelParams::default().with_n_gpu_layers(target_layers));
         match LlamaModel::load_from_file(backend, model_path, &params) {
             Ok(m) => return Some((m, target_layers)),
             Err(e) => tracing::warn!(gpu_layers = target_layers, error = ?e, "Model load failed"),
@@ -424,14 +464,14 @@ impl LocalLlm {
         // Attempt 2: half layers
         if target_layers > 1 {
             let half = target_layers / 2;
-            let params = LlamaModelParams::default().with_n_gpu_layers(half);
+            let params = apply_device(LlamaModelParams::default().with_n_gpu_layers(half));
             match LlamaModel::load_from_file(backend, model_path, &params) {
                 Ok(m) => return Some((m, half)),
                 Err(e) => tracing::warn!(gpu_layers = half, error = ?e, "Partial offload failed"),
             }
         }
 
-        // Attempt 3: CPU-only
+        // Attempt 3: CPU-only (no GPU pinning needed)
         if target_layers > 0 {
             tracing::info!("Trying CPU-only model load (0 gpu_layers)");
             let params = LlamaModelParams::default().with_n_gpu_layers(0);

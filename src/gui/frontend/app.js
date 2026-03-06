@@ -1415,11 +1415,24 @@ function collectForm() {
 
 async function saveSettings() {
     const settings = collectForm();
+    // Detect hardware config changes that require daemon restart
+    const hwChanged = currentSettings?.hardware &&
+        (settings?.hardware?.runtime_device !== currentSettings.hardware.runtime_device ||
+         settings?.hardware?.provider_device !== currentSettings.hardware.provider_device);
     try {
         const result = await invoke('save_settings', { settings });
         if (result.saved) {
             showSaveStatus(T[currentLang]?.['settings.saved'] || 'Settings saved successfully');
             currentSettings = settings;
+            // Auto-restart daemon if hardware device assignment changed
+            if (hwChanged) {
+                try {
+                    await invoke('restart_daemon');
+                    showSaveStatus('Settings saved — daemon restarting to apply hardware changes');
+                } catch (re) {
+                    showSaveStatus('Settings saved — daemon restart failed: ' + re, true);
+                }
+            }
         } else {
             showSaveStatus(T[currentLang]?.['settings.failed'] || 'Save failed', true);
         }

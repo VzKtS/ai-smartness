@@ -114,6 +114,11 @@ pub fn shutdown() -> AiResult<serde_json::Value> {
     call_daemon("shutdown", serde_json::json!({}))
 }
 
+/// Send restart command to daemon (graceful shutdown + re-exec).
+pub fn restart() -> AiResult<serde_json::Value> {
+    call_daemon("restart", serde_json::json!({}))
+}
+
 /// Generic method call to the daemon (public wrapper).
 pub fn send_method(method: &str, params: serde_json::Value) -> AiResult<serde_json::Value> {
     call_daemon(method, params)

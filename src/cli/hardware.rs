@@ -59,8 +59,8 @@ pub fn show() -> Result<()> {
     };
 
     println!("Device assignments:");
-    println!("  Runtime  (ONNX/engram): {}", config.hardware.runtime_device);
-    println!("  Provider (llama.cpp):   {}", config.hardware.provider_device);
+    println!("  Runtime  (extraction, coherence, embeddings): {}", config.hardware.runtime_device);
+    println!("  Provider (local agent LLM — future):         {}", config.hardware.provider_device);
 
     Ok(())
 }
@@ -105,5 +105,15 @@ pub fn set(tier: &str, device: &str) -> Result<()> {
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
     println!("{} device set to: {}", tier, selection);
+
+    // Auto-restart daemon if running (needed to apply hardware changes)
+    if ai_smartness::processing::daemon_ipc_client::ping().is_ok() {
+        println!("Restarting daemon to apply hardware change...");
+        match ai_smartness::processing::daemon_ipc_client::restart() {
+            Ok(_) => println!("Daemon restarting."),
+            Err(e) => eprintln!("Warning: daemon restart failed ({}). Restart manually.", e),
+        }
+    }
+
     Ok(())
 }

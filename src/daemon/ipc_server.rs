@@ -17,6 +17,7 @@
 //!   ping            → {"pong": true}
 //!   status          → daemon status JSON (global or per-agent)
 //!   shutdown        → initiate graceful shutdown
+//!   restart         → graceful shutdown + re-exec (apply config changes)
 //!   tool_capture    → queue tool output capture (instant response)
 //!   prompt_capture  → queue user prompt capture (instant response)
 //!   injection_usage → record thread injection usage
@@ -41,6 +42,14 @@ use ai_smartness::storage::threads::ThreadStorage;
 
 use super::capture_queue::{CaptureJob, CaptureQueue};
 use super::connection_pool::{AgentKey, ConnectionPool};
+
+/// Flag set by the `restart` IPC method — checked after graceful shutdown.
+static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a restart was requested (checked by daemon main loop after shutdown).
+pub fn restart_requested() -> bool {
+    RESTART_REQUESTED.load(Ordering::SeqCst)
+}
 
 /// JSON-RPC response sent back to clients.
 #[derive(Debug, Serialize)]
@@ -241,6 +250,13 @@ fn dispatch(
             tracing::info!("Shutdown requested via IPC");
             running.store(false, Ordering::Relaxed);
             Ok(serde_json::json!({"shutting_down": true}))
+        }
+
+        "restart" => {
+            tracing::info!("Restart requested via IPC — will re-exec after graceful shutdown");
+            RESTART_REQUESTED.store(true, Ordering::SeqCst);
+            running.store(false, Ordering::SeqCst);
+            Ok(serde_json::json!({"restarting": true}))
         }
 
         "status" => {
