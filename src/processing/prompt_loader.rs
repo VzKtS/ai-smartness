@@ -53,9 +53,11 @@ impl PromptName {
 /// Map model size to prompts directory name.
 fn model_dir_name(model: &LocalModelSize) -> &'static str {
     match model {
-        LocalModelSize::ThreeB => "Qwen-3B",
-        LocalModelSize::SevenB => "Qwen-7B",
         LocalModelSize::Phi4Mini => "Phi-4-Mini",
+        LocalModelSize::SevenB => "Qwen-7B",
+        LocalModelSize::Gemma12B => "Gemma-12B",
+        LocalModelSize::Qwen14B => "Qwen-14B",
+        LocalModelSize::Qwen32B => "Qwen-32B",
     }
 }
 
@@ -171,8 +173,10 @@ mod tests {
     #[test]
     fn test_model_dir_names() {
         assert_eq!(model_dir_name(&LocalModelSize::Phi4Mini), "Phi-4-Mini");
-        assert_eq!(model_dir_name(&LocalModelSize::ThreeB), "Qwen-3B");
         assert_eq!(model_dir_name(&LocalModelSize::SevenB), "Qwen-7B");
+        assert_eq!(model_dir_name(&LocalModelSize::Gemma12B), "Gemma-12B");
+        assert_eq!(model_dir_name(&LocalModelSize::Qwen14B), "Qwen-14B");
+        assert_eq!(model_dir_name(&LocalModelSize::Qwen32B), "Qwen-32B");
     }
 
     #[test]

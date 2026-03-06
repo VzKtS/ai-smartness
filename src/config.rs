@@ -202,57 +202,68 @@ impl Default for HardwareConfig {
 // ============================================================================
 
 /// Local GGUF model selection.
+/// 5 models: Phi4Mini (default, small GPU), SevenB/Qwen14B/Qwen32B (Qwen family), Gemma12B (multilingual).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub enum LocalModelSize {
-    /// Qwen2.5-3B-Instruct Q4_K_M (~2.1 GB). Lightweight, limited instruction-following.
-    ThreeB,
-    /// Qwen2.5-7B-Instruct Q4_K_M (~4.7 GB). Needs >4GB VRAM.
-    SevenB,
     /// Phi-4-mini-instruct Q4_K_M (~2.5 GB). Default — best instruction-following per VRAM.
     #[default]
+    #[serde(alias = "ThreeB")]  // migration: old Qwen 3B configs → Phi4Mini
     Phi4Mini,
+    /// Qwen2.5-7B-Instruct Q4_K_M (~4.7 GB). First quality step, needs >4GB VRAM.
+    SevenB,
+    /// Gemma-3-12B-IT Q4_K_M (~7.3 GB). Multilingual alternative (140+ languages).
+    Gemma12B,
+    /// Qwen2.5-14B-Instruct Q4_K_M (~9.0 GB). High quality, needs >10GB VRAM.
+    Qwen14B,
+    /// Qwen2.5-32B-Instruct Q4_K_M (~19 GB). Maximum quality, needs >24GB VRAM.
+    Qwen32B,
 }
 
 impl LocalModelSize {
     pub fn filename(&self) -> &'static str {
         match self {
-            Self::ThreeB => "qwen2.5-3b-instruct-q4_k_m.gguf",
-            Self::SevenB => "qwen2.5-7b-instruct-q4_k_m.gguf",
             Self::Phi4Mini => "phi-4-mini-instruct-q4_k_m.gguf",
+            Self::SevenB => "qwen2.5-7b-instruct-q4_k_m.gguf",
+            Self::Gemma12B => "google_gemma-3-12b-it-Q4_K_M.gguf",
+            Self::Qwen14B => "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+            Self::Qwen32B => "Qwen2.5-32B-Instruct-Q4_K_M.gguf",
         }
     }
 
     pub fn download_url(&self) -> &'static str {
         match self {
-            Self::ThreeB => "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
-            Self::SevenB => "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
             Self::Phi4Mini => "https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
+            Self::SevenB => "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+            Self::Gemma12B => "https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_K_M.gguf",
+            Self::Qwen14B => "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+            Self::Qwen32B => "https://huggingface.co/bartowski/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf",
         }
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::ThreeB => "Qwen2.5-3B-Instruct (Q4_K_M, ~2.1 GB)",
+            Self::Phi4Mini => "Phi-4-mini 3.8B (Q4_K_M, ~2.5 GB)",
             Self::SevenB => "Qwen2.5-7B-Instruct (Q4_K_M, ~4.7 GB)",
-            Self::Phi4Mini => "Phi-4-mini-instruct (Q4_K_M, ~2.5 GB)",
+            Self::Gemma12B => "Gemma-3-12B-IT (Q4_K_M, ~7.3 GB)",
+            Self::Qwen14B => "Qwen2.5-14B-Instruct (Q4_K_M, ~9.0 GB)",
+            Self::Qwen32B => "Qwen2.5-32B-Instruct (Q4_K_M, ~19 GB)",
         }
     }
 
     /// Whether this model size is considered a "small config" (limited context window).
     /// Small configs benefit from stripping system tags to preserve context budget.
     pub fn is_small_config(&self) -> bool {
-        match self {
-            Self::ThreeB | Self::Phi4Mini => true,
-            Self::SevenB => false,
-        }
+        matches!(self, Self::Phi4Mini)
     }
 
     /// Approximate VRAM used by model weights (Q4_K_M quantization) in MB.
     pub fn model_vram_mb(&self) -> u64 {
         match self {
-            Self::ThreeB => 2100,
-            Self::SevenB => 4700,
             Self::Phi4Mini => 2500,
+            Self::SevenB => 4700,
+            Self::Gemma12B => 7300,
+            Self::Qwen14B => 9000,
+            Self::Qwen32B => 19000,
         }
     }
 
@@ -260,9 +271,11 @@ impl LocalModelSize {
     /// Measured empirically (includes Vulkan overhead).
     pub fn kv_bytes_per_token(&self) -> u64 {
         match self {
-            Self::ThreeB => 64 * 1024,    // ~64 KB/token
-            Self::SevenB => 128 * 1024,   // ~128 KB/token
             Self::Phi4Mini => 210 * 1024, // ~210 KB/token (measured: 860MB/4096tok)
+            Self::SevenB => 128 * 1024,   // ~128 KB/token
+            Self::Gemma12B => 160 * 1024, // ~160 KB/token (estimated)
+            Self::Qwen14B => 192 * 1024,  // ~192 KB/token (estimated)
+            Self::Qwen32B => 256 * 1024,  // ~256 KB/token (estimated)
         }
     }
 
@@ -270,7 +283,7 @@ impl LocalModelSize {
     /// Instruct models require specific framing to produce output.
     pub fn wrap_chat_template(&self, prompt: &str) -> String {
         match self {
-            Self::ThreeB | Self::SevenB => {
+            Self::SevenB | Self::Qwen14B | Self::Qwen32B => {
                 // Qwen2.5 ChatML format
                 format!(
                     "<|im_start|>system\nYou are a JSON extraction assistant. Output only valid JSON, no explanation.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
@@ -284,6 +297,83 @@ impl LocalModelSize {
                     prompt
                 )
             }
+            Self::Gemma12B => {
+                // Gemma-3 format (no system role — system instruction in user turn)
+                format!(
+                    "<start_of_turn>user\nYou are a JSON extraction assistant. Output only valid JSON, no explanation.\n\n{}<end_of_turn>\n<start_of_turn>model\n",
+                    prompt
+                )
+            }
+        }
+    }
+
+    /// Model's native maximum context size in tokens.
+    pub fn native_ctx_size(&self) -> u32 {
+        match self {
+            Self::Phi4Mini => 16384,
+            Self::SevenB => 131072,
+            Self::Gemma12B => 8192,
+            Self::Qwen14B => 131072,
+            Self::Qwen32B => 131072,
+        }
+    }
+
+    /// Model-aware context size cascade for adaptive VRAM fitting.
+    /// Ordered descending — try largest first, fall back on VRAM pressure.
+    pub fn ctx_cascade(&self) -> &'static [u32] {
+        match self {
+            Self::Phi4Mini => &[8192, 4096, 2048, 1024, 512],
+            Self::SevenB | Self::Qwen14B => &[16384, 8192, 4096, 2048, 1024],
+            Self::Gemma12B => &[8192, 4096, 2048, 1024, 512],
+            Self::Qwen32B => &[32768, 16384, 8192, 4096, 2048],
+        }
+    }
+
+    /// Expected file size in bytes for disk space check.
+    pub fn file_size_bytes(&self) -> u64 {
+        match self {
+            Self::Phi4Mini => 2_500_000_000,   // ~2.5 GB
+            Self::SevenB => 4_700_000_000,     // ~4.7 GB
+            Self::Gemma12B => 7_300_000_000,   // ~7.3 GB
+            Self::Qwen14B => 9_000_000_000,    // ~9.0 GB
+            Self::Qwen32B => 19_000_000_000,   // ~19 GB
+        }
+    }
+
+    /// CLI slug for model selection (lowercase, no spaces).
+    pub fn cli_name(&self) -> &'static str {
+        match self {
+            Self::Phi4Mini => "phi4mini",
+            Self::SevenB => "qwen7b",
+            Self::Gemma12B => "gemma12b",
+            Self::Qwen14B => "qwen14b",
+            Self::Qwen32B => "qwen32b",
+        }
+    }
+
+    /// Parse CLI slug to model variant.
+    pub fn from_cli_name(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "phi4mini" => Some(Self::Phi4Mini),
+            "qwen7b" => Some(Self::SevenB),
+            "gemma12b" => Some(Self::Gemma12B),
+            "qwen14b" => Some(Self::Qwen14B),
+            "qwen32b" => Some(Self::Qwen32B),
+            _ => None,
+        }
+    }
+
+    /// All available model variants.
+    pub fn all_variants() -> Vec<Self> {
+        vec![Self::Phi4Mini, Self::SevenB, Self::Gemma12B, Self::Qwen14B, Self::Qwen32B]
+    }
+
+    /// Chat template name for logging.
+    pub fn template_name(&self) -> &'static str {
+        match self {
+            Self::Phi4Mini => "phi4",
+            Self::SevenB | Self::Qwen14B | Self::Qwen32B => "chatml",
+            Self::Gemma12B => "gemma3",
         }
     }
 }
@@ -1747,19 +1837,17 @@ mod tests {
 
     #[test]
     fn test_local_model_size_filenames() {
-        assert_eq!(LocalModelSize::ThreeB.filename(), "qwen2.5-3b-instruct-q4_k_m.gguf");
-        assert_eq!(LocalModelSize::SevenB.filename(), "qwen2.5-7b-instruct-q4_k_m.gguf");
         assert_eq!(LocalModelSize::Phi4Mini.filename(), "phi-4-mini-instruct-q4_k_m.gguf");
+        assert_eq!(LocalModelSize::SevenB.filename(), "qwen2.5-7b-instruct-q4_k_m.gguf");
         // All must end in .gguf
-        assert!(LocalModelSize::ThreeB.filename().ends_with(".gguf"));
-        assert!(LocalModelSize::SevenB.filename().ends_with(".gguf"));
-        assert!(LocalModelSize::Phi4Mini.filename().ends_with(".gguf"));
+        for size in LocalModelSize::all_variants() {
+            assert!(size.filename().ends_with(".gguf"), "{:?} filename must end in .gguf", size);
+        }
     }
 
     #[test]
     fn test_local_model_size_download_urls() {
-        let sizes = [LocalModelSize::ThreeB, LocalModelSize::SevenB, LocalModelSize::Phi4Mini];
-        for size in &sizes {
+        for size in LocalModelSize::all_variants() {
             let url = size.download_url();
             assert!(url.starts_with("https://huggingface.co/"), "URL must point to HuggingFace: {}", url);
         }
@@ -1767,23 +1855,50 @@ mod tests {
 
     #[test]
     fn test_local_model_size_display_names() {
-        assert!(LocalModelSize::ThreeB.display_name().contains("3B"));
         assert!(LocalModelSize::SevenB.display_name().contains("7B"));
         assert!(LocalModelSize::Phi4Mini.display_name().contains("Phi-4"));
+        assert!(LocalModelSize::Gemma12B.display_name().contains("12B"));
+        assert!(LocalModelSize::Qwen14B.display_name().contains("14B"));
+        assert!(LocalModelSize::Qwen32B.display_name().contains("32B"));
         // All mention quantization
-        assert!(LocalModelSize::ThreeB.display_name().contains("Q4_K_M"));
-        assert!(LocalModelSize::SevenB.display_name().contains("Q4_K_M"));
-        assert!(LocalModelSize::Phi4Mini.display_name().contains("Q4_K_M"));
+        for size in LocalModelSize::all_variants() {
+            assert!(size.display_name().contains("Q4_K_M"), "{:?} display_name must contain Q4_K_M", size);
+        }
     }
 
     #[test]
     fn test_local_model_size_serde_roundtrip() {
-        let sizes = [LocalModelSize::ThreeB, LocalModelSize::SevenB, LocalModelSize::Phi4Mini];
-        for size in &sizes {
-            let json = serde_json::to_string(size).expect("serialize");
+        for size in LocalModelSize::all_variants() {
+            let json = serde_json::to_string(&size).expect("serialize");
             let back: LocalModelSize = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(&back, size, "serde roundtrip failed for {:?}", size);
+            assert_eq!(back, size, "serde roundtrip failed for {:?}", size);
         }
+    }
+
+    #[test]
+    fn test_local_model_size_threeb_migration() {
+        // Old "ThreeB" configs should deserialize to Phi4Mini
+        let back: LocalModelSize = serde_json::from_str("\"ThreeB\"").expect("deserialize ThreeB");
+        assert_eq!(back, LocalModelSize::Phi4Mini);
+    }
+
+    #[test]
+    fn test_local_model_size_cli_names() {
+        for size in LocalModelSize::all_variants() {
+            let name = size.cli_name();
+            let parsed = LocalModelSize::from_cli_name(name);
+            assert_eq!(parsed, Some(size.clone()), "CLI name roundtrip failed for {:?}", size);
+        }
+        assert_eq!(LocalModelSize::from_cli_name("unknown"), None);
+    }
+
+    #[test]
+    fn test_local_model_size_all_variants() {
+        let variants = LocalModelSize::all_variants();
+        assert_eq!(variants.len(), 5);
+        assert!(variants.contains(&LocalModelSize::Phi4Mini));
+        assert!(variants.contains(&LocalModelSize::Gemma12B));
+        assert!(variants.contains(&LocalModelSize::Qwen32B));
     }
 
     // ========================================================================

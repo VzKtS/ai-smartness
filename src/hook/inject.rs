@@ -112,7 +112,7 @@ fn strip_system_tags(text: &str) -> String {
 }
 
 /// Check if system tags should be stripped based on hardware profile.
-/// Small configs (ThreeB, Phi4Mini) → strip to preserve context budget.
+/// Small configs (Phi4Mini) → strip to preserve context budget.
 /// Larger configs (SevenB+) → keep tags for richer captured content.
 fn should_strip_system_tags() -> bool {
     let config_path = ai_smartness::storage::path_utils::data_dir().join("config.json");
@@ -120,8 +120,8 @@ fn should_strip_system_tags() -> bool {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(size_str) = v.get("local_model_size").and_then(|v| v.as_str()) {
                 return match size_str {
-                    "SevenB" => false,
-                    _ => true, // ThreeB, Phi4Mini, unknown → strip
+                    "SevenB" | "Gemma12B" | "Qwen14B" | "Qwen32B" => false,
+                    _ => true, // Phi4Mini, unknown → strip
                 };
             }
         }

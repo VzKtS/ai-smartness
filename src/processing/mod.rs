@@ -6,6 +6,7 @@ pub mod embeddings;
 pub mod extractor;
 pub mod llm_subprocess;
 pub mod local_llm;
+pub mod model_download;
 pub mod prompt_loader;
 pub mod remote_llm;
 pub mod toolextractor;

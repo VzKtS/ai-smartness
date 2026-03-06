@@ -1419,16 +1419,17 @@ async function saveSettings() {
     const hwChanged = currentSettings?.hardware &&
         (settings?.hardware?.runtime_device !== currentSettings.hardware.runtime_device ||
          settings?.hardware?.provider_device !== currentSettings.hardware.provider_device);
+    const modelChanged = settings?.local_model_size !== currentSettings?.local_model_size;
     try {
         const result = await invoke('save_settings', { settings });
         if (result.saved) {
             showSaveStatus(T[currentLang]?.['settings.saved'] || 'Settings saved successfully');
             currentSettings = settings;
-            // Auto-restart daemon if hardware device assignment changed
-            if (hwChanged) {
+            // Auto-restart daemon if hardware or model config changed
+            if (hwChanged || modelChanged) {
                 try {
                     await invoke('restart_daemon');
-                    showSaveStatus('Settings saved — daemon restarting to apply hardware changes');
+                    showSaveStatus('Settings saved — daemon restarting to apply changes');
                 } catch (re) {
                     showSaveStatus('Settings saved — daemon restart failed: ' + re, true);
                 }

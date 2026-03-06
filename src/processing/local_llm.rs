@@ -34,8 +34,6 @@ const FALLBACK_MAX_TOKENS: u32 = 768;
 /// Temperature for sampling (low = more deterministic, better for JSON).
 const SAMPLING_TEMP: f32 = 0.1;
 
-/// Context sizes to try in descending order during fallback cascade.
-const CTX_CASCADE: &[u32] = &[4096, 2048, 1024, 512];
 
 /// Safety margin for VRAM allocation (MB).
 /// Accounts for Vulkan overhead, fragmentation, desktop compositors.
@@ -227,10 +225,10 @@ impl LocalLlm {
             }
         };
 
-        // Try to find model file
+        // Try to find model file (download via model_download module if missing)
         if !model_path.exists() {
             tracing::info!("Local LLM model not found at {}, attempting download...", model_path.display());
-            if let Err(e) = Self::download_model(&model_dir, &model_path, size.download_url()) {
+            if let Err(e) = super::model_download::download_model(&size, false) {
                 tracing::warn!("Failed to download model: {}, local LLM unavailable", e);
                 return unavailable(model_path, size, profile);
             }
@@ -398,7 +396,7 @@ impl LocalLlm {
 
                 let vram_for_kv_bytes = vram_for_kv.saturating_mul(1024 * 1024);
                 let mut ctx_size = FALLBACK_CTX_SIZE;
-                for &candidate in CTX_CASCADE {
+                for &candidate in model_size.ctx_cascade() {
                     let kv_needed = candidate as u64 * kv_per_token;
                     if vram_for_kv_bytes >= kv_needed || gpu_layers == 0 {
                         ctx_size = candidate;
@@ -495,8 +493,9 @@ impl LocalLlm {
         initial_ctx_size: u32,
         threads: i32,
     ) -> AiResult<LlamaContext<'a>> {
-        let start_idx = CTX_CASCADE.iter().position(|&c| c <= initial_ctx_size).unwrap_or(0);
-        let candidates = &CTX_CASCADE[start_idx..];
+        let cascade = self.model_size.ctx_cascade();
+        let start_idx = cascade.iter().position(|&c| c <= initial_ctx_size).unwrap_or(0);
+        let candidates = &cascade[start_idx..];
 
         for (i, &ctx_size) in candidates.iter().enumerate() {
             let params = LlamaContextParams::default()
@@ -609,10 +608,7 @@ impl LocalLlm {
             max_tokens = max_tokens,
             ctx_size = ctx_size,
             model = %self.model_path.display(),
-            template = %match self.model_size {
-                LocalModelSize::ThreeB | LocalModelSize::SevenB => "chatml",
-                LocalModelSize::Phi4Mini => "phi4",
-            },
+            template = %self.model_size.template_name(),
             "Local LLM generate() called"
         );
 
@@ -814,39 +810,6 @@ impl LocalLlm {
         Ok(output)
     }
 
-    /// Download a model from HuggingFace.
-    fn download_model(model_dir: &PathBuf, dest: &PathBuf, url: &str) -> AiResult<()> {
-        std::fs::create_dir_all(model_dir).map_err(|e| {
-            AiError::Storage(format!("Failed to create models dir: {}", e))
-        })?;
-
-        tracing::info!(url = url, "Downloading local LLM model...");
-
-        let status = std::process::Command::new("curl")
-            .args(["-fSL", "--progress-bar", "-o"])
-            .arg(dest.as_os_str())
-            .arg(url)
-            .status()
-            .map_err(|e| AiError::Provider(format!("curl failed: {}", e)))?;
-
-        if !status.success() {
-            let _ = std::fs::remove_file(dest);
-            return Err(AiError::Provider(format!(
-                "Model download failed (curl exit {})",
-                status.code().unwrap_or(-1)
-            )));
-        }
-
-        if dest.exists() {
-            let size = std::fs::metadata(dest)
-                .map(|m| m.len())
-                .unwrap_or(0);
-            tracing::info!(path = %dest.display(), size_mb = size / 1_000_000, "Model downloaded");
-            Ok(())
-        } else {
-            Err(AiError::Provider("Download completed but file not found".into()))
-        }
-    }
 }
 
 /// Safe char-boundary truncation for preview (avoid panic on multi-byte UTF-8).

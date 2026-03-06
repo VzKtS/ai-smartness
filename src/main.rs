@@ -106,14 +106,10 @@ enum Commands {
         #[command(subcommand)]
         action: HardwareAction,
     },
-    /// Download local LLM model for zero-cost inference
-    SetupModel {
-        /// Force re-download even if already installed
-        #[arg(long)]
-        force: bool,
-        /// Download the 7B model (~4.7GB) instead of 3B default (~2.1GB)
-        #[arg(long = "7b")]
-        size_7b: bool,
+    /// Manage local LLM models (list, download, set, remove)
+    Model {
+        #[command(subcommand)]
+        action: ModelAction,
     },
 }
 
@@ -129,6 +125,42 @@ enum HardwareAction {
         tier: String,
         /// Device: "auto", "cpu", "gpu:0", "gpu:1", etc.
         device: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelAction {
+    /// List available models and download status
+    List,
+    /// Show detailed info for a model
+    Info {
+        /// Model name (phi4mini, qwen7b, gemma12b, qwen14b, qwen32b)
+        name: String,
+    },
+    /// Show currently active model
+    Active,
+    /// Download a model
+    Download {
+        /// Model name
+        name: String,
+        /// Force re-download even if already present
+        #[arg(long)]
+        force: bool,
+    },
+    /// Set active model (updates config, restarts daemon)
+    Set {
+        /// Model name
+        name: String,
+    },
+    /// Verify checksum of a downloaded model
+    Verify {
+        /// Model name
+        name: String,
+    },
+    /// Delete a downloaded model file
+    Rm {
+        /// Model name
+        name: String,
     },
 }
 
@@ -529,9 +561,17 @@ fn main() {
             cli::setup_onnx::run(force)
                 .unwrap_or_else(|e| eprintln!("Error: {}", e));
         }
-        Some(Commands::SetupModel { force, size_7b }) => {
-            cli::setup_model::run(force, size_7b)
-                .unwrap_or_else(|e| eprintln!("Error: {}", e));
+        Some(Commands::Model { action }) => {
+            let result = match action {
+                ModelAction::List => cli::model::list(),
+                ModelAction::Info { name } => cli::model::info(&name),
+                ModelAction::Active => cli::model::active(),
+                ModelAction::Download { name, force } => cli::model::download(&name, force),
+                ModelAction::Set { name } => cli::model::set(&name),
+                ModelAction::Verify { name } => cli::model::verify(&name),
+                ModelAction::Rm { name } => cli::model::rm(&name),
+            };
+            result.unwrap_or_else(|e| eprintln!("Error: {}", e));
         }
     }
 }

@@ -370,10 +370,12 @@
                     <div id="section-global" class="section-body open">
                         <div class="form-grid">
                             <label data-i18n="cfg.enabled" title="Master switch for the entire Guardian cognitive system. When disabled, no LLM calls are made — hooks pass through without memory processing.">Guardian Enabled <input type="checkbox" data-path="enabled"></label>
-                            <label title="Local GGUF model for all LLM inference tasks. Phi4Mini: balanced (default). ThreeB: lighter, faster. SevenB: more capable but needs >4GB VRAM.">Local Model <select data-path="local_model_size">
-                                <option value="Phi4Mini">Phi-4 Mini (Q4_K_M)</option>
-                                <option value="ThreeB">Qwen 3B (Q4_K_M)</option>
-                                <option value="SevenB">Qwen 7B (Q4_K_M)</option>
+                            <label title="Local GGUF model for runtime processing. Larger models = better extraction quality but more VRAM. Daemon restarts on change.">Local Model <select data-path="local_model_size">
+                                <option value="Phi4Mini">Phi-4 Mini 3.8B (~2.5 GB)</option>
+                                <option value="SevenB">Qwen 7B (~4.7 GB)</option>
+                                <option value="Gemma12B">Gemma-3 12B (~7.3 GB)</option>
+                                <option value="Qwen14B">Qwen 14B (~9.0 GB)</option>
+                                <option value="Qwen32B">Qwen 32B (~19 GB)</option>
                             </select></label>
                         </div>
                     </div>
