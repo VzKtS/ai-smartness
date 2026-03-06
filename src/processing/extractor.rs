@@ -206,7 +206,7 @@ fn extract_via_llm(
     model: &LocalModelSize,
 ) -> AiResult<ExtractionResult> {
     let start = std::time::Instant::now();
-    let prompt = build_extraction_prompt(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context, model);
+    let prompt = build_extraction_prompt(content, source, extraction_cfg, label_cfg, importance_cfg, agent_context, model)?;
     tracing::info!(
         prompt_len = prompt.len(),
         content_len = content.len(),
@@ -281,7 +281,7 @@ fn build_extraction_prompt(
     importance_cfg: &ImportanceRatingConfig,
     agent_context: Option<&str>,
     model: &LocalModelSize,
-) -> String {
+) -> AiResult<String> {
     let max_chars = extraction_cfg.max_content_chars;
     let truncated: String = if content.chars().count() > max_chars {
         content.chars().take(max_chars).collect()
@@ -316,121 +316,19 @@ Higher alignment = higher importance. No alignment does NOT mean low importance 
         _ => String::from("\nNo additional context available. Score based on acquisition source and content richness alone."),
     };
 
-    // Try loading template from .toml file; fall back to hardcoded on error
-    match prompt_loader::get_template(model, PromptName::Extractor) {
-        Ok(template) => {
-            template
-                .replace("{noise_words}", &noise_words.join(", "))
-                .replace("{label_hint}", &label_hint)
-                .replace("{source_type}", source.as_str())
-                .replace("{source_desc}", source.description())
-                .replace("{content}", &truncated)
-                .replace("{context_block}", &context_block)
-                .replace("{critical}", &format!("{:.1}", score_map.critical))
-                .replace("{high}", &format!("{:.1}", score_map.high))
-                .replace("{normal}", &format!("{:.1}", score_map.normal))
-                .replace("{low}", &format!("{:.1}", score_map.low))
-                .replace("{disposable}", &format!("{:.1}", score_map.disposable))
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to load extractor prompt template, using hardcoded fallback");
-            build_extraction_prompt_fallback(&truncated, source, &noise_words, &label_hint, &context_block, score_map)
-        }
-    }
-}
-
-/// Hardcoded fallback prompt — used when .toml file is missing or unreadable.
-fn build_extraction_prompt_fallback(
-    content: &str,
-    source: ExtractionSource,
-    noise_words: &[&str],
-    label_hint: &str,
-    context_block: &str,
-    score_map: &crate::config::ImportanceScoreMap,
-) -> String {
-    format!(
-        r#"Your role is to process the content provided and follow these rules:
-
-        1. If not humanly comprehensible = skip
-        2. If the number of humanly comprehensible characters is less than 150 characters = skip
-        3. If the humanly comprehensible ratio is less than 20% of the capture = skip
-        4. If the humanly comprehensible ratio is less than 50% of the capture = verbatim
-        5. If the number of humanly comprehensible characters is greater than 150 characters and less than 500 = verbatim
-        6. If the number of humanly comprehensible characters is greater than or equal to 500 characters = extract
-
-## STEP 1 — Classification (analyze the content below, WITHOUT external context)
-
-### title (max 50 chars)
-Specific, descriptive title capturing the core subject of the content.
-
-### subjects (2-3 items)
-Concrete topics, concepts, or entities present in the content.
-Prefer specific terms over vague ones.
-Exclude noise words: {noise_words}
-
-## summary (max 250 chars)
-Concise description of what this content contains.
-
-### confidence (0.0-1.0)
-Your self-assessment of how well YOU understood this content.
-- 1.0 = fully understood, clear and coherent
-- 0.7-0.9 = mostly understood, some ambiguity
-- 0.4-0.6 = partially understood, fragmented or incomplete
-- 0.1-0.3 = barely legible, very noisy
-- 0.0 = NOT humanly comprehensible (binary data, encoded content, empty, gibberish)
-Confidence measures YOUR comprehension, not content quality or relevance.
-A perfectly clear text about any subject = high confidence.
-
-### labels (1-3 items)
-Describe WHAT the content covers. Must reflect the subject matter.{label_hint}
-
-
-
-## STEP 1B — Semantic explosion
-
-From the topics and labels you produced in Step 1, generate an associative concept cloud.
-Include: synonyms, related domains, hypernyms, hyponyms, adjacent concepts.
-Single lowercase words only, **in English only**. No duplicates. Do NOT repeat subjects or labels.
-IMPORTANT: prefer single generic words over multi-word phrases.
-Good: "rust", "memory", "config", "daemon", "gui", "bridge", "extraction", "testing".
-Bad: "database connection pooling", "software development lifecycle".
-Between 5 and 25 items.
-
-## Content to classify ({source_type}: {source_desc}):
-
-{content}
-
-
-## STEP 2 — Importance scoring
-
-Now that you have classified the content above, assess its importance.
-Acquisition source: {source_type}
-{context_block}
-
-### importance (0.0-1.0)
-- {critical:.1} = critical, must be retained long-term
-- {high:.1} = significant, strong retention value
-- {normal:.1} = standard, normal retention
-- {low:.1} = minor, weak retention
-- {disposable:.1} = ephemeral, minimal value
-
-
-## Output (JSON only, no markdown, no explanation)
-If action is "skip": {{"action":"skip"}}
-If action is "verbatim" or "extract":
-{{"action":"verbatim|extract","title":"...","confidence":0.0,"importance":0.0,"subjects":["..."],"labels":["..."],"concepts":["..."],"summary":"..."}}"#,
-        noise_words = noise_words.join(", "),
-        label_hint = label_hint,
-        source_type = source.as_str(),
-        source_desc = source.description(),
-        content = content,
-        context_block = context_block,
-        critical = score_map.critical,
-        high = score_map.high,
-        normal = score_map.normal,
-        low = score_map.low,
-        disposable = score_map.disposable,
-    )
+    let template = prompt_loader::get_template(model, PromptName::Extractor)?;
+    Ok(template
+        .replace("{noise_words}", &noise_words.join(", "))
+        .replace("{label_hint}", &label_hint)
+        .replace("{source_type}", source.as_str())
+        .replace("{source_desc}", source.description())
+        .replace("{content}", &truncated)
+        .replace("{context_block}", &context_block)
+        .replace("{critical}", &format!("{:.1}", score_map.critical))
+        .replace("{high}", &format!("{:.1}", score_map.high))
+        .replace("{normal}", &format!("{:.1}", score_map.normal))
+        .replace("{low}", &format!("{:.1}", score_map.low))
+        .replace("{disposable}", &format!("{:.1}", score_map.disposable)))
 }
 
 /// Extract the first complete JSON object from a string by tracking brace depth.

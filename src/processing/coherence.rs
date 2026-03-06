@@ -7,7 +7,8 @@
 //! Compares extraction metadata (title, subjects, concepts) instead of raw text.
 //! Natural topic drift A→B→C is detected via subject overlap.
 
-use crate::config::CoherenceConfig;
+use crate::config::{CoherenceConfig, LocalModelSize};
+use crate::processing::prompt_loader::{self, PromptName};
 use crate::AiResult;
 use serde::{Deserialize, Serialize};
 
@@ -50,12 +51,13 @@ pub struct CoherenceInput<'a> {
 pub fn check_coherence(
     input: &CoherenceInput,
     config: &CoherenceConfig,
+    model: &LocalModelSize,
 ) -> AiResult<CoherenceResult> {
     if !config.llm.enabled {
         return check_via_embedding(input, config);
     }
 
-    match check_via_llm(input, config) {
+    match check_via_llm(input, config, model) {
         Ok(result) => {
             tracing::debug!(score = result.score, reason = %result.reason, "Coherence check (LLM)");
             Ok(result)
@@ -100,36 +102,17 @@ fn check_via_embedding(
 fn check_via_llm(
     input: &CoherenceInput,
     _config: &CoherenceConfig,
+    model: &LocalModelSize,
 ) -> AiResult<CoherenceResult> {
-    let prompt = format!(
-        r#"Are these two captures about the same subject or a natural continuation?
-Return JSON only: {{"score":0.0-1.0,"reason":"<why>","updated_labels":["label1"]}}
-
-Score guide:
-- 1.0: identical subject
-- 0.7-0.9: same subject, natural progression
-- 0.4-0.6: related subjects, topic drift (A->B)
-- 0.1-0.3: different subjects
-
-Previous capture:
-  Title: {}
-  Subjects: {:?}
-  Concepts: {:?}
-
-New capture:
-  Title: {}
-  Subjects: {:?}
-  Concepts: {:?}
-
-Previous labels: {:?}"#,
-        input.prev_title,
-        input.prev_subjects,
-        input.prev_concepts,
-        input.new_title,
-        input.new_subjects,
-        input.new_concepts,
-        input.prev_labels
-    );
+    let template = prompt_loader::get_template(model, PromptName::Coherence)?;
+    let prompt = template
+        .replace("{prev_title}", input.prev_title)
+        .replace("{prev_subjects}", &format!("{:?}", input.prev_subjects))
+        .replace("{prev_concepts}", &format!("{:?}", input.prev_concepts))
+        .replace("{new_title}", input.new_title)
+        .replace("{new_subjects}", &format!("{:?}", input.new_subjects))
+        .replace("{new_concepts}", &format!("{:?}", input.new_concepts))
+        .replace("{prev_labels}", &format!("{:?}", input.prev_labels));
 
     let response = super::llm_subprocess::call_llm(&prompt)?;
 

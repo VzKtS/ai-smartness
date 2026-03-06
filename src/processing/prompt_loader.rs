@@ -37,6 +37,7 @@ pub enum PromptName {
     ToolExtractor,
     MergeEvaluator,
     RelevanceGate,
+    Coherence,
 }
 
 impl PromptName {
@@ -46,6 +47,7 @@ impl PromptName {
             Self::ToolExtractor => "toolextractor.toml",
             Self::MergeEvaluator => "merge_evaluator.toml",
             Self::RelevanceGate => "relevance_gate.toml",
+            Self::Coherence => "coherence.toml",
         }
     }
 }

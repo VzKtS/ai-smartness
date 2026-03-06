@@ -242,6 +242,7 @@ pub fn process_capture(
             let coherence_result = coherence::check_coherence(
                 &coherence_input,
                 coherence_cfg,
+                &guardian.local_model_size,
             )?;
 
             let action = coherence::determine_action(
@@ -382,34 +383,13 @@ fn check_prompt_relevance(
         _ => String::new(),
     };
 
-    let gate_prompt = match ai_smartness::processing::prompt_loader::get_template(
+    let template = ai_smartness::processing::prompt_loader::get_template(
         &guardian.local_model_size,
         ai_smartness::processing::prompt_loader::PromptName::RelevanceGate,
-    ) {
-        Ok(template) => {
-            template
-                .replace("{message}", prompt)
-                .replace("{context_block}", &context_block)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to load relevance_gate template, using hardcoded fallback");
-            format!(
-                r#"Evaluate whether this user message contains extractable information (concepts, decisions, facts, intentions).
-
-Message:
-"{}"
-{}
-
-Reply ONLY with JSON: {{"relevant": true}} or {{"relevant": false}}
-- true = contains at least one concept, fact, decision or actionable intention
-- false = purely procedural message, confirmation, acknowledgment, or conversational noise
-
-Examples false: "yes that's good", "ok perfect", "go", "dispatch", "thanks", "I just wanted to make sure"
-Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", "add a 30s timeout""#,
-                prompt, context_block
-            )
-        }
-    };
+    )?;
+    let gate_prompt = template
+        .replace("{message}", prompt)
+        .replace("{context_block}", &context_block);
 
     let response = ai_smartness::processing::llm_subprocess::call_llm(&gate_prompt)?;
 

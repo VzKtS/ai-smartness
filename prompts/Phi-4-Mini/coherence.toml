@@ -1,0 +1,26 @@
+[meta]
+version = 1
+max_tokens = 128
+description = "Subject coherence check between captures — optimized for Phi-4-Mini 3.8B"
+
+[template]
+prompt = """Are these two captures about the same subject or a natural continuation?
+Return JSON only: {{"score":0.0-1.0,"reason":"<why>","updated_labels":["label1"]}}
+
+Score guide:
+- 1.0: identical subject
+- 0.7-0.9: same subject, natural progression
+- 0.4-0.6: related subjects, topic drift (A->B)
+- 0.1-0.3: different subjects
+
+Previous capture:
+  Title: {prev_title}
+  Subjects: {prev_subjects}
+  Concepts: {prev_concepts}
+
+New capture:
+  Title: {new_title}
+  Subjects: {new_subjects}
+  Concepts: {new_concepts}
+
+Previous labels: {prev_labels}"""

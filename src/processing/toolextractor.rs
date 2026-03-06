@@ -41,7 +41,7 @@ pub fn summarize_tool_output(
         content.to_string()
     };
 
-    let prompt = build_tool_prompt(&truncated, source_type, file_path, agent_context, model);
+    let prompt = build_tool_prompt(&truncated, source_type, file_path, agent_context, model)?;
 
     tracing::info!(
         source_type = source_type,
@@ -151,7 +151,7 @@ fn build_tool_prompt(
     file_path: Option<&str>,
     agent_context: Option<&str>,
     model: &LocalModelSize,
-) -> String {
+) -> AiResult<String> {
     let tool_desc = match source_type {
         "Read" | "file_read" => "file content that was read",
         "Write" | "file_write" => "file content that was written or modified",
@@ -181,49 +181,13 @@ fn build_tool_prompt(
         _ => String::from("No agent context available. Score based on content richness alone."),
     };
 
-    // Try loading template from .toml file; fall back to hardcoded on error
-    match prompt_loader::get_template(model, PromptName::ToolExtractor) {
-        Ok(template) => {
-            template
-                .replace("{source_type}", source_type)
-                .replace("{tool_desc}", tool_desc)
-                .replace("{ref_line}", &ref_line)
-                .replace("{content}", content)
-                .replace("{context_block}", &context_block)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to load toolextractor prompt template, using hardcoded fallback");
-            format!(
-                r#"You are a memory assistant. Summarize the following tool output.
-
-## Step 1 — Classification (analyze content below, NO external context)
-
-Tool: {source_type} ({tool_desc})
-{ref_line}
-
-Content:
----
-{content}
----
-
-- title: max 50 chars, descriptive
-- summary: max 250 chars, what it contains and why it matters
-- subjects: 2-3 key subjects
-- labels: 1-3 classification labels (e.g. "architecture", "config", "test-output")
-- concepts: 5-15 associative concepts (synonyms, related domains, hyponyms, technologies). Prefer single words. Good: "rust", "memory", "config". Bad: "database connection pooling".
-- confidence: 0.0 to 1.0 — how well you understood the content
-
-## Step 2 — Importance scoring
-
-{context_block}
-
-- importance: 0.0 to 1.0 — how important is this for the agent
-
-Output ONLY a single JSON object, nothing else:
-{{"title":"...","summary":"...","subjects":[...],"labels":[...],"concepts":[...],"confidence":0.0,"importance":0.0}}"#
-            )
-        }
-    }
+    let template = prompt_loader::get_template(model, PromptName::ToolExtractor)?;
+    Ok(template
+        .replace("{source_type}", source_type)
+        .replace("{tool_desc}", tool_desc)
+        .replace("{ref_line}", &ref_line)
+        .replace("{content}", content)
+        .replace("{context_block}", &context_block))
 }
 
 #[cfg(test)]
@@ -239,7 +203,7 @@ mod tests {
             Some("src/main.rs"),
             None,
             &model,
-        );
+        ).unwrap();
         assert!(prompt.contains("Reference: src/main.rs"));
         assert!(prompt.contains("file content that was read"));
         assert!(prompt.contains("fn main()"));
@@ -248,7 +212,7 @@ mod tests {
     #[test]
     fn test_build_tool_prompt_without_file_path() {
         let model = LocalModelSize::Phi4Mini;
-        let prompt = build_tool_prompt("search results here", "WebSearch", None, None, &model);
+        let prompt = build_tool_prompt("search results here", "WebSearch", None, None, &model).unwrap();
         assert!(prompt.contains("Reference: none"));
         assert!(prompt.contains("web search results"));
     }
@@ -262,7 +226,7 @@ mod tests {
             None,
             Some("Working on refactoring the config module"),
             &model,
-        );
+        ).unwrap();
         assert!(prompt.contains("agent was recently working on"));
         assert!(prompt.contains("refactoring the config module"));
     }
@@ -276,7 +240,7 @@ mod tests {
             None,
             None,
             &model,
-        );
+        ).unwrap();
         assert!(prompt.contains("terminal command output"));
     }
 
@@ -294,7 +258,7 @@ mod tests {
             ("NotebookEdit", "Jupyter notebook"),
         ];
         for (src, expected_desc) in types {
-            let prompt = build_tool_prompt("content", src, None, None, &model);
+            let prompt = build_tool_prompt("content", src, None, None, &model).unwrap();
             assert!(
                 prompt.contains(expected_desc),
                 "Source type '{}' should contain '{}'",
