@@ -1,8 +1,8 @@
 [meta]
 version = 1
-max_tokens = 256
-max_context_chars = 500
-description = "Thread merge evaluation — optimized for Phi-4-Mini 3.8B"
+max_tokens = 320
+max_context_chars = 1000
+description = "Thread merge evaluation — optimized for Qwen2.5-7B"
 
 [template]
 prompt = """You are a memory merge evaluator. Two memory threads share {shared_count} concepts.

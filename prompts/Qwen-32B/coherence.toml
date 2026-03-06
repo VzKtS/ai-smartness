@@ -1,8 +1,8 @@
 [meta]
 version = 1
-max_tokens = 128
-max_context_chars = 500
-description = "Subject coherence check between captures — optimized for Phi-4-Mini 3.8B"
+max_tokens = 256
+max_context_chars = 2000
+description = "Subject coherence check between captures — optimized for Qwen2.5-32B"
 
 [template]
 prompt = """Are these two captures about the same subject or a natural continuation?

@@ -300,10 +300,16 @@ fn build_extraction_prompt(
         format!("\nOptional vocabulary hints (use ONLY if they genuinely match): [{}]", vocab.join(", "))
     };
 
-    // Context block for Step 2 — only if agent_context is provided
+    // Load prompt template (need meta for max_context_chars)
+    let loaded = prompt_loader::load_prompt(model, PromptName::Extractor)?;
+    let max_ctx = loaded.meta.max_context_chars;
+
+    // Context block for Step 2 — truncated per model tier's max_context_chars
     let context_block = match agent_context {
-        Some(ctx) if !ctx.is_empty() => format!(
-            r#"
+        Some(ctx) if !ctx.is_empty() => {
+            let ctx_truncated = crate::constants::truncate_safe(ctx, max_ctx);
+            format!(
+                r#"
 
 The agent was recently working on:
 ---
@@ -311,12 +317,13 @@ The agent was recently working on:
 ---
 Use this context to judge how aligned the classified content is with the agent's current activity.
 Higher alignment = higher importance. No alignment does NOT mean low importance — content may be independently valuable."#,
-            ctx
-        ),
+                ctx_truncated
+            )
+        }
         _ => String::from("\nNo additional context available. Score based on acquisition source and content richness alone."),
     };
 
-    let template = prompt_loader::get_template(model, PromptName::Extractor)?;
+    let template = loaded.template.prompt;
     Ok(template
         .replace("{noise_words}", &noise_words.join(", "))
         .replace("{label_hint}", &label_hint)

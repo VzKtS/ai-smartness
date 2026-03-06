@@ -1,8 +1,8 @@
 [meta]
 version = 1
-max_tokens = 512
-max_context_chars = 500
-description = "Content extraction and classification — optimized for Phi-4-Mini 3.8B"
+max_tokens = 640
+max_context_chars = 1000
+description = "Content extraction and classification — optimized for Qwen2.5-7B"
 
 [template]
 prompt = """Your role is to process the content provided and follow these rules:

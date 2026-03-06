@@ -23,6 +23,14 @@ pub struct PromptMeta {
     pub version: u32,
     pub max_tokens: u32,
     pub description: String,
+    /// Max chars for agent context injection (Step 2 importance scoring).
+    /// Larger models can handle more context for better importance judgment.
+    #[serde(default = "default_max_context_chars")]
+    pub max_context_chars: usize,
+}
+
+fn default_max_context_chars() -> usize {
+    500
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -159,6 +167,11 @@ pub fn get_template(model: &LocalModelSize, name: PromptName) -> AiResult<String
 /// Get max_tokens for a given model and prompt name.
 pub fn get_max_tokens(model: &LocalModelSize, name: PromptName) -> AiResult<u32> {
     Ok(load_prompt(model, name)?.meta.max_tokens)
+}
+
+/// Get max_context_chars for a given model and prompt name.
+pub fn get_max_context_chars(model: &LocalModelSize, name: PromptName) -> AiResult<usize> {
+    Ok(load_prompt(model, name)?.meta.max_context_chars)
 }
 
 /// Clear the prompt cache (useful when switching models at runtime).

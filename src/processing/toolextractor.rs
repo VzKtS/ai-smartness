@@ -173,16 +173,19 @@ fn build_tool_prompt(
     // Step 1: classify content WITHOUT agent context (unbiased)
     // Step 2: score importance WITH agent context
     // This prevents context from biasing classification for Engram validity.
+    // Load prompt template (need meta for max_context_chars)
+    let loaded = prompt_loader::load_prompt(model, PromptName::ToolExtractor)?;
+    let max_ctx = loaded.meta.max_context_chars;
+
     let context_block = match agent_context {
         Some(ctx) if !ctx.is_empty() => format!(
             "The agent was recently working on:\n---\n{}\n---\nScore importance based on alignment with agent's current activity.",
-            crate::constants::truncate_safe(ctx, 500)
+            crate::constants::truncate_safe(ctx, max_ctx)
         ),
         _ => String::from("No agent context available. Score based on content richness alone."),
     };
 
-    let template = prompt_loader::get_template(model, PromptName::ToolExtractor)?;
-    Ok(template
+    Ok(loaded.template.prompt
         .replace("{source_type}", source_type)
         .replace("{tool_desc}", tool_desc)
         .replace("{ref_line}", &ref_line)
