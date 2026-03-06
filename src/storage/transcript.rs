@@ -159,7 +159,8 @@ pub fn extract_last_thinking(session_id: &str) -> Option<String> {
 }
 
 /// Extract thinking + text blocks from the last assistant message in transcript.
-/// Uses 64KB tail to capture both blocks (thinking can be large).
+/// Uses adaptive tail reads (64K → 256K → 512K) to handle long sessions where
+/// the last thinking block may be far from EOF due to verbose tool results.
 pub fn extract_last_assistant_blocks(session_id: &str) -> Option<AssistantBlocks> {
     let path = find_transcript(session_id)?;
     let file = std::fs::File::open(&path).ok()?;
@@ -169,8 +170,31 @@ pub fn extract_last_assistant_blocks(session_id: &str) -> Option<AssistantBlocks
         return None;
     }
 
-    let tail = read_tail(&file, file_size, file_size.min(64_000))?;
+    // Adaptive read sizes: 64K → 256K → 512K (same pattern as read_last_usage)
+    let read_sizes: &[u64] = &[64_000, 256_000, 512_000];
 
+    for &chunk_size in read_sizes {
+        let read_size = file_size.min(chunk_size);
+        let tail = match read_tail(&file, file_size, read_size) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        if let Some(blocks) = parse_last_assistant_blocks(&tail) {
+            return Some(blocks);
+        }
+
+        // If we read the entire file and still didn't find it, give up
+        if read_size >= file_size {
+            break;
+        }
+    }
+
+    None
+}
+
+/// Parse the last assistant thinking + text blocks from a transcript chunk.
+fn parse_last_assistant_blocks(tail: &str) -> Option<AssistantBlocks> {
     let mut result_thinking: Option<String> = None;
     let mut result_text: Option<String> = None;
 
