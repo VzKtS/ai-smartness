@@ -6,22 +6,40 @@ use ai_smartness::AiResult;
 use ai_smartness::registry::registry::AgentRegistry;
 use ai_smartness::storage::threads::ThreadStorage;
 
+use rusqlite::Connection;
+
 use super::{
     check_thread_quota, optional_bool, optional_f64, optional_str, optional_usize,
     parse_object_array, parse_string_or_array, required_array, required_str, ToolContext,
 };
 
+/// Auto-suspend the lightest active thread to free a slot when quota is reached.
+fn evict_lightest_thread(conn: &Connection, active: usize, quota: usize) -> AiResult<()> {
+    let threads = ThreadStorage::list_active(conn)?;
+    if let Some(lightest) = threads.iter().min_by(|a, b| {
+        a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal)
+    }) {
+        tracing::info!(
+            thread_id = %lightest.id,
+            weight = lightest.weight,
+            title = %lightest.title,
+            active = active,
+            quota = quota,
+            "Auto-evicted lightest thread to free quota slot"
+        );
+        ThreadStorage::update_status(conn, &lightest.id, ThreadStatus::Suspended)?;
+    }
+    Ok(())
+}
+
 pub fn handle_thread_create(
     params: &serde_json::Value,
     ctx: &ToolContext,
 ) -> AiResult<serde_json::Value> {
-    // Quota guard
+    // Quota guard — auto-evict lightest thread if at capacity
     let (active, quota) = check_thread_quota(ctx)?;
     if active >= quota {
-        return Err(ai_smartness::AiError::InvalidInput(format!(
-            "Thread quota exceeded ({}/{}). Suspend or delete threads first.",
-            active, quota
-        )));
+        evict_lightest_thread(ctx.agent_conn, active, quota)?;
     }
 
     let title = required_str(params, "title")?;
@@ -188,7 +206,7 @@ pub fn handle_thread_activate(
         return Ok(serde_json::json!({"dry_run": true, "threads": preview}));
     }
 
-    // Quota guard: count how many will actually be activated
+    // Quota guard: evict lightest threads to make room for reactivations
     let (active, quota) = check_thread_quota(ctx)?;
     let to_activate = ids
         .iter()
@@ -196,10 +214,10 @@ pub fn handle_thread_activate(
         .filter(|t| t.status != ThreadStatus::Active)
         .count();
     if active + to_activate > quota {
-        return Err(ai_smartness::AiError::InvalidInput(format!(
-            "Would exceed quota: {}/{}",
-            active + to_activate, quota
-        )));
+        let need = active + to_activate - quota;
+        for _ in 0..need {
+            evict_lightest_thread(ctx.agent_conn, active, quota)?;
+        }
     }
 
     let mut count = 0;
@@ -255,10 +273,7 @@ pub fn handle_reactivate(
     if t.status != ThreadStatus::Active {
         let (active, quota) = check_thread_quota(ctx)?;
         if active >= quota {
-            return Err(ai_smartness::AiError::InvalidInput(format!(
-                "Thread quota exceeded ({}/{}). Suspend or delete threads first.",
-                active, quota
-            )));
+            evict_lightest_thread(ctx.agent_conn, active, quota)?;
         }
     }
 
