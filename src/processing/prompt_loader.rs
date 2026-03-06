@@ -72,9 +72,10 @@ fn model_dir_name(model: &LocalModelSize) -> &'static str {
 }
 
 /// Resolve the prompts base directory.
-/// Searches: 1) next to executable, 2) project root (dev mode).
+/// Searches: 1) CARGO_MANIFEST_DIR (cargo run), 2) next to executable,
+/// 3) ancestors of executable (covers target/debug/), 4) data_dir, 5) cwd.
 fn prompts_base_dir() -> Option<PathBuf> {
-    // Dev mode: look relative to CARGO_MANIFEST_DIR or current dir
+    // Dev mode: look relative to CARGO_MANIFEST_DIR
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
         let p = PathBuf::from(manifest).join("prompts");
         if p.is_dir() {
@@ -82,13 +83,24 @@ fn prompts_base_dir() -> Option<PathBuf> {
         }
     }
 
-    // Next to executable
+    // Next to executable, then walk up ancestors (covers target/debug/)
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let p = parent.join("prompts");
+        let exe = exe.canonicalize().unwrap_or(exe);
+        let mut dir = exe.parent();
+        while let Some(d) = dir {
+            let p = d.join("prompts");
             if p.is_dir() {
                 return Some(p);
             }
+            dir = d.parent();
+        }
+    }
+
+    // Data directory (~/.config/ai-smartness/prompts/)
+    {
+        let p = crate::storage::path_utils::data_dir().join("prompts");
+        if p.is_dir() {
+            return Some(p);
         }
     }
 
