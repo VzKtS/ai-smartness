@@ -1421,6 +1421,9 @@ async function saveSettings() {
          settings?.hardware?.provider_device !== currentSettings.hardware.provider_device);
     const modelChanged = settings?.local_model_size !== currentSettings?.local_model_size;
     try {
+        if (modelChanged) {
+            showSaveStatus('Saving — downloading model if needed, please wait...');
+        }
         const result = await invoke('save_settings', { settings });
         if (result.saved) {
             showSaveStatus(T[currentLang]?.['settings.saved'] || 'Settings saved successfully');

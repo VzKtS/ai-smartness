@@ -794,6 +794,14 @@ pub fn save_settings(settings: serde_json::Value) -> Result<serde_json::Value, S
     let config: GuardianConfig = serde_json::from_value(settings.clone())
         .map_err(|e| format!("Invalid config: {}", e))?;
 
+    // Auto-download model if switching to a new one
+    let new_size = &config.local_model_size;
+    if !ai_smartness::processing::model_download::is_downloaded(new_size) {
+        tracing::info!(model = %new_size.display_name(), "GUI: auto-downloading model before switch");
+        ai_smartness::processing::model_download::download_model(new_size, false)
+            .map_err(|e| format!("Model download failed: {}", e))?;
+    }
+
     let content = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(&config_path, content).map_err(|e| e.to_string())?;
 
