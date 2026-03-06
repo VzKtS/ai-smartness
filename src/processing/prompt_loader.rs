@@ -27,6 +27,10 @@ pub struct PromptMeta {
     /// Larger models can handle more context for better importance judgment.
     #[serde(default = "default_max_context_chars")]
     pub max_context_chars: usize,
+    /// Max humanly comprehensible chars the model can reliably process.
+    /// Used in extraction rules to decide extract vs verbatim.
+    #[serde(default)]
+    pub max_content_chars: Option<usize>,
 }
 
 fn default_max_context_chars() -> usize {

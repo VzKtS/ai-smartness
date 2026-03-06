@@ -50,7 +50,7 @@ Single lowercase words only, **in English only**. No duplicates. Do NOT repeat s
 IMPORTANT: prefer single generic words over multi-word phrases.
 Good: "rust", "memory", "config", "daemon", "gui", "bridge", "extraction", "testing".
 Bad: "database connection pooling", "software development lifecycle".
-Between 5 and 25 items.
+Between 5 and 15 items.
 
 ## Content to classify ({source_type}: {source_desc}):
 

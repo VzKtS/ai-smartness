@@ -324,6 +324,10 @@ Higher alignment = higher importance. No alignment does NOT mean low importance 
     };
 
     let template = loaded.template.prompt;
+    // max_content_chars: if set in meta, inject as string; otherwise leave placeholder as-is
+    let max_content_str = loaded.meta.max_content_chars
+        .map(|v| v.to_string())
+        .unwrap_or_default();
     Ok(template
         .replace("{noise_words}", &noise_words.join(", "))
         .replace("{label_hint}", &label_hint)
@@ -331,6 +335,7 @@ Higher alignment = higher importance. No alignment does NOT mean low importance 
         .replace("{source_desc}", source.description())
         .replace("{content}", &truncated)
         .replace("{context_block}", &context_block)
+        .replace("{max_content_chars}", &max_content_str)
         .replace("{critical}", &format!("{:.1}", score_map.critical))
         .replace("{high}", &format!("{:.1}", score_map.high))
         .replace("{normal}", &format!("{:.1}", score_map.normal))

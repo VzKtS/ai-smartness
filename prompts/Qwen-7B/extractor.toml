@@ -1,7 +1,8 @@
 [meta]
-version = 1
+version = 2
 max_tokens = 640
 max_context_chars = 1000
+max_content_chars = 4000
 description = "Content extraction and classification — optimized for Qwen2.5-7B"
 
 [template]
@@ -9,23 +10,24 @@ prompt = """Your role is to process the content provided and follow these rules:
 
         1. If not humanly comprehensible = skip
         2. If the number of humanly comprehensible characters is less than 150 characters = skip
-        3. If the humanly comprehensible ratio is less than 20% of the capture = skip
-        4. If the humanly comprehensible ratio is less than 50% of the capture = verbatim
-        5. If the number of humanly comprehensible characters is greater than 150 characters and less than 500 = verbatim
-        6. If the number of humanly comprehensible characters is greater than or equal to 500 characters = extract
+        3. If the humanly comprehensible ratio is less than 20% of the capture = erase noise and verbatim humanly comprehensible
+        4. If the number of humanly comprehensible characters is greater than 150 and less than {max_content_chars} = erase noise and extract humanly comprehensible
+        5. If the number of humanly comprehensible characters is greater than 150 and more than {max_content_chars} = erase noise and verbatim humanly comprehensible
 
 ## STEP 1 — Classification (analyze the content below, WITHOUT external context)
 
-### title (max 50 chars)
+### title (max 60 chars)
 Specific, descriptive title capturing the core subject of the content.
+Prefer concrete nouns and actions over generic descriptions.
 
-### subjects (2-3 items)
+### subjects (2-4 items)
 Concrete topics, concepts, or entities present in the content.
 Prefer specific terms over vague ones.
 Exclude noise words: {noise_words}
 
-## summary (max 250 chars)
-Concise description of what this content contains.
+### summary (max 350 chars)
+Concise description of what this content contains and why it matters.
+Include key decisions, conclusions, or technical details when present.
 
 ### confidence (0.0-1.0)
 Your self-assessment of how well YOU understood this content.
@@ -37,7 +39,7 @@ Your self-assessment of how well YOU understood this content.
 Confidence measures YOUR comprehension, not content quality or relevance.
 A perfectly clear text about any subject = high confidence.
 
-### labels (1-3 items)
+### labels (1-4 items)
 Describe WHAT the content covers. Must reflect the subject matter.{label_hint}
 
 
@@ -50,7 +52,7 @@ Single lowercase words only, **in English only**. No duplicates. Do NOT repeat s
 IMPORTANT: prefer single generic words over multi-word phrases.
 Good: "rust", "memory", "config", "daemon", "gui", "bridge", "extraction", "testing".
 Bad: "database connection pooling", "software development lifecycle".
-Between 5 and 25 items.
+Minimum 5. Scale with content complexity: simple topic = 5-8, multi-domain = 10-15, highly technical cross-cutting = up to 25.
 
 ## Content to classify ({source_type}: {source_desc}):
 

@@ -1,5 +1,5 @@
 [meta]
-version = 1
+version = 2
 max_tokens = 48
 max_context_chars = 1000
 description = "Short prompt relevance gate — optimized for Qwen2.5-7B"
@@ -12,9 +12,9 @@ Message:
 {context_block}
 
 Reply ONLY with JSON: {{"relevant": true}} or {{"relevant": false}}
-- true = contains at least one concept, fact, decision or actionable intention
-- false = purely procedural message, confirmation, acknowledgment, or conversational noise
+- true = contains at least one concept, fact, decision, technical detail, or actionable intention
+- false = purely procedural message, confirmation, acknowledgment, greeting, or conversational noise
 
-Examples false: "yes that's good", "ok perfect", "go", "dispatch", "thanks", "I just wanted to make sure"
-Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", "add a 30s timeout"
+Examples false: "yes that's good", "ok perfect", "go", "dispatch", "thanks", "I just wanted to make sure", "let me check", "sounds good", "next"
+Examples true: "use Redis instead of Memcached", "the bug is in UTF-8 parsing", "add a 30s timeout", "we decided to drop the merge feature", "the model needs 6GB VRAM"
 """
