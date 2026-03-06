@@ -757,14 +757,24 @@ impl ThreadStorage {
 
     // ── Continuity integrity ──
 
-    /// SET NULL on all continuity references pointing to a thread about to be deleted.
-    /// Used during delete to prevent orphan continuity edges.
+    /// Relink continuity chain when deleting a thread: children inherit the deleted thread's parent.
+    /// A → B → C  (B deleted)  →  A → C
     pub fn cleanup_continuity_refs(conn: &Connection, thread_id: &str) -> AiResult<()> {
+        // Get the parent of the thread being deleted (may be NULL)
+        let parent_id: Option<String> = conn
+            .query_row(
+                "SELECT continuity_parent_id FROM threads WHERE id = ?1",
+                params![thread_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(None);
+
+        // Relink children to the deleted thread's parent (preserves chain)
         conn.execute(
-            "UPDATE threads SET continuity_parent_id = NULL WHERE continuity_parent_id = ?1",
-            params![thread_id],
+            "UPDATE threads SET continuity_parent_id = ?2 WHERE continuity_parent_id = ?1",
+            params![thread_id, parent_id],
         )
-        .map_err(|e| AiError::Storage(format!("Cleanup continuity threads failed: {}", e)))?;
+        .map_err(|e| AiError::Storage(format!("Relink continuity threads failed: {}", e)))?;
 
         conn.execute(
             "UPDATE thread_messages SET continuity_from = NULL WHERE continuity_from = ?1",
@@ -870,13 +880,16 @@ impl ThreadStorage {
         let tx = conn.unchecked_transaction()
             .map_err(|e| AiError::Storage(format!("Begin transaction failed: {}", e)))?;
 
-        // Clean continuity refs pointing to threads about to be deleted
+        // Relink continuity chain: children of deleted threads inherit their grandparent
         tx.execute(
-            "UPDATE threads SET continuity_parent_id = NULL
+            "UPDATE threads SET continuity_parent_id = (
+                SELECT p.continuity_parent_id FROM threads p
+                WHERE p.id = threads.continuity_parent_id
+             )
              WHERE continuity_parent_id IN (SELECT id FROM threads WHERE status = ?1)",
             params![status.as_str()],
         )
-        .map_err(|e| AiError::Storage(format!("Cleanup continuity on purge failed: {}", e)))?;
+        .map_err(|e| AiError::Storage(format!("Relink continuity on purge failed: {}", e)))?;
         tx.execute(
             "UPDATE thread_messages SET continuity_from = NULL
              WHERE continuity_from IN (SELECT id FROM threads WHERE status = ?1)",
@@ -1372,26 +1385,43 @@ mod tests {
     // ── Continuity integrity tests ──
 
     #[test]
-    fn test_delete_cleans_continuity_refs() {
+    fn test_delete_relinks_continuity_chain() {
         let conn = setup_agent_db();
-        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("parent").build()).unwrap();
-        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("child").continuity_parent_id("parent").build()).unwrap();
+        // A → B → C chain
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("A").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("B").continuity_parent_id("A").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("C").continuity_parent_id("B").build()).unwrap();
 
-        let msg = ThreadMessageBuilder::new("child").continuity_from("parent").build();
+        let msg = ThreadMessageBuilder::new("C").continuity_from("B").build();
         ThreadStorage::add_message(&conn, &msg).unwrap();
 
-        // Deleting parent should NULL out continuity refs on child
-        ThreadStorage::delete(&conn, "parent").unwrap();
+        // Deleting B should relink C → A
+        ThreadStorage::delete(&conn, "B").unwrap();
 
-        let child = ThreadStorage::get(&conn, "child").unwrap().unwrap();
-        assert_eq!(child.continuity_parent_id, None, "continuity_parent_id should be NULL after parent delete");
+        let c = ThreadStorage::get(&conn, "C").unwrap().unwrap();
+        assert_eq!(c.continuity_parent_id.as_deref(), Some("A"), "C should be relinked to A");
 
-        let msgs = ThreadStorage::get_messages(&conn, "child").unwrap();
-        assert_eq!(msgs[0].continuity_from, None, "continuity_from should be NULL after parent delete");
+        // Message continuity_from should be NULLed (messages don't relink)
+        let msgs = ThreadStorage::get_messages(&conn, "C").unwrap();
+        assert_eq!(msgs[0].continuity_from, None);
     }
 
     #[test]
-    fn test_delete_batch_cleans_continuity() {
+    fn test_delete_head_nulls_continuity() {
+        let conn = setup_agent_db();
+        // A → B (A is head, no parent)
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("A").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("B").continuity_parent_id("A").build()).unwrap();
+
+        // Deleting A (head) should NULL B's parent (A has no grandparent)
+        ThreadStorage::delete(&conn, "A").unwrap();
+
+        let b = ThreadStorage::get(&conn, "B").unwrap().unwrap();
+        assert_eq!(b.continuity_parent_id, None, "B should have NULL parent after head delete");
+    }
+
+    #[test]
+    fn test_delete_batch_relinks_continuity() {
         let conn = setup_agent_db();
         ThreadStorage::insert(&conn, &ThreadBuilder::new().id("p1").build()).unwrap();
         ThreadStorage::insert(&conn, &ThreadBuilder::new().id("p2").build()).unwrap();
@@ -1402,21 +1432,23 @@ mod tests {
 
         let c1 = ThreadStorage::get(&conn, "c1").unwrap().unwrap();
         let c2 = ThreadStorage::get(&conn, "c2").unwrap().unwrap();
+        // p1 and p2 have no parents, so children get NULL
         assert_eq!(c1.continuity_parent_id, None);
         assert_eq!(c2.continuity_parent_id, None);
     }
 
     #[test]
-    fn test_delete_by_status_cleans_continuity() {
+    fn test_delete_by_status_relinks_continuity() {
         let conn = setup_agent_db();
-        // Archived parent, active child pointing to it
-        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("archived-parent").status(ThreadStatus::Archived).build()).unwrap();
+        // grandparent (active) → archived-parent → active-child
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("grandparent").build()).unwrap();
+        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("archived-parent").status(ThreadStatus::Archived).continuity_parent_id("grandparent").build()).unwrap();
         ThreadStorage::insert(&conn, &ThreadBuilder::new().id("active-child").continuity_parent_id("archived-parent").build()).unwrap();
 
         ThreadStorage::delete_by_status(&conn, &ThreadStatus::Archived).unwrap();
 
         let child = ThreadStorage::get(&conn, "active-child").unwrap().unwrap();
-        assert_eq!(child.continuity_parent_id, None, "continuity_parent_id should be NULL after status purge");
+        assert_eq!(child.continuity_parent_id.as_deref(), Some("grandparent"), "child should be relinked to grandparent after purge");
     }
 
     #[test]
