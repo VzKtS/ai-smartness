@@ -733,9 +733,9 @@ pub struct GossipConfig {
     #[serde(default = "default_concept_min_bridge_weight")]
     pub concept_min_bridge_weight: f64,          // default: 0.20
     #[serde(default = "default_merge_evaluation_threshold")]
-    pub merge_evaluation_threshold: f64,         // default: 0.60
+    pub merge_evaluation_threshold: f64,         // deprecated — merge removed in v6.1
     #[serde(default = "default_merge_auto_threshold")]
-    pub merge_auto_threshold: f64,               // default: 0.85
+    pub merge_auto_threshold: f64,               // deprecated — merge removed in v6.1
     #[serde(default = "default_true")]
     pub concept_gossip_enabled: bool,            // default: true
     // Legacy (fallback for threads without concepts)
@@ -1597,8 +1597,6 @@ impl GuardianConfig {
 
     fn validate_gossip(&mut self) {
         clamp_01(&mut self.gossip.concept_min_bridge_weight, "gossip.concept_min_bridge_weight");
-        clamp_01(&mut self.gossip.merge_evaluation_threshold, "gossip.merge_evaluation_threshold");
-        clamp_01(&mut self.gossip.merge_auto_threshold, "gossip.merge_auto_threshold");
         clamp_01(&mut self.gossip.propagation_decay_factor, "gossip.propagation_decay_factor");
         clamp_01(&mut self.gossip.propagation_min_weight, "gossip.propagation_min_weight");
 
@@ -1627,15 +1625,6 @@ impl GuardianConfig {
             std::mem::swap(&mut self.gossip.min_bridges_per_thread, &mut self.gossip.max_bridges_per_thread);
         }
 
-        // Ordering: merge_evaluation < merge_auto
-        if self.gossip.merge_evaluation_threshold >= self.gossip.merge_auto_threshold {
-            tracing::warn!(
-                eval = self.gossip.merge_evaluation_threshold,
-                auto = self.gossip.merge_auto_threshold,
-                "gossip.merge_evaluation >= merge_auto — swapping"
-            );
-            std::mem::swap(&mut self.gossip.merge_evaluation_threshold, &mut self.gossip.merge_auto_threshold);
-        }
     }
 
     fn validate_engram(&mut self) {

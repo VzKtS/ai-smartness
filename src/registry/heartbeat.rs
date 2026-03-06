@@ -212,7 +212,7 @@ mod tests {
         let conn = setup_registry_db();
         register_test_agent(&conn);
 
-        Heartbeat::update(&conn, AGENT, PH, Some("tool:ai_merge")).unwrap();
+        Heartbeat::update(&conn, AGENT, PH, Some("tool:ai_recall")).unwrap();
         Heartbeat::update(&conn, AGENT, PH, None).unwrap();
 
         let activity: String = conn.query_row(
@@ -220,6 +220,6 @@ mod tests {
             params![AGENT, PH],
             |r| r.get(0),
         ).unwrap();
-        assert_eq!(activity, "tool:ai_merge", "Activity preserved when None");
+        assert_eq!(activity, "tool:ai_recall", "Activity preserved when None");
     }
 }

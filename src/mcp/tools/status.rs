@@ -187,7 +187,7 @@ pub fn handle_help(
             "Reminder & Context (ai_status → full context read, ai_profile set → edit identity/preferences, ai_profile set_rule → edit rules, ai_pin → pin content, ai_focus/ai_unfocus → prioritize topics)",
             "Memory & Search (ai_recall)",
             "Thread Lifecycle (ai_thread_create, ai_thread_rm, ai_thread_rm_batch, ai_thread_list, ai_thread_search, ai_thread_activate, ai_thread_suspend, ai_reactivate)",
-            "Thread Operations (ai_merge, ai_merge_batch, ai_split, ai_split_unlock)",
+            "Thread Operations (ai_split, ai_split_unlock)",
             "Thread Metadata (ai_label, ai_labels_suggest, ai_rename, ai_rename_batch, ai_rate_importance, ai_rate_context)",
             "Bridges (ai_bridges, ai_bridge_analysis, ai_bridge_scan_orphans, ai_bridge_kill, ai_bridge_kill_batch)",
             "Cognitive Messaging (ai_msg_focus, ai_msg_ack)",

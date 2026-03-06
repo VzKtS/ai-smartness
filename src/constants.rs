@@ -23,16 +23,9 @@ pub const BRIDGE_USE_BOOST: f64 = 0.1;
 pub const BRIDGE_WEAK_THRESHOLD: f64 = 0.15;
 
 // === Gossip v2 ===
-pub const GOSSIP_MERGE_MAX_PER_CYCLE: usize = 3;    // max auto merges per gossip cycle
-pub const GOSSIP_MERGE_REJECTION_PENALTY: f64 = 0.2; // confidence reduction on merge reject
 pub const GOSSIP_OVERLAP_WEIGHT: f64 = 0.5;
 pub const GOSSIP_RICHNESS_WEIGHT: f64 = 0.5;
 pub const GOSSIP_RICHNESS_NORMALIZATION: f64 = 5.0;
-
-// === Merge Evaluator ===
-pub const MERGE_EVALUATOR_MAX_CHARS: usize = 30_000;
-pub const MERGE_EVALUATOR_MAX_MESSAGES: usize = 5;
-pub const MERGE_EVALUATOR_MSG_MAX_CHARS: usize = 500;
 
 // === Content Limits ===
 pub const CONTENT_LIMIT_DEFAULT: usize = 2_000;

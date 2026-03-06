@@ -757,30 +757,6 @@ impl ThreadStorage {
 
     // ── Continuity integrity ──
 
-    /// Reparent continuity references from `old_id` to `new_id`.
-    /// Used during merge: children of the absorbed thread are reparented to the survivor.
-    pub fn reparent_continuity(conn: &Connection, old_id: &str, new_id: &str) -> AiResult<()> {
-        conn.execute(
-            "UPDATE threads SET continuity_parent_id = ?1 WHERE continuity_parent_id = ?2",
-            params![new_id, old_id],
-        )
-        .map_err(|e| AiError::Storage(format!("Reparent continuity threads failed: {}", e)))?;
-
-        conn.execute(
-            "UPDATE thread_messages SET continuity_from = ?1 WHERE continuity_from = ?2",
-            params![new_id, old_id],
-        )
-        .map_err(|e| AiError::Storage(format!("Reparent continuity messages failed: {}", e)))?;
-
-        conn.execute(
-            "UPDATE thread_messages SET continuity_to = ?1 WHERE continuity_to = ?2",
-            params![new_id, old_id],
-        )
-        .map_err(|e| AiError::Storage(format!("Reparent continuity_to messages failed: {}", e)))?;
-
-        Ok(())
-    }
-
     /// SET NULL on all continuity references pointing to a thread about to be deleted.
     /// Used during delete to prevent orphan continuity edges.
     pub fn cleanup_continuity_refs(conn: &Connection, thread_id: &str) -> AiResult<()> {
@@ -1394,28 +1370,6 @@ mod tests {
     }
 
     // ── Continuity integrity tests ──
-
-    #[test]
-    fn test_reparent_continuity_on_merge() {
-        let conn = setup_agent_db();
-        // Parent (will be absorbed), survivor, and child pointing to parent
-        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("parent").build()).unwrap();
-        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("survivor").build()).unwrap();
-        ThreadStorage::insert(&conn, &ThreadBuilder::new().id("child").continuity_parent_id("parent").build()).unwrap();
-
-        // Message with continuity_from pointing to parent
-        let msg = ThreadMessageBuilder::new("child").continuity_from("parent").build();
-        ThreadStorage::add_message(&conn, &msg).unwrap();
-
-        // Reparent: parent → survivor
-        ThreadStorage::reparent_continuity(&conn, "parent", "survivor").unwrap();
-
-        let child = ThreadStorage::get(&conn, "child").unwrap().unwrap();
-        assert_eq!(child.continuity_parent_id.as_deref(), Some("survivor"));
-
-        let msgs = ThreadStorage::get_messages(&conn, "child").unwrap();
-        assert_eq!(msgs[0].continuity_from.as_deref(), Some("survivor"));
-    }
 
     #[test]
     fn test_delete_cleans_continuity_refs() {

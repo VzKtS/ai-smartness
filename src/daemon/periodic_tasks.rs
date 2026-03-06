@@ -14,7 +14,6 @@ use ai_smartness::config::GuardianConfig;
 use ai_smartness::intelligence::archiver::Archiver;
 use ai_smartness::intelligence::decayer::Decayer;
 use ai_smartness::intelligence::gossip::Gossip;
-use ai_smartness::intelligence::merge_evaluator::MergeEvaluator;
 use ai_smartness::registry::registry::AgentRegistry;
 use ai_smartness::storage::backup::{BackupConfig, BackupManager};
 use ai_smartness::storage::beat::BeatState;
@@ -572,36 +571,9 @@ fn run_prune_cycle(
             }
         };
         match gossip.run_cycle(&conn, &guardian.gossip) {
-            Ok((n, merge_candidates)) => {
+            Ok(n) => {
                 if n > 0 {
                     tracing::info!("Gossip v2: created {} bridges", n);
-                }
-                if !merge_candidates.is_empty() {
-                    tracing::info!(
-                        "Gossip v2: {} merge candidates (scores: {})",
-                        merge_candidates.len(),
-                        merge_candidates.iter()
-                            .map(|c| format!("{:.2}", c.overlap_score))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                    let max_per_cycle = ai_smartness::constants::GOSSIP_MERGE_MAX_PER_CYCLE;
-                    let auto_threshold = guardian.gossip.merge_auto_threshold;
-                    for candidate in merge_candidates.iter().take(max_per_cycle) {
-                        if candidate.overlap_score >= auto_threshold {
-                            match MergeEvaluator::evaluate_and_execute(&conn, candidate, &guardian.gossip.embedding.mode, &guardian.local_model_size) {
-                                Ok(true) => tracing::info!(
-                                    "MergeEvaluator: auto-merged (score={:.2})",
-                                    candidate.overlap_score
-                                ),
-                                Ok(false) => tracing::info!(
-                                    "MergeEvaluator: rejected (score={:.2})",
-                                    candidate.overlap_score
-                                ),
-                                Err(e) => tracing::warn!("MergeEvaluator error: {}", e),
-                            }
-                        }
-                    }
                 }
             }
             Err(e) => tracing::warn!("Gossip error: {}", e),

@@ -3,7 +3,7 @@
 //! Pipeline:
 //!   1. ConceptIndex inverted index → find_overlaps(min_shared)
 //!   2. Score: weight = overlap_ratio × 0.5 + richness × 0.5
-//!   3. Create bridges, collect merge candidates (weight >= 0.60)
+//!   3. Create bridges between conceptually related threads
 //!   4. Legacy topic overlap fallback for threads without concepts
 //!   5. Transitive propagation (A↔B + B↔C → A↔C)
 
@@ -17,16 +17,6 @@ use crate::storage::concept_index::ConceptIndex;
 use crate::storage::threads::ThreadStorage;
 use rusqlite::Connection;
 
-/// Merge candidate produced by gossip when overlap score >= threshold.
-#[derive(Debug, Clone)]
-pub struct MergeCandidate {
-    pub thread_a: String,
-    pub thread_b: String,
-    pub overlap_score: f64,
-    pub shared_concepts: Vec<String>,
-    pub bridge_id: String,
-}
-
 pub struct Gossip {
     concept_index: ConceptIndex,
 }
@@ -39,12 +29,12 @@ impl Gossip {
     }
 
     /// Main gossip cycle — concept-based bridge discovery.
-    /// Returns (bridges_created, merge_candidates).
+    /// Returns number of bridges created.
     pub fn run_cycle(
         &self,
         conn: &Connection,
         config: &GossipConfig,
-    ) -> AiResult<(u32, Vec<MergeCandidate>)> {
+    ) -> AiResult<u32> {
         // One-time v1 bridge migration (idempotent — 0 rows after first run)
         Self::migrate_v1_bridges(conn)?;
 
@@ -53,7 +43,7 @@ impl Gossip {
         let all_threads = ThreadStorage::list_all(conn)?;
         if all_threads.len() < 2 {
             tracing::debug!(threads = all_threads.len(), "Gossip v2 skipped: not enough threads");
-            return Ok((0, vec![]));
+            return Ok(0);
         }
 
         let thread_count = all_threads.len();
@@ -68,12 +58,10 @@ impl Gossip {
 
         let (max_per, _max_total) = Self::dynamic_limits(thread_count, config);
         let mut created = 0u32;
-        let mut merge_candidates = Vec::new();
 
         // Phase 1: Concept overlap discovery via inverted index
         let min_shared = config.concept_overlap_min_shared;
         let min_weight = config.concept_min_bridge_weight;
-        let merge_threshold = config.merge_evaluation_threshold;
 
         if indexed_count >= 2 && config.concept_gossip_enabled {
             let overlaps = self.concept_index.find_overlaps(min_shared);
@@ -170,17 +158,6 @@ impl Gossip {
                         "Gossip v2 P1: bridge created (concept overlap)"
                     );
                     created += 1;
-
-                    // Collect merge candidate if above threshold
-                    if weight >= merge_threshold {
-                        merge_candidates.push(MergeCandidate {
-                            thread_a: thread_a.clone(),
-                            thread_b: thread_b.clone(),
-                            overlap_score: weight,
-                            shared_concepts: shared_concepts.clone(),
-                            bridge_id,
-                        });
-                    }
                 }
             }
         }
@@ -203,11 +180,10 @@ impl Gossip {
 
         tracing::info!(
             bridges_created = created,
-            merge_candidates = merge_candidates.len(),
             "Gossip v2 cycle complete"
         );
 
-        Ok((created, merge_candidates))
+        Ok(created)
     }
 
     /// Compute bridge weight from concept overlap metrics.

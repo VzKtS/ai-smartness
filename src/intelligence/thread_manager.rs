@@ -11,7 +11,7 @@ use crate::constants::*;
 use crate::thread::{Thread, ThreadMessage, ThreadStatus, OriginType, WorkContext};
 use crate::AiResult;
 use crate::intelligence::gossip::Gossip;
-use crate::intelligence::merge_metadata::{self, MAX_TOPICS, MAX_LABELS};
+use crate::intelligence::metadata_utils::{self, MAX_TOPICS, MAX_LABELS};
 use crate::processing::embeddings::EmbeddingManager;
 use crate::processing::extractor::{Extraction, ExtractionMode};
 use crate::storage::bridges::BridgeStorage;
@@ -359,14 +359,14 @@ impl ThreadManager {
         for topic in &extraction.subjects {
             thread.topics.push(topic.clone());
         }
-        thread.topics = merge_metadata::dedup_case_insensitive(thread.topics.clone());
+        thread.topics = metadata_utils::dedup_case_insensitive(thread.topics.clone());
         thread.topics.truncate(MAX_TOPICS);
 
         // Merge labels (case-insensitive dedup + cap, filter blocked)
         for label in &filter_blocked_labels(&extraction.labels) {
             thread.labels.push(label.clone());
         }
-        thread.labels = merge_metadata::dedup_case_insensitive(thread.labels.clone());
+        thread.labels = metadata_utils::dedup_case_insensitive(thread.labels.clone());
         thread.labels.truncate(MAX_LABELS);
 
         // Update work context

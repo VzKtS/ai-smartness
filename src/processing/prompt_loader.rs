@@ -47,7 +47,6 @@ pub struct PromptBody {
 pub enum PromptName {
     Extractor,
     ToolExtractor,
-    MergeEvaluator,
     RelevanceGate,
     Coherence,
 }
@@ -57,7 +56,6 @@ impl PromptName {
         match self {
             Self::Extractor => "extractor.toml",
             Self::ToolExtractor => "toolextractor.toml",
-            Self::MergeEvaluator => "merge_evaluator.toml",
             Self::RelevanceGate => "relevance_gate.toml",
             Self::Coherence => "coherence.toml",
         }
@@ -214,7 +212,6 @@ mod tests {
     fn test_prompt_filenames() {
         assert_eq!(PromptName::Extractor.filename(), "extractor.toml");
         assert_eq!(PromptName::ToolExtractor.filename(), "toolextractor.toml");
-        assert_eq!(PromptName::MergeEvaluator.filename(), "merge_evaluator.toml");
         assert_eq!(PromptName::RelevanceGate.filename(), "relevance_gate.toml");
     }
 
@@ -234,15 +231,6 @@ mod tests {
             assert_eq!(tmpl.meta.version, 1);
             assert!(tmpl.template.prompt.contains("{content}"));
             assert!(tmpl.template.prompt.contains("{context_block}"));
-        }
-    }
-
-    #[test]
-    fn test_load_phi4mini_merge_evaluator() {
-        if let Ok(tmpl) = load_prompt(&LocalModelSize::Phi4Mini, PromptName::MergeEvaluator) {
-            assert_eq!(tmpl.meta.version, 1);
-            assert!(tmpl.template.prompt.contains("{title_a}"));
-            assert!(tmpl.template.prompt.contains("{title_b}"));
         }
     }
 

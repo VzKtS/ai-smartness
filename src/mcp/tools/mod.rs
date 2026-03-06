@@ -2,7 +2,6 @@ pub mod agents;
 pub mod bridges;
 pub mod discover;
 pub mod focus;
-pub mod merge;
 pub mod messaging;
 pub mod recall;
 pub mod share;
@@ -100,8 +99,6 @@ fn route_plain_tool(
         "ai_reactivate" => threads::handle_reactivate(params, ctx),
 
         // -- Thread operations --
-        "ai_merge" => merge::handle_merge(params, ctx),
-        "ai_merge_batch" => merge::handle_merge_batch(params, ctx),
         "ai_split" => split::handle_split(params, ctx),
         "ai_split_unlock" => split::handle_split_unlock(params, ctx),
 

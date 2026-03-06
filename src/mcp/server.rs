@@ -506,8 +506,6 @@ fn tool_definitions() -> Vec<serde_json::Value> {
         tool_def("ai_thread_suspend", "Suspend active threads", &["thread_ids"], &["reason", "confirm"]),
         tool_def("ai_thread_purge", "Bulk delete all threads by status (suspended/archived). Cannot purge active.", &["status"], &["confirm"]),
         tool_def("ai_reactivate", "Reactivate a thread by ID", &["thread_id"], &[]),
-        tool_def("ai_merge", "Merge two threads", &["survivor_id", "absorbed_id"], &[]),
-        tool_def("ai_merge_batch", "Merge multiple thread pairs", &["operations"], &[]),
         tool_def("ai_split", "Split a thread", &["thread_id"], &["confirm", "message_groups", "titles", "lock_mode"]),
         tool_def("ai_split_unlock", "Remove split lock", &["thread_id"], &[]),
         tool_def("ai_label", "Manage labels", &["thread_id"], &["labels", "mode"]),

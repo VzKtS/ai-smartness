@@ -475,8 +475,6 @@
                             <label title="Enable concept-based bridge discovery via ConceptIndex inverted index. Core v2 pipeline. Default: on.">Concept Gossip Enabled <input type="checkbox" data-path="gossip.concept_gossip_enabled"></label>
                             <label title="Minimum shared concepts between two threads to consider a bridge. Higher = fewer but stronger bridges. Default: 1.">Min Shared Concepts <input type="number" data-path="gossip.concept_overlap_min_shared" min="1" max="10"></label>
                             <label title="Minimum computed weight for a concept bridge to be created. Bridges below this are skipped. Default: 0.15.">Min Bridge Weight <input type="number" data-path="gossip.concept_min_bridge_weight" min="0" max="1" step="0.05"></label>
-                            <label title="Overlap score threshold for collecting merge candidates. Pairs above this are evaluated for potential thread merge. Default: 0.60.">Merge Evaluation Threshold <input type="number" data-path="gossip.merge_evaluation_threshold" min="0" max="1" step="0.05"></label>
-                            <label title="Overlap score threshold for automatic merge (daemon). Pairs above this are merged without user confirmation. Default: 0.85.">Merge Auto Threshold <input type="number" data-path="gossip.merge_auto_threshold" min="0" max="1" step="0.05"></label>
                         </div>
                     </div>
                 </div>
