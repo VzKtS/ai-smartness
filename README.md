@@ -1,9 +1,7 @@
 AI Smartness has reached its limits while exploring the possibilities of a Claudecode nudge. A new project is therefore emerging on another repository:https://github.com/VzKtS/Scope
 
 See you soon for much more and much better.
-<p align="center">
-  <img src="./readme-src/ais-logo-name.png" alt="AI Smartness" width="400">
-</p>
+
 
 <p align="center">
   <strong>Persistent cognitive memory for AI agents</strong>
