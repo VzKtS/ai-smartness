@@ -1,0 +1,29 @@
+[meta]
+version = 2
+max_tokens = 160
+max_context_chars = 1000
+description = "Subject coherence check between captures — optimized for Qwen2.5-7B"
+
+[template]
+prompt = """Are these two captures about the same subject or a natural continuation?
+Return JSON only: {{"score":0.0-1.0,"reason":"<why>","updated_labels":["label1"]}}
+
+Score guide:
+- 1.0: identical subject, same context
+- 0.7-0.9: same subject, natural progression (e.g. continued discussion, next step)
+- 0.4-0.6: related subjects, topic drift (e.g. from "deployment" to "monitoring")
+- 0.1-0.3: different subjects sharing some vocabulary
+- 0.0: completely unrelated
+
+Previous capture:
+  Title: {prev_title}
+  Subjects: {prev_subjects}
+  Concepts: {prev_concepts}
+
+New capture:
+  Title: {new_title}
+  Subjects: {new_subjects}
+  Concepts: {new_concepts}
+
+Previous labels: {prev_labels}
+Keep previous labels if still relevant. Add new ones only if the new capture introduces a distinct aspect. Remove labels that no longer apply."""

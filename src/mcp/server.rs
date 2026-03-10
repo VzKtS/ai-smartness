@@ -1,0 +1,675 @@
+use ai_smartness::AiResult;
+use ai_smartness::agent::TaskStatus;
+use ai_smartness::registry::heartbeat::Heartbeat;
+use ai_smartness::registry::tasks::AgentTaskStorage;
+use ai_smartness::storage::beat::BeatState;
+use ai_smartness::storage::cognitive_inbox::CognitiveInbox;
+use ai_smartness::storage::database::{self, ConnectionRole};
+use ai_smartness::storage::migrations;
+use ai_smartness::storage::path_utils;
+use ai_smartness::storage::shared_storage::SharedStorage;
+use rusqlite::Connection;
+use std::io::{self, BufRead, Write};
+use std::path::Path;
+use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use super::jsonrpc::{self, JsonRpcResponse};
+use super::tools::{self, ToolContext};
+
+pub struct McpServer {
+    project_hash: String,
+    agent_id: String,
+    /// Shared with the heartbeat thread so it tracks agent swaps.
+    shared_agent_id: Arc<RwLock<String>>,
+    agent_conn: Connection,
+    registry_conn: Connection,
+    shared_conn: Connection,
+}
+
+impl McpServer {
+    pub fn new(project_hash: String, agent_id: String) -> AiResult<Self> {
+        let agent_db = path_utils::agent_db_path(&project_hash, &agent_id);
+        let registry_db = path_utils::registry_db_path();
+        let shared_db = path_utils::shared_db_path(&project_hash);
+
+        let agent_conn = database::open_connection(&agent_db, ConnectionRole::Mcp)?;
+        let registry_conn = database::open_connection(&registry_db, ConnectionRole::Mcp)?;
+        let shared_conn = database::open_connection(&shared_db, ConnectionRole::Mcp)?;
+
+        migrations::migrate_agent_db(&agent_conn)?;
+        migrations::migrate_registry_db(&registry_conn)?;
+        migrations::migrate_shared_db(&shared_conn)?;
+
+        let shared_agent_id = Arc::new(RwLock::new(agent_id.clone()));
+        Ok(Self {
+            project_hash,
+            agent_id,
+            shared_agent_id,
+            agent_conn,
+            registry_conn,
+            shared_conn,
+        })
+    }
+
+    /// Hot-swap the active agent: update agent_id and reopen agent_conn.
+    fn swap_agent(&mut self, new_agent_id: String) -> AiResult<()> {
+        let agent_db = path_utils::agent_db_path(&self.project_hash, &new_agent_id);
+        let new_conn = database::open_connection(&agent_db, ConnectionRole::Mcp)?;
+        migrations::migrate_agent_db(&new_conn)?;
+
+        tracing::info!(
+            from = %self.agent_id,
+            to = %new_agent_id,
+            "Hot-swapping agent connection"
+        );
+
+        self.agent_id = new_agent_id.clone();
+        self.agent_conn = new_conn;
+        // Notify heartbeat thread of the agent swap
+        if let Ok(mut shared) = self.shared_agent_id.write() {
+            *shared = new_agent_id;
+        }
+        Ok(())
+    }
+
+    pub fn run(&mut self) -> AiResult<()> {
+        // Start background heartbeat thread (PID tracking + self-wake + cognitive proactive)
+        let bg_project_hash = self.project_hash.clone();
+        let bg_shared_agent = self.shared_agent_id.clone();
+        let bg_running = Arc::new(AtomicBool::new(true));
+        let bg_running_clone = bg_running.clone();
+
+        let heartbeat_handle = std::thread::spawn(move || {
+            heartbeat_loop(&bg_project_hash, bg_shared_agent, bg_running_clone);
+        });
+
+        let stdin = io::stdin();
+        let mut stdout = io::stdout();
+
+        for line in stdin.lock().lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            if let Some(resp) = self.handle_message(&line) {
+                let out = jsonrpc::format_response(&resp);
+                let _ = writeln!(stdout, "{}", out);
+                let _ = stdout.flush();
+            }
+        }
+
+        // Shutdown heartbeat thread
+        bg_running.store(false, Ordering::Relaxed);
+        let _ = heartbeat_handle.join();
+
+        Ok(())
+    }
+
+    fn handle_message(&mut self, input: &str) -> Option<JsonRpcResponse> {
+        tracing::debug!(input_len = input.len(), "MCP request received");
+        let request = match jsonrpc::parse_request(input) {
+            Ok(r) => r,
+            Err(e) => {
+                return Some(JsonRpcResponse::error(
+                    None,
+                    -32700,
+                    format!("Parse error: {}", e),
+                ));
+            }
+        };
+
+        // Notifications (no id) don't get responses
+        if request.id.is_none() {
+            return None;
+        }
+
+        let id = request.id.clone();
+
+        match request.method.as_str() {
+            "initialize" => Some(self.handle_initialize(id)),
+            "tools/list" => Some(self.handle_tools_list(id)),
+            "tools/call" => Some(self.handle_tools_call(id, &request.params)),
+            _ => Some(JsonRpcResponse::error(
+                id,
+                -32601,
+                format!("Method not found: {}", request.method),
+            )),
+        }
+    }
+
+    fn handle_initialize(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
+        JsonRpcResponse::success(
+            id,
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {}
+                },
+                "serverInfo": {
+                    "name": "ai-smartness",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }),
+        )
+    }
+
+    fn handle_tools_list(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
+        JsonRpcResponse::success(
+            id,
+            serde_json::json!({
+                "tools": tool_definitions()
+            }),
+        )
+    }
+
+    fn handle_tools_call(
+        &mut self,
+        id: Option<serde_json::Value>,
+        params: &Option<serde_json::Value>,
+    ) -> JsonRpcResponse {
+        let params = match params {
+            Some(p) => p,
+            None => {
+                return JsonRpcResponse::error(id, -32602, "Missing params".into());
+            }
+        };
+
+        let tool_name = match params.get("name").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => {
+                return JsonRpcResponse::error(id, -32602, "Missing tool name".into());
+            }
+        };
+
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
+
+        // Phase 1: execute the tool (ToolContext borrows are scoped here)
+        let tool_result = {
+            let ctx = ToolContext {
+                agent_conn: &self.agent_conn,
+                registry_conn: &self.registry_conn,
+                shared_conn: &self.shared_conn,
+                project_hash: &self.project_hash,
+                agent_id: &self.agent_id,
+            };
+            tracing::debug!(tool = %tool_name, "MCP tools/call dispatching");
+            let tool_name_owned = tool_name.to_string();
+            let arguments_owned = arguments.clone();
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tools::route_tool(&tool_name_owned, &arguments_owned, &ctx)
+            })) {
+                Ok(result) => result,
+                Err(_) => {
+                    tracing::error!(tool = %tool_name_owned, "Tool handler panicked");
+                    return JsonRpcResponse::success(
+                        id,
+                        serde_json::json!({
+                            "content": [{"type": "text", "text": format!("Internal error: tool '{}' panicked", tool_name_owned)}],
+                            "isError": true
+                        }),
+                    );
+                }
+            }
+        };
+        // Phase 1 done — ctx is dropped, no outstanding borrows on self.
+
+        // Phase 2: inspect ToolOutput, apply side-effects, build response
+        match tool_result {
+            Ok(output) => {
+                let (result, side_effect) = match output {
+                    tools::ToolOutput::Plain(v) => (v, None),
+                    tools::ToolOutput::AgentSwitch { result, new_agent_id } => {
+                        (result, Some(new_agent_id))
+                    }
+                };
+
+                // Apply side-effect before building success response
+                if let Some(new_agent_id) = side_effect {
+                    if let Err(e) = self.swap_agent(new_agent_id) {
+                        tracing::error!(error = %e, "Failed to hot-swap agent");
+                        return JsonRpcResponse::success(
+                            id,
+                            serde_json::json!({
+                                "content": [{"type": "text", "text": format!("Agent switch failed: {}", e)}],
+                                "isError": true
+                            }),
+                        );
+                    }
+                }
+
+                let text = serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| result.to_string());
+                JsonRpcResponse::success(
+                    id,
+                    serde_json::json!({
+                        "content": [{"type": "text", "text": text}]
+                    }),
+                )
+            }
+            Err(e) => JsonRpcResponse::success(
+                id,
+                serde_json::json!({
+                    "content": [{"type": "text", "text": format!("Error: {}", e)}],
+                    "isError": true
+                }),
+            ),
+        }
+    }
+}
+
+// ─── Background Heartbeat ───
+
+/// Get the parent process PID (Claude CLI) — cross-platform.
+#[cfg(unix)]
+fn get_cli_pid() -> Option<u32> {
+    let ppid = unsafe { libc::getppid() };
+    if ppid > 1 { Some(ppid as u32) } else { None }
+}
+
+#[cfg(not(unix))]
+fn get_cli_pid() -> Option<u32> {
+    None
+}
+
+const HEARTBEAT_TICK_SECS: u64 = 10;
+
+fn heartbeat_loop(project_hash: &str, shared_agent: Arc<RwLock<String>>, running: Arc<AtomicBool>) {
+    let pid = std::process::id();
+    let mut current_agent = String::new();
+
+    tracing::info!(pid, "Heartbeat thread started");
+
+    // Open registry connection for Heartbeat::update() (keeps agent status=active)
+    let registry_db = path_utils::registry_db_path();
+    let registry_conn = database::open_connection(&registry_db, ConnectionRole::Daemon).ok();
+
+    while running.load(Ordering::Relaxed) {
+        // Read current agent_id (may change via swap_agent)
+        let agent_id = match shared_agent.read() {
+            Ok(s) => s.clone(),
+            Err(_) => {
+                tracing::error!("Heartbeat: shared_agent RwLock poisoned, stopping");
+                break;
+            }
+        };
+
+        // Detect agent swap: clean old PID, update tracking
+        if agent_id != current_agent {
+            if !current_agent.is_empty() {
+                let old_dir = path_utils::agent_data_dir(project_hash, &current_agent);
+                let mut old_beat = BeatState::load(&old_dir);
+                old_beat.pid = None;
+                old_beat.cli_pid = None;
+                old_beat.save(&old_dir);
+                tracing::info!(from = %current_agent, to = %agent_id, "Heartbeat: agent swapped");
+            }
+            current_agent = agent_id.clone();
+        }
+
+        let data_dir = path_utils::agent_data_dir(project_hash, &agent_id);
+
+        // 1. Update beat.json with PID, timestamp, and uptime
+        let mut beat = BeatState::load(&data_dir);
+        // E4: Reset started_at when PID changes (new MCP server session)
+        beat.reset_uptime_if_pid_changed(pid);
+        beat.pid = Some(pid);
+        beat.cli_pid = get_cli_pid();
+        // B5: Always save last_beat_at (was lost when PID unchanged)
+        beat.last_beat_at = chrono::Utc::now().to_rfc3339();
+        beat.save(&data_dir);
+
+        // 1a. Update registry DB last_seen + status=active (prevents mark_stale)
+        // Also sync pending tasks into beat.json (H1 — A1 constraint: no DB in inject hot path)
+        if let Some(ref reg_conn) = registry_conn {
+            if let Err(e) = Heartbeat::update(reg_conn, &agent_id, project_hash, None) {
+                tracing::warn!(agent = %agent_id, "Heartbeat registry update failed: {}", e);
+            }
+            // H1: cache pending tasks in beat.json
+            if let Ok(tasks) = AgentTaskStorage::list_tasks_for_agent(reg_conn, &agent_id, project_hash) {
+                let active: Vec<serde_json::Value> = tasks.iter()
+                    .filter(|t| t.status != TaskStatus::Completed)
+                    .map(|t| serde_json::json!({
+                        "id": t.id,
+                        "title": t.title,
+                        "status": t.status.as_str(),
+                        "from": t.assigned_by,
+                    }))
+                    .collect();
+                let mut beat2 = BeatState::load(&data_dir);
+                beat2.pending_tasks = active;
+                beat2.save(&data_dir);
+            }
+        }
+
+        // H2: cache shared thread subscriptions into beat.json (A1 constraint)
+        // Enriched with agent role from registry for display in lean reminder.
+        let shared_db = path_utils::shared_db_path(project_hash);
+        if shared_db.exists() {
+            if let Ok(shared_conn) = database::open_connection(&shared_db, ConnectionRole::Daemon) {
+                if let Ok(threads) = SharedStorage::list_subscribed_threads(&shared_conn, &agent_id) {
+                    let cached: Vec<serde_json::Value> = threads.iter().take(10).map(|s| {
+                        let role = registry_conn.as_ref()
+                            .and_then(|rc| {
+                                ai_smartness::registry::registry::AgentRegistry::get(
+                                    rc, &s.owner_agent, project_hash,
+                                ).ok().flatten().map(|a| a.role)
+                            })
+                            .unwrap_or_else(|| "agent".to_string());
+                        serde_json::json!({
+                            "id": s.shared_id,
+                            "title": s.title,
+                            "from": s.owner_agent,
+                            "role": role,
+                            "topics": s.topics,
+                        })
+                    }).collect();
+                    let mut beat3 = BeatState::load(&data_dir);
+                    beat3.shared_threads_cache = cached;
+                    beat3.save(&data_dir);
+                }
+            }
+        }
+
+        // H3: cache git branch/dirty state (A2 — no subprocess in inject hot path)
+        {
+            let mut beat4 = BeatState::load(&data_dir);
+            update_git_info(&mut beat4, None);
+            beat4.save(&data_dir);
+        }
+
+        // 1b. Maintain session_agents/{mcp_pid} for extension agent detection
+        let sa_dir = path_utils::session_agents_dir(project_hash);
+        std::fs::create_dir_all(&sa_dir).ok();
+        std::fs::write(sa_dir.join(pid.to_string()), &agent_id).ok();
+
+        // 2. Check scheduled self-wakes
+        check_scheduled_wakes(&agent_id, &data_dir);
+
+        // 3. Check cognitive inbox for proactive wake
+        check_cognitive_proactive(project_hash, &agent_id);
+
+        // Sleep in 1s increments — check nanobeats each tick (sublayer)
+        for _ in 0..HEARTBEAT_TICK_SECS {
+            if !running.load(Ordering::Relaxed) { break; }
+            std::thread::sleep(Duration::from_secs(1));
+            // Nanobeat sublayer: check every second for sub-beat self-wakes
+            check_scheduled_nanobeats(&agent_id, &data_dir);
+        }
+    }
+
+    // Cleanup: remove PID from beat.json and session_agents on exit
+    if !current_agent.is_empty() {
+        let data_dir = path_utils::agent_data_dir(project_hash, &current_agent);
+        let mut beat = BeatState::load(&data_dir);
+        beat.pid = None;
+        beat.cli_pid = None;
+        beat.save(&data_dir);
+
+        let sa_dir = path_utils::session_agents_dir(project_hash);
+        std::fs::remove_file(sa_dir.join(pid.to_string())).ok();
+    }
+
+    tracing::info!("Heartbeat thread stopped");
+}
+
+/// H3: Update git branch and dirty state in beat.json.
+/// `dir` overrides the working directory (used in tests; None uses process CWD).
+fn update_git_info(beat: &mut BeatState, dir: Option<&Path>) {
+    let mut branch_cmd = std::process::Command::new("git");
+    branch_cmd.args(["rev-parse", "--abbrev-ref", "HEAD"]);
+    if let Some(d) = dir { branch_cmd.current_dir(d); }
+    if let Ok(out) = branch_cmd.output() {
+        if out.status.success() {
+            let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !branch.is_empty() {
+                beat.git_branch = Some(branch);
+            }
+        }
+    }
+
+    let mut dirty_cmd = std::process::Command::new("git");
+    dirty_cmd.args(["status", "--porcelain"]);
+    if let Some(d) = dir { dirty_cmd.current_dir(d); }
+    beat.git_dirty = dirty_cmd.output().map(|o| !o.stdout.is_empty()).unwrap_or(false);
+}
+
+fn check_scheduled_wakes(agent_id: &str, data_dir: &Path) {
+    let mut beat = BeatState::load(data_dir);
+    let due = beat.drain_due_wakes();
+    if due.is_empty() { return; }
+    beat.save(data_dir);
+
+    let reasons: Vec<&str> = due.iter().map(|w| w.reason.as_str()).collect();
+    let message = format!("Self-wake: {}", reasons.join(", "));
+    tracing::info!(agent = agent_id, message = %message, "Scheduled wake triggered");
+    super::tools::messaging::emit_wake_signal(agent_id, "heartbeat", &message, "cognitive", false);
+}
+
+fn check_scheduled_nanobeats(agent_id: &str, data_dir: &Path) {
+    let mut beat = BeatState::load(data_dir);
+    let due = beat.drain_due_nanobeats();
+    if due.is_empty() { return; }
+    beat.save(data_dir);
+
+    for nb in &due {
+        let mut message = format!("[nanobeat] {}", nb.reason);
+        if let Some(ref q) = nb.recall_query {
+            message.push_str(&format!(" | recall: {}", q));
+        }
+        if let Some(ref tid) = nb.recall_thread_id {
+            message.push_str(&format!(" | thread: {}", tid));
+        }
+        tracing::info!(agent = agent_id, message = %message, "Nanobeat fired");
+        super::tools::messaging::emit_wake_signal(agent_id, agent_id, &message, "cognitive", true);
+    }
+}
+
+fn check_cognitive_proactive(project_hash: &str, agent_id: &str) {
+
+    let agent_db = path_utils::agent_db_path(project_hash, agent_id);
+    if !agent_db.exists() { return; }
+
+    let conn = match database::open_connection(&agent_db, ConnectionRole::Mcp) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let messages = match CognitiveInbox::peek_pending(&conn, agent_id) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    if messages.is_empty() { return; }
+
+    // Check if a wake signal already exists and is unacknowledged
+    let signal_path = path_utils::wake_signal_path(agent_id);
+    if signal_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&signal_path) {
+            if let Ok(sig) = serde_json::from_str::<serde_json::Value>(&content) {
+                if sig.get("acknowledged").and_then(|v| v.as_bool()) == Some(false) {
+                    return; // Already has pending wake signal
+                }
+            }
+        }
+    }
+
+    // Re-check: messages may have been acked between peek and signal check
+    let still_pending = CognitiveInbox::count_pending(&conn, agent_id).unwrap_or(0);
+    if still_pending == 0 { return; }
+
+    tracing::info!(
+        agent = agent_id,
+        pending = still_pending,
+        "Cognitive proactive: emitting wake signal"
+    );
+    super::tools::messaging::emit_wake_signal(agent_id, "cognitive-inbox", "Pending cognitive messages", "cognitive", false);
+}
+
+fn tool_definitions() -> Vec<serde_json::Value> {
+    vec![
+        tool_def("ai_recall", "Search semantic memory for relevant threads", &["query"], &["label", "include_bridges", "depth"]),
+        tool_def("ai_thread_create", "Create a new thread manually", &["title", "content"], &["topics", "importance", "tags"]),
+        tool_def("ai_thread_rm", "Delete a thread by ID", &["thread_id"], &[]),
+        tool_def("ai_thread_rm_batch", "Delete multiple threads", &["thread_ids"], &[]),
+        tool_def("ai_thread_list", "List threads with filters", &[], &["status", "sort_by", "limit", "offset"]),
+        tool_def("ai_thread_search", "Search threads across all states", &["query"], &["scope", "states"]),
+        tool_def("ai_thread_activate", "Reactivate threads", &["thread_ids"], &["confirm"]),
+        tool_def("ai_thread_suspend", "Suspend active threads", &["thread_ids"], &["reason", "confirm"]),
+        tool_def("ai_thread_purge", "Bulk delete all threads by status (suspended/archived). Cannot purge active.", &["status"], &["confirm"]),
+        tool_def("ai_reactivate", "Reactivate a thread by ID", &["thread_id"], &[]),
+        tool_def("ai_annotate", "Add a lightweight note to a thread (no LLM, no extraction)", &["thread_id", "note"], &[]),
+        tool_def("ai_split", "Split a thread", &["thread_id"], &["confirm", "message_groups", "titles", "lock_mode"]),
+        tool_def("ai_split_unlock", "Remove split lock", &["thread_id"], &[]),
+        tool_def("ai_label", "Manage labels", &["thread_id"], &["labels", "mode"]),
+        tool_def("ai_labels_suggest", "Show existing labels", &["label"], &[]),
+        tool_def("ai_concepts", "Manage semantic concepts", &["thread_id"], &["concepts", "mode"]),
+        tool_def("ai_backfill_concepts", "Generate concepts for threads missing them", &[], &["limit", "dry_run"]),
+        tool_def("ai_rename", "Rename a thread", &["thread_id", "new_title"], &[]),
+        tool_def("ai_rename_batch", "Rename multiple threads", &["operations"], &[]),
+        tool_def("ai_rate_importance", "Set importance score", &["thread_id", "score"], &["reason"]),
+        tool_def("ai_rate_context", "Rate context usefulness", &["thread_id", "useful"], &["reason"]),
+        tool_def("ai_mark_used", "Mark thread as used after injection", &["thread_id"], &[]),
+        tool_def("ai_continuity_edges", "Manage continuity edges (reasoning chain between threads)", &[], &["action", "thread_id", "parent_id", "coherence"]),
+        tool_def("ai_bridges", "List bridges", &[], &["thread_id", "relation_type", "status"]),
+        tool_def("ai_bridge_analysis", "Bridge network analytics", &[], &[]),
+        tool_def("ai_bridge_scan_orphans", "Scan orphan bridges", &[], &["confirm"]),
+        tool_def("ai_bridge_purge", "Bulk delete all bridges by status (invalid/weak)", &["status"], &["confirm"]),
+        tool_def("ai_bridge_kill", "Delete a bridge", &["bridge_id"], &[]),
+        tool_def("ai_bridge_kill_batch", "Delete multiple bridges", &["bridge_ids"], &[]),
+        tool_def("ai_focus", "Focus on a topic", &["topic"], &["weight"]),
+        tool_def("ai_unfocus", "Remove focus", &[], &["topic"]),
+        tool_def("ai_pin", "Pin important content", &["content"], &["title", "topics", "weight_boost"]),
+        tool_def("ai_msg_focus", "Write cognitive message", &["target_agent_id", "from_agent", "subject", "content"], &["priority", "ttl_minutes", "attachments", "reply_to"]),
+        tool_def("ai_msg_ack", "Acknowledge message", &[], &["thread_id", "msg_ref"]),
+        tool_def("ai_share", "Share a thread", &["thread_id"], &["visibility", "allowed_agents"]),
+        tool_def("ai_unshare", "Unshare a thread", &["shared_id"], &[]),
+        tool_def("ai_publish", "Update shared snapshot", &["shared_id"], &[]),
+        tool_def("ai_discover", "Discover shared threads", &[], &["topics", "agent_id", "limit"]),
+        tool_def("ai_subscribe", "Subscribe to shared thread", &["shared_id"], &[]),
+        tool_def("ai_unsubscribe", "Unsubscribe", &["shared_id"], &[]),
+        tool_def("ai_sync", "Sync subscriptions", &[], &["shared_id"]),
+        tool_def("ai_status", "Memory status", &[], &[]),
+        tool_def("ai_sysinfo", "System info", &[], &[]),
+        tool_def("ai_help", "Documentation — call with topic for detailed help (memory, threads, bridges, messaging, sharing, agents, tasks, maintenance, autonomy)", &[], &["topic"]),
+        tool_def("ai_suggestions", "Proactive suggestions", &[], &["context"]),
+        tool_def("ai_shared_status", "Shared cognition status", &[], &[]),
+        tool_def("ai_profile", "User profile — view, set, set_rule, remove_rule, list, clear_rules", &["action"], &["key", "value"]),
+        tool_def("ai_cleanup", "Fix thread titles", &[], &["mode", "dry_run"]),
+        tool_def("ai_lock", "Lock memory", &[], &["reason", "duration_minutes"]),
+        tool_def("ai_unlock", "Unlock memory", &[], &[]),
+        tool_def("ai_lock_status", "Lock state", &[], &[]),
+        tool_def("ai_backup", "Backup/restore", &["action"], &["interval_hours"]),
+        tool_def("ai_recommend", "Subscription recommendations", &[], &["limit"]),
+        tool_def("ai_topics", "Topic discovery", &[], &["agent_id"]),
+        tool_def("msg_send", "Send message", &["to", "subject"], &["payload", "priority", "agent_id", "attachments"]),
+        tool_def("msg_broadcast", "Broadcast message", &["subject"], &["payload", "priority", "attachments"]),
+        tool_def("msg_inbox", "Get pending messages", &[], &["limit", "agent_id"]),
+        tool_def("msg_reply", "Reply to message", &["message_id"], &["payload", "agent_id"]),
+        tool_def("ai_agent_select", "Switch to a different agent for this session. Writes the session file so subsequent prompts use the new agent identity. Pass session_id from your context for multi-panel isolation.", &["agent_id"], &["session_id"]),
+        tool_def("agent_list", "List agents", &[], &[]),
+        tool_def("agent_query", "Find agents by capability", &["capability"], &[]),
+        tool_def("agent_status", "Agent status", &["agent_id"], &[]),
+        tool_def("agent_context", "Inspect another agent's runtime state (beat, actions, tasks, context %)", &[], &["agent_id"]),
+        tool_def("agent_cleanup", "Clean up agents", &[], &["remove_agent", "remove_orphans"]),
+        tool_def("agent_configure", "Configure agent", &["agent_id", "project_hash"], &["role", "supervisor_id"]),
+        tool_def("agent_tasks", "Manage tasks", &["action"], &[]),
+        tool_def("task_delegate", "Delegate task", &["to", "task"], &["context", "priority", "context_path"]),
+        tool_def("task_status", "Task status", &["task_id"], &[]),
+        tool_def("task_complete", "Mark a delegated task as completed and auto-notify the delegator", &["task_id"], &["result"]),
+        tool_def("metrics_cross_agent", "Cross-agent metrics", &[], &["agent_id", "period"]),
+        tool_def("health_check", "Health check", &[], &[]),
+        tool_def("topics_network", "Trending topics", &[], &["agent_id", "limit"]),
+        tool_def("test_sampling", "Test sampling", &[], &["attempt_sampling"]),
+        tool_def("beat_wake", "Schedule self-wake after N beats (~5 min each). The heartbeat system will wake you automatically.", &["after"], &["reason"]),
+        tool_def("nanobeat_schedule", "Schedule a sub-beat self-wake with recall context. Use this to chain tasks autonomously: when finishing work, schedule a nanobeat so you wake up and continue with the next task.", &["delay_seconds", "reason"], &["recall_query", "recall_thread_id"]),
+        tool_def("ai_windows", "Open a new VSCode window on the current project", &[], &[]),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ai_smartness::storage::beat::BeatState;
+
+    // T-P3.1: catch_unwind around tool dispatch catches panics without killing the process
+    #[test]
+    fn test_catch_unwind_mcp_panic_returns_error() {
+        // Simulate the same pattern used in handle_tools_call
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            panic!("simulated tool handler panic");
+        }));
+        assert!(result.is_err(), "catch_unwind must return Err on panic");
+
+        // Process is still alive — we can execute code after the panic
+        let after_panic = std::panic::catch_unwind(|| 42_i32);
+        assert_eq!(after_panic.unwrap(), 42, "Process must survive after caught panic");
+    }
+
+    // T3.2-H3: update_git_info sets git_branch in an existing git repository
+    #[test]
+    fn test_git_branch_info_returns_branch() {
+        let mut beat = BeatState::default();
+        // Run with None (inherits CWD — the ai-smartness project root IS a git repo)
+        update_git_info(&mut beat, None);
+        assert!(
+            beat.git_branch.as_deref().map(|b| !b.is_empty()).unwrap_or(false),
+            "git_branch must be Some(non-empty) in a git repository"
+        );
+    }
+
+    // T3.2-H3: update_git_info detects dirty working tree
+    #[test]
+    fn test_git_branch_info_detects_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        // Init a fresh git repo
+        std::process::Command::new("git").args(["init"]).current_dir(dir.path()).output().unwrap();
+        std::process::Command::new("git").args(["config", "user.email", "t@t.com"]).current_dir(dir.path()).output().unwrap();
+        std::process::Command::new("git").args(["config", "user.name", "Test"]).current_dir(dir.path()).output().unwrap();
+        // Commit a file → clean state
+        std::fs::write(dir.path().join("a.txt"), "content").unwrap();
+        std::process::Command::new("git").args(["add", "."]).current_dir(dir.path()).output().unwrap();
+        std::process::Command::new("git").args(["commit", "-m", "init"]).current_dir(dir.path()).output().unwrap();
+
+        // Clean state: dirty must be false
+        let mut beat_clean = BeatState::default();
+        update_git_info(&mut beat_clean, Some(dir.path()));
+        assert!(!beat_clean.git_dirty, "Should not be dirty after clean commit");
+        assert!(beat_clean.git_branch.is_some(), "Branch should be set in temp repo");
+
+        // Add untracked file → dirty must be true
+        std::fs::write(dir.path().join("untracked.txt"), "new").unwrap();
+        let mut beat_dirty = BeatState::default();
+        update_git_info(&mut beat_dirty, Some(dir.path()));
+        assert!(beat_dirty.git_dirty, "Should be dirty with untracked file");
+    }
+}
+
+fn tool_def(name: &str, desc: &str, required: &[&str], optional: &[&str]) -> serde_json::Value {
+    let mut props = serde_json::Map::new();
+    for &r in required.iter().chain(optional.iter()) {
+        props.insert(
+            r.to_string(),
+            serde_json::json!({"type": "string", "description": r}),
+        );
+    }
+    let req: Vec<&str> = required.to_vec();
+    serde_json::json!({
+        "name": name,
+        "description": desc,
+        "inputSchema": {
+            "type": "object",
+            "properties": props,
+            "required": req
+        }
+    })
+}

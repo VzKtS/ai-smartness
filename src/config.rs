@@ -1,0 +1,1930 @@
+//! Guardian & system configuration — all LLM tasks + embedding systems.
+//!
+//! Each subsystem is independently configurable:
+//!   - LLM-based: extraction, coherence, reactivation, synthesis, labels, importance
+//!   - Embedding-based: gossip, recall, thread matching
+//!
+//! Design: Local LLM (default), Remote API, or Auto (local + remote fallback).
+//! Backend selected explicitly via `llm_backend` in config.json.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+// ============================================================================
+// PER-TASK LLM CONFIGURATION
+// ============================================================================
+
+/// Configuration for a single LLM task.
+/// Controls whether this Guardian task is active.
+/// Inference is handled by the local LLM (llama.cpp) only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskLlmConfig {
+    pub enabled: bool,
+}
+
+// ============================================================================
+// LLM BACKEND
+// ============================================================================
+
+/// LLM backend for Guardian inference tasks.
+/// User selects explicitly in config.json.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub enum LlmBackend {
+    /// In-process llama.cpp (zero API cost). Requires local GGUF model.
+    #[default]
+    Local,
+    /// Remote API provider only. Requires API key in env var.
+    Remote,
+    /// Try local first, fallback to remote if unavailable or circuit-breaker open.
+    Auto,
+}
+
+// ============================================================================
+// REMOTE LLM CONFIG
+// ============================================================================
+
+/// Remote LLM provider selection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+pub enum RemoteProvider {
+    /// Anthropic Messages API (api.anthropic.com).
+    /// Env: ANTHROPIC_API_KEY
+    Anthropic,
+    /// OpenAI Chat Completions API (api.openai.com).
+    /// Env: OPENAI_API_KEY
+    OpenAI,
+    /// Custom OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, etc.).
+    /// Env: AI_SMARTNESS_LLM_API_KEY
+    Custom { url: String },
+}
+
+impl Default for RemoteProvider {
+    fn default() -> Self {
+        Self::OpenAI
+    }
+}
+
+/// Configuration for remote LLM API calls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteLlmConfig {
+    /// Which remote provider to use.
+    #[serde(default)]
+    pub provider: RemoteProvider,
+    /// Model identifier (e.g. "claude-3-haiku-20240307", "gpt-4o-mini").
+    #[serde(default = "default_remote_model")]
+    pub model: String,
+    /// Max output tokens for remote generation.
+    #[serde(default = "default_remote_max_tokens")]
+    pub max_tokens: u32,
+    /// Timeout in seconds for remote API calls.
+    #[serde(default = "default_remote_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_remote_model() -> String { "gpt-4o-mini".into() }
+fn default_remote_max_tokens() -> u32 { 768 }
+fn default_remote_timeout() -> u64 { 30 }
+
+impl Default for RemoteLlmConfig {
+    fn default() -> Self {
+        Self {
+            provider: RemoteProvider::default(),
+            model: default_remote_model(),
+            max_tokens: default_remote_max_tokens(),
+            timeout_secs: default_remote_timeout(),
+        }
+    }
+}
+
+// ============================================================================
+// LOCAL LLM CONFIG (hardware overrides)
+// ============================================================================
+
+/// Local LLM hardware configuration — overrides for adaptive VRAM management.
+/// All fields default to 0 which means "auto-detect".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LocalLlmConfig {
+    /// Context size in tokens. 0 = auto (VRAM-adaptive).
+    #[serde(default)]
+    pub ctx_size: u32,
+    /// Number of model layers offloaded to GPU. 0 = auto.
+    #[serde(default)]
+    pub gpu_layers: u32,
+    /// Max output tokens per generation. 0 = default (768).
+    #[serde(default)]
+    pub max_tokens: u32,
+    /// Inference threads for llama.cpp. 0 = auto (cpu_cores/2, max 4).
+    #[serde(default)]
+    pub inference_threads: u32,
+}
+
+// ============================================================================
+// HARDWARE DEVICE ASSIGNMENT
+// ============================================================================
+
+/// Device selection for a computation tier.
+/// Serializes as flat string: "auto", "cpu", "gpu:0", "gpu:1", "disabled".
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum DeviceSelection {
+    /// Auto-detect best available GPU.
+    #[default]
+    Auto,
+    /// Force CPU-only processing (no GPU).
+    CpuOnly,
+    /// Use specific GPU by index.
+    Gpu(u32),
+    /// Tier is disabled (e.g. provider when using external agents only).
+    Disabled,
+}
+
+impl std::fmt::Display for DeviceSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::CpuOnly => write!(f, "cpu"),
+            Self::Gpu(idx) => write!(f, "gpu:{}", idx),
+            Self::Disabled => write!(f, "disabled"),
+        }
+    }
+}
+
+impl std::str::FromStr for DeviceSelection {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "auto" => Ok(Self::Auto),
+            "cpu" => Ok(Self::CpuOnly),
+            "disabled" => Ok(Self::Disabled),
+            other if other.starts_with("gpu:") => {
+                let idx = other[4..].parse::<u32>().map_err(|e| e.to_string())?;
+                Ok(Self::Gpu(idx))
+            }
+            _ => Err(format!("Invalid device selection: '{}'. Expected: auto, cpu, gpu:N, disabled", s)),
+        }
+    }
+}
+
+impl Serialize for DeviceSelection {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceSelection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Hardware assignment for computation tiers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HardwareConfig {
+    /// Device for ai-smartness runtime: LLM extraction/coherence/synthesis + ONNX embeddings.
+    #[serde(default)]
+    pub runtime_device: DeviceSelection,
+    /// Device for future local agent LLM provider (not yet wired).
+    #[serde(default)]
+    pub provider_device: DeviceSelection,
+}
+
+impl Default for HardwareConfig {
+    fn default() -> Self {
+        Self {
+            runtime_device: DeviceSelection::Auto,
+            provider_device: DeviceSelection::Disabled,
+        }
+    }
+}
+
+// ============================================================================
+// LOCAL MODEL SELECTION
+// ============================================================================
+
+/// Local GGUF model selection.
+/// 4 models: SevenB (default), Gemma12B (multilingual), Qwen14B, Qwen32B.
+/// Minimum model: 7B. Phi-4-Mini dropped in v6.10.8.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub enum LocalModelSize {
+    /// Qwen2.5-7B-Instruct Q4_K_M (~4.7 GB). Default — minimum supported model.
+    #[default]
+    #[serde(alias = "ThreeB", alias = "Phi4Mini")]  // migration: old configs → SevenB
+    SevenB,
+    /// Gemma-3-12B-IT Q4_K_M (~7.3 GB). Multilingual alternative (140+ languages).
+    Gemma12B,
+    /// Qwen2.5-14B-Instruct Q4_K_M (~9.0 GB). High quality, needs >10GB VRAM.
+    Qwen14B,
+    /// Qwen2.5-32B-Instruct Q4_K_M (~19 GB). Maximum quality, needs >24GB VRAM.
+    Qwen32B,
+}
+
+impl LocalModelSize {
+    pub fn filename(&self) -> &'static str {
+        match self {
+            Self::SevenB => "qwen2.5-7b-instruct-q4_k_m.gguf",
+            Self::Gemma12B => "google_gemma-3-12b-it-Q4_K_M.gguf",
+            Self::Qwen14B => "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+            Self::Qwen32B => "Qwen2.5-32B-Instruct-Q4_K_M.gguf",
+        }
+    }
+
+    pub fn download_url(&self) -> &'static str {
+        match self {
+            Self::SevenB => "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+            Self::Gemma12B => "https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_K_M.gguf",
+            Self::Qwen14B => "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+            Self::Qwen32B => "https://huggingface.co/bartowski/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::SevenB => "Qwen2.5-7B-Instruct (Q4_K_M, ~4.7 GB)",
+            Self::Gemma12B => "Gemma-3-12B-IT (Q4_K_M, ~7.3 GB)",
+            Self::Qwen14B => "Qwen2.5-14B-Instruct (Q4_K_M, ~9.0 GB)",
+            Self::Qwen32B => "Qwen2.5-32B-Instruct (Q4_K_M, ~19 GB)",
+        }
+    }
+
+    /// Approximate VRAM used by model weights (Q4_K_M quantization) in MB.
+    pub fn model_vram_mb(&self) -> u64 {
+        match self {
+            Self::SevenB => 4700,
+            Self::Gemma12B => 7300,
+            Self::Qwen14B => 9000,
+            Self::Qwen32B => 19000,
+        }
+    }
+
+    /// Approximate KV cache + compute buffer bytes per token.
+    /// Measured empirically (includes Vulkan overhead).
+    pub fn kv_bytes_per_token(&self) -> u64 {
+        match self {
+            Self::SevenB => 128 * 1024,   // ~128 KB/token
+            Self::Gemma12B => 160 * 1024, // ~160 KB/token (estimated)
+            Self::Qwen14B => 192 * 1024,  // ~192 KB/token (estimated)
+            Self::Qwen32B => 256 * 1024,  // ~256 KB/token (estimated)
+        }
+    }
+
+    /// Wrap a raw prompt in the model's chat template.
+    /// Instruct models require specific framing to produce output.
+    pub fn wrap_chat_template(&self, prompt: &str) -> String {
+        match self {
+            Self::SevenB | Self::Qwen14B | Self::Qwen32B => {
+                // Qwen2.5 ChatML format
+                format!(
+                    "<|im_start|>system\nYou are a JSON extraction assistant. Output only valid JSON, no explanation.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+                    prompt
+                )
+            }
+            Self::Gemma12B => {
+                // Gemma-3 format (no system role — system instruction in user turn)
+                format!(
+                    "<start_of_turn>user\nYou are a JSON extraction assistant. Output only valid JSON, no explanation.\n\n{}<end_of_turn>\n<start_of_turn>model\n",
+                    prompt
+                )
+            }
+        }
+    }
+
+    /// Model's native maximum context size in tokens.
+    pub fn native_ctx_size(&self) -> u32 {
+        match self {
+            Self::SevenB => 131072,
+            Self::Gemma12B => 8192,
+            Self::Qwen14B => 131072,
+            Self::Qwen32B => 131072,
+        }
+    }
+
+    /// Model-aware context size cascade for adaptive VRAM fitting.
+    /// Ordered descending — try largest first, fall back on VRAM pressure.
+    pub fn ctx_cascade(&self) -> &'static [u32] {
+        match self {
+            Self::SevenB | Self::Qwen14B => &[16384, 8192, 4096, 2048, 1024],
+            Self::Gemma12B => &[8192, 4096, 2048, 1024, 512],
+            Self::Qwen32B => &[32768, 16384, 8192, 4096, 2048],
+        }
+    }
+
+    /// Expected file size in bytes for disk space check.
+    pub fn file_size_bytes(&self) -> u64 {
+        match self {
+            Self::SevenB => 4_700_000_000,     // ~4.7 GB
+            Self::Gemma12B => 7_300_000_000,   // ~7.3 GB
+            Self::Qwen14B => 9_000_000_000,    // ~9.0 GB
+            Self::Qwen32B => 19_000_000_000,   // ~19 GB
+        }
+    }
+
+    /// CLI slug for model selection (lowercase, no spaces).
+    pub fn cli_name(&self) -> &'static str {
+        match self {
+            Self::SevenB => "qwen7b",
+            Self::Gemma12B => "gemma12b",
+            Self::Qwen14B => "qwen14b",
+            Self::Qwen32B => "qwen32b",
+        }
+    }
+
+    /// Parse CLI slug to model variant.
+    pub fn from_cli_name(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "qwen7b" => Some(Self::SevenB),
+            "gemma12b" => Some(Self::Gemma12B),
+            "qwen14b" => Some(Self::Qwen14B),
+            "qwen32b" => Some(Self::Qwen32B),
+            _ => None,
+        }
+    }
+
+    /// All available model variants.
+    pub fn all_variants() -> Vec<Self> {
+        vec![Self::SevenB, Self::Gemma12B, Self::Qwen14B, Self::Qwen32B]
+    }
+
+    /// Chat template name for logging.
+    pub fn template_name(&self) -> &'static str {
+        match self {
+            Self::SevenB | Self::Qwen14B | Self::Qwen32B => "chatml",
+            Self::Gemma12B => "gemma3",
+        }
+    }
+}
+
+// ============================================================================
+// EMBEDDING SYSTEM CONFIG (for non-LLM systems: gossip, recall, matching)
+// ============================================================================
+
+/// Embedding mode for vector-similarity-based systems.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub enum EmbeddingMode {
+    /// ONNX Runtime (best). If unavailable → automatic TF-IDF fallback.
+    #[default]
+    OnnxWithFallback,
+    /// ONNX only. If unavailable → skip (no fallback).
+    OnnxOnly,
+    /// TF-IDF only. Never calls ONNX (ultra-light, offline).
+    TfidfOnly,
+    /// Disable this system entirely.
+    Disabled,
+}
+
+fn parse_embedding_mode(s: &str) -> EmbeddingMode {
+    match s {
+        "OnnxWithFallback" => EmbeddingMode::OnnxWithFallback,
+        "OnnxOnly" => EmbeddingMode::OnnxOnly,
+        "TfidfOnly" => EmbeddingMode::TfidfOnly,
+        "Disabled" => EmbeddingMode::Disabled,
+        _ => EmbeddingMode::OnnxWithFallback,
+    }
+}
+
+/// Configuration for embedding-based subsystems.
+/// Each system (gossip, recall, thread matching, reactivation) has its own instance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingSystemConfig {
+    pub mode: EmbeddingMode,
+    /// Similarity threshold for ONNX (calibrated on all-MiniLM-L6-v2).
+    pub onnx_threshold: f64,
+    /// Similarity threshold for TF-IDF (typically lower — different distribution).
+    pub tfidf_threshold: f64,
+}
+
+impl EmbeddingSystemConfig {
+    /// Returns the active threshold based on current embedding backend.
+    pub fn active_threshold(&self, use_onnx: bool) -> f64 {
+        if use_onnx { self.onnx_threshold } else { self.tfidf_threshold }
+    }
+}
+
+/// Parse an "embedding" section from config.json into EmbeddingSystemConfig.
+fn parse_embedding_config(obj: &serde_json::Map<String, serde_json::Value>, cfg: &mut EmbeddingSystemConfig) {
+    if let Some(m) = obj.get("mode").and_then(|v| v.as_str()) {
+        cfg.mode = parse_embedding_mode(m);
+    }
+    if let Some(v) = obj.get("onnx_threshold").and_then(|v| v.as_f64()) {
+        cfg.onnx_threshold = v;
+    }
+    if let Some(v) = obj.get("tfidf_threshold").and_then(|v| v.as_f64()) {
+        cfg.tfidf_threshold = v;
+    }
+}
+
+// ============================================================================
+// EXTRACTION CONFIG
+// ============================================================================
+
+/// Extraction-specific configuration.
+/// Controls how the Guardian extracts title/topics/summary from tool outputs.
+///
+/// 7 source-specific prompt templates:
+///   prompt, read, write, task, fetch, response, command
+///
+/// Frequency: HIGH — called on every tool capture.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractionConfig {
+    pub llm: TaskLlmConfig,
+    /// Max content chars sent to LLM (truncation).
+    pub max_content_chars: usize,           // default: 15000
+    /// Noise words filtered from extracted topics.
+    pub topic_noise_words: Vec<String>,
+    /// Custom topic aliases — maps extracted terms to canonical topics.
+    pub topic_aliases: HashMap<String, String>,
+    /// Minimum topic relevance.
+    pub min_topic_frequency: usize,         // default: 1
+    /// Skip extraction for these tool names.
+    pub skip_tools: Vec<String>,
+    /// Enable skip signal detection.
+    pub enable_skip_signal: bool,           // default: true
+    /// TTL for pending context in the daemon processor (seconds).
+    #[serde(default = "default_pending_context_ttl")]
+    pub pending_context_ttl_secs: u64,      // default: 600
+    /// Max content chars sent to LLM for tool summary pipeline (truncation).
+    #[serde(default = "default_max_tool_content_chars")]
+    pub max_tool_content_chars: usize,      // default: 3000
+}
+
+impl Default for ExtractionConfig {
+    fn default() -> Self {
+        Self {
+            llm: TaskLlmConfig { enabled: true },
+            max_content_chars: 15000,
+            topic_noise_words: vec![
+                "message", "contenu", "analyse", "fichier",
+                "response", "result", "data", "type", "value",
+            ].into_iter().map(String::from).collect(),
+            topic_aliases: HashMap::new(),
+            min_topic_frequency: 1,
+            skip_tools: vec![],
+            enable_skip_signal: true,
+            pending_context_ttl_secs: default_pending_context_ttl(),
+            max_tool_content_chars: 3000,
+        }
+    }
+}
+
+fn default_max_tool_content_chars() -> usize { 3000 }
+
+// ============================================================================
+// COHERENCE CONFIG
+// ============================================================================
+
+/// Coherence-specific configuration.
+/// Controls how the Guardian scores subject coherence between consecutive captures.
+///
+/// Binary decision: score > 0.3 = Child (same subject), score <= 0.3 = Orphan (new subject).
+/// Uses extraction metadata (title, subjects, concepts) instead of raw text.
+///
+/// Frequency: HIGH — called on every capture with pending context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoherenceConfig {
+    pub llm: TaskLlmConfig,
+    /// Enable coherence gate (if false, all captures proceed without coherence check).
+    #[serde(default = "default_true")]
+    pub enabled: bool,                       // default: true
+    pub max_context_chars: usize,            // default: 1500
+    /// Threshold for child decision (same subject → continuity chain continues).
+    pub child_threshold: f64,                // default: 0.3
+    /// Deprecated — kept for backward compat with existing config files. No longer used.
+    #[serde(default)]
+    pub orphan_threshold: f64,               // unused since v5.7.7
+    /// Fallback score returned on LLM error.
+    pub fallback_score: f64,                 // default: 0.5
+}
+
+impl Default for CoherenceConfig {
+    fn default() -> Self {
+        Self {
+            llm: TaskLlmConfig { enabled: true },
+            enabled: true,
+            max_context_chars: 1500,
+            child_threshold: 0.3,
+            orphan_threshold: 0.0,
+            fallback_score: 0.5,
+        }
+    }
+}
+
+// ============================================================================
+// REACTIVATION CONFIG
+// ============================================================================
+
+/// Reactivation-specific configuration.
+/// Controls LLM-assisted decision for borderline thread reactivation.
+///
+/// Three-tier: auto (>high), LLM (borderline-high), skip (<borderline)
+///
+/// Frequency: LOW — only for borderline similarity cases.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReactivationConfig {
+    pub llm: TaskLlmConfig,
+    pub auto_threshold: f64,                 // default: 0.35
+    pub borderline_threshold: f64,           // default: 0.15
+    pub max_context_chars: usize,            // default: 500
+    pub max_topics: usize,                   // default: 5
+    pub max_summary_chars: usize,            // default: 200
+}
+
+impl Default for ReactivationConfig {
+    fn default() -> Self {
+        Self {
+            llm: TaskLlmConfig { enabled: true },
+            auto_threshold: 0.35,
+            borderline_threshold: 0.15,
+            max_context_chars: 500,
+            max_topics: 5,
+            max_summary_chars: 200,
+        }
+    }
+}
+
+// ============================================================================
+// SYNTHESIS CONFIG
+// ============================================================================
+
+/// Synthesis-specific configuration.
+/// Controls thread summarization at two points:
+///   1. Session synthesis (at 95% context capacity)
+///   2. Archive synthesis (when suspended threads are archived after 72h)
+///
+/// Frequency: MEDIUM — per-session or per-archive event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SynthesisConfig {
+    pub llm: TaskLlmConfig,
+    pub max_messages: usize,                 // default: 10
+    pub max_message_chars: usize,            // default: 500
+    pub max_output_chars: usize,             // default: 1000
+    pub language: String,                    // default: "en"
+}
+
+impl Default for SynthesisConfig {
+    fn default() -> Self {
+        Self {
+            llm: TaskLlmConfig { enabled: true },
+            max_messages: 10,
+            max_message_chars: 500,
+            max_output_chars: 1000,
+            language: "en".to_string(),
+        }
+    }
+}
+
+// ============================================================================
+// LABEL SUGGESTION CONFIG
+// ============================================================================
+
+/// Label suggestion configuration.
+/// LLM suggests labels for unlabeled threads.
+///
+/// Frequency: LOW — on-demand via MCP tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelSuggestionConfig {
+    pub llm: TaskLlmConfig,
+    pub auto_suggest_on_extraction: bool,    // default: true
+    pub label_vocabulary: Vec<String>,
+    /// NOTE: Runtime filtering uses constants::LABEL_BLOCKLIST. This field is for GUI/config overrides.
+    pub label_blocklist: Vec<String>,
+    pub allow_custom_labels: bool,           // default: true
+    pub batch_size: usize,                   // default: 10
+}
+
+impl Default for LabelSuggestionConfig {
+    fn default() -> Self {
+        Self {
+            llm: TaskLlmConfig { enabled: true },
+            auto_suggest_on_extraction: true,
+            label_vocabulary: vec![
+                "bug-fix", "feature", "refactor", "architecture",
+                "configuration", "database", "api", "cli",
+                "hook-system", "agent-system", "documentation",
+                "performance", "security", "testing",
+            ].into_iter().map(String::from).collect(),
+            label_blocklist: vec![
+                "action", "decision", "metadata", "empty", "search result",
+                "no matches", "empty result", "file-listing", "directory-listing",
+                "grep-output", "search-config", "build-output", "code-snippet",
+            ].into_iter().map(String::from).collect(),
+            allow_custom_labels: true,
+            batch_size: 10,
+        }
+    }
+}
+
+// ============================================================================
+// IMPORTANCE RATING CONFIG
+// ============================================================================
+
+/// Importance auto-rating configuration.
+/// LLM assigns importance score (0.0-1.0) to new threads.
+///
+/// Frequency: HIGH — piggybacks on extraction call (zero extra LLM cost).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportanceRatingConfig {
+    pub llm: TaskLlmConfig,
+    pub piggyback_on_extraction: bool,       // default: true
+    pub fallback_score: f64,                 // default: 0.5
+    pub score_map: ImportanceScoreMap,
+}
+
+/// Maps LLM-returned categories to numeric importance scores.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportanceScoreMap {
+    pub critical: f64,    // "decisions", "blockers", "architecture" → 1.0
+    pub high: f64,        // "implementation", "bug-fix", "config" → 0.8
+    pub normal: f64,      // "exploration", "question", "learning" → 0.5
+    pub low: f64,         // "chit-chat", "noise", "meta" → 0.3
+    pub disposable: f64,  // "one-off debug", "transient log" → 0.1
+}
+
+impl Default for ImportanceScoreMap {
+    fn default() -> Self {
+        Self { critical: 1.0, high: 0.8, normal: 0.5, low: 0.3, disposable: 0.1 }
+    }
+}
+
+impl Default for ImportanceRatingConfig {
+    fn default() -> Self {
+        Self {
+            llm: TaskLlmConfig { enabled: true },
+            piggyback_on_extraction: true,
+            fallback_score: 0.5,
+            score_map: ImportanceScoreMap::default(),
+        }
+    }
+}
+
+// ============================================================================
+// THREAD MATCHING MODE
+// ============================================================================
+
+/// Decision mode for thread matching (continue vs new thread).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum ThreadMatchingMode {
+    /// Default: cosine similarity ONNX only.
+    /// Fast (~1ms), zero LLM cost, ~80% precision.
+    #[default]
+    EmbeddingOnly,
+    /// Embedding pre-filter + final LLM decision.
+    /// More precise (~95%) but 1 extra LLM call per capture.
+    EmbeddingPlusLlm,
+}
+
+// ============================================================================
+// GOSSIP CONFIG (embedding-based bridge discovery)
+// ============================================================================
+
+/// Gossip v2 configuration — concept-based bridge discovery.
+///
+/// Pipeline:
+///   1. ConceptIndex inverted index → find overlaps
+///   2. Weight scoring → bridge creation
+///   3. Merge candidate collection (score >= merge_evaluation_threshold)
+///   4. Legacy topic overlap fallback for threads without concepts
+///
+/// Frequency: LOW — called in prune loop every 5 min.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GossipConfig {
+    pub embedding: EmbeddingSystemConfig,
+    // Concept gossip v2
+    #[serde(default = "default_concept_overlap_min_shared")]
+    pub concept_overlap_min_shared: usize,       // default: 3
+    #[serde(default = "default_concept_min_bridge_weight")]
+    pub concept_min_bridge_weight: f64,          // default: 0.20
+    #[serde(default = "default_merge_evaluation_threshold")]
+    pub merge_evaluation_threshold: f64,         // deprecated — merge removed in v6.1
+    #[serde(default = "default_merge_auto_threshold")]
+    pub merge_auto_threshold: f64,               // deprecated — merge removed in v6.1
+    #[serde(default = "default_true")]
+    pub concept_gossip_enabled: bool,            // default: true
+    // Legacy (fallback for threads without concepts)
+    pub topic_overlap_enabled: bool,             // default: true
+    pub topic_overlap_min_shared: usize,         // default: 2
+    /// Minimum shard-bridges between a thread pair to validate the connection.
+    /// Pairs with fewer bridges are not created. Default: 5.
+    #[serde(default = "default_min_bridges")]
+    pub min_bridges: usize,                      // default: 5
+    /// Min bridges per thread (clamp floor for dynamic_limits).
+    pub min_bridges_per_thread: usize,           // default: 3
+    /// Max bridges per thread (clamp ceiling for dynamic_limits).
+    pub max_bridges_per_thread: usize,           // default: 999999 (effectively no cap)
+    /// Target ratio bridges/threads for dynamic limit calculation.
+    pub target_bridge_ratio: f64,                // default: 3.0
+    // Propagation (transitive bridge discovery via gossip Phase 3)
+    /// Enable transitive propagation in gossip.
+    #[serde(default = "default_true")]
+    pub propagation_enabled: bool,               // default: true
+    /// Max propagation depth (A→B→C = depth 1).
+    #[serde(default = "default_propagation_max_depth")]
+    pub propagation_max_depth: u32,              // default: 2
+    /// Weight decay factor per propagation hop.
+    #[serde(default = "default_propagation_decay_factor")]
+    pub propagation_decay_factor: f64,           // default: 0.5
+    /// Minimum weight for propagated bridges.
+    #[serde(default = "default_propagation_min_weight")]
+    pub propagation_min_weight: f64,             // default: 0.10
+}
+
+fn default_min_bridges() -> usize { 5 }
+fn default_concept_overlap_min_shared() -> usize { 1 }
+fn default_concept_min_bridge_weight() -> f64 { 0.15 }
+fn default_merge_evaluation_threshold() -> f64 { 0.60 }
+fn default_merge_auto_threshold() -> f64 { 0.85 }
+fn default_propagation_max_depth() -> u32 { 2 }
+fn default_propagation_decay_factor() -> f64 { 0.5 }
+fn default_propagation_min_weight() -> f64 { 0.10 }
+
+impl Default for GossipConfig {
+    fn default() -> Self {
+        Self {
+            embedding: EmbeddingSystemConfig {
+                mode: EmbeddingMode::OnnxWithFallback,
+                onnx_threshold: 0.75,
+                tfidf_threshold: 0.55,
+            },
+            concept_overlap_min_shared: 1,
+            concept_min_bridge_weight: 0.15,
+            merge_evaluation_threshold: 0.60,
+            merge_auto_threshold: 0.85,
+            concept_gossip_enabled: true,
+            topic_overlap_enabled: true,
+            topic_overlap_min_shared: 2,
+            min_bridges: 5,
+            min_bridges_per_thread: 3,
+            max_bridges_per_thread: 999_999,
+            target_bridge_ratio: 3.0,
+            propagation_enabled: true,
+            propagation_max_depth: 2,
+            propagation_decay_factor: 0.5,
+            propagation_min_weight: 0.10,
+        }
+    }
+}
+
+// ============================================================================
+// ENGRAM CONFIG (multi-validator retrieval — inspired by DeepSeek Engram)
+// ============================================================================
+
+/// Engram retrieval configuration — 9-validator consensus for memory injection.
+///
+/// Replaces single-signal cosine scoring with multi-validator voting:
+///   Phase 1: TopicIndex hash lookup O(1) → candidate pre-filter
+///   Phase 2: 9 validators vote (pass/fail + confidence)
+///   Phase 3: Consensus → StrongInject (≥5/9) / WeakInject (3-4/9) / Skip (<3/9)
+///
+/// 8/9 validators are zero-cost (memory lookup). Only V1 (cosine) costs compute.
+///
+/// Frequency: HIGH — called on every user prompt (replaces RecallConfig pipeline).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngramConfig {
+    /// Embedding config for V1 (SemanticSimilarity validator).
+    pub embedding: EmbeddingSystemConfig,
+
+    /// Per-validator weights (0.0=disabled, 1.0=full weight).
+    /// Users can tune each validator independently in admin panel.
+    pub validator_weights: ValidatorWeights,
+
+    /// Consensus thresholds.
+    pub strong_inject_min_votes: u8,             // default: 5 (out of 9)
+    pub weak_inject_min_votes: u8,               // default: 3
+
+    /// Max threads returned for injection.
+    pub max_results: usize,                      // default: 5
+    /// Max candidates scanned from hash index pre-filter.
+    pub max_candidates: usize,                   // default: 50
+    /// Max archived threads scanned.
+    pub max_archived_scan: usize,                // default: 50
+
+    /// Enable hash index pre-filter (TopicIndex).
+    /// When disabled, falls back to full scan (legacy behavior).
+    pub hash_index_enabled: bool,                // default: true
+
+    /// Minimum bridge connections for a thread to be eligible for injection.
+    /// Threads with fewer total bridges are filtered out (display + retrieval alignment).
+    #[serde(default = "default_min_bridge_connections")]
+    pub min_bridge_connections: usize,           // default: 5
+}
+
+/// Per-validator weight configuration.
+/// Each weight controls how much influence the validator has on the final score.
+/// Set to 0.0 to disable a validator entirely.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidatorWeights {
+    pub semantic_similarity: f64,    // V1 — cosine ONNX/TF-IDF (default: 1.0)
+    pub topic_overlap: f64,          // V2 — shared topics (default: 0.8)
+    pub temporal_proximity: f64,     // V3 — WorkContext freshness (default: 0.7)
+    pub graph_connectivity: f64,     // V4 — bridge connectivity (default: 0.9)
+    pub injection_history: f64,      // V5 — usage_ratio feedback (default: 0.6)
+    pub decayed_relevance: f64,      // V6 — weight × importance (default: 0.5)
+    pub label_coherence: f64,        // V7 — label matching (default: 0.4)
+    pub focus_alignment: f64,        // V8 — ai_focus boost (default: 0.8)
+    #[serde(default = "default_concept_coherence_weight")]
+    pub concept_coherence: f64,      // V9 — concept overlap (default: 0.7)
+    #[serde(default = "default_truncation_penalty_weight")]
+    pub truncation_penalty: f64,     // V10 — truncated-origin penalty (default: 0.7)
+}
+
+fn default_min_bridge_connections() -> usize { 5 }
+fn default_concept_coherence_weight() -> f64 { 0.7 }
+fn default_truncation_penalty_weight() -> f64 { 0.7 }
+
+impl ValidatorWeights {
+    /// Convert to Vec for indexed access by validator.
+    pub fn to_vec(&self) -> Vec<f64> {
+        vec![
+            self.semantic_similarity,
+            self.topic_overlap,
+            self.temporal_proximity,
+            self.graph_connectivity,
+            self.injection_history,
+            self.decayed_relevance,
+            self.label_coherence,
+            self.focus_alignment,
+            self.concept_coherence,
+            self.truncation_penalty,
+        ]
+    }
+}
+
+impl Default for ValidatorWeights {
+    fn default() -> Self {
+        Self {
+            semantic_similarity: 1.0,
+            topic_overlap: 0.8,
+            temporal_proximity: 0.7,
+            graph_connectivity: 0.9,
+            injection_history: 0.6,
+            decayed_relevance: 0.5,
+            label_coherence: 0.4,
+            focus_alignment: 0.8,
+            concept_coherence: 0.7,
+            truncation_penalty: 0.7,
+        }
+    }
+}
+
+impl Default for EngramConfig {
+    fn default() -> Self {
+        Self {
+            embedding: EmbeddingSystemConfig {
+                mode: EmbeddingMode::OnnxWithFallback,
+                onnx_threshold: 0.30,
+                tfidf_threshold: 0.20,
+            },
+            validator_weights: ValidatorWeights::default(),
+            strong_inject_min_votes: 5,
+            weak_inject_min_votes: 3,
+            max_results: 5,
+            max_candidates: 50,
+            max_archived_scan: 50,
+            hash_index_enabled: true,
+            min_bridge_connections: 5,
+        }
+    }
+}
+
+// ============================================================================
+// RECALL CONFIG (legacy — kept for backward compat, delegates to EngramConfig)
+// ============================================================================
+
+/// Legacy recall config. New code should use EngramConfig.
+/// Kept for config.json backward compatibility.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecallConfig {
+    pub embedding: EmbeddingSystemConfig,
+    pub max_results: usize,
+    pub max_candidates: usize,
+    pub focus_boost: f64,
+    pub status_penalty: f64,
+}
+
+impl Default for RecallConfig {
+    fn default() -> Self {
+        Self {
+            embedding: EmbeddingSystemConfig {
+                mode: EmbeddingMode::OnnxWithFallback,
+                onnx_threshold: 0.30,
+                tfidf_threshold: 0.20,
+            },
+            max_results: 5,
+            max_candidates: 50,
+            focus_boost: 0.15,
+            status_penalty: 0.1,
+        }
+    }
+}
+
+// ============================================================================
+// THREAD MATCHING CONFIG
+// ============================================================================
+
+/// Thread matching configuration — "continue" or "new thread" decision.
+///
+/// Frequency: HIGH — called on every capture.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadMatchingConfig {
+    pub mode: ThreadMatchingMode,
+    pub embedding: EmbeddingSystemConfig,
+    #[serde(default = "default_continue_threshold")]
+    pub continue_threshold: f64,
+    #[serde(default = "default_reactivate_threshold")]
+    pub reactivate_threshold: f64,
+    #[serde(default = "default_capacity_suspend_threshold")]
+    pub capacity_suspend_threshold: f64,
+}
+
+fn default_pending_context_ttl() -> u64 { 600 }
+
+fn default_continue_threshold() -> f64 { 0.75 }
+fn default_reactivate_threshold() -> f64 { 0.90 }
+fn default_capacity_suspend_threshold() -> f64 { 0.95 }
+
+impl Default for ThreadMatchingConfig {
+    fn default() -> Self {
+        Self {
+            mode: ThreadMatchingMode::EmbeddingOnly,
+            embedding: EmbeddingSystemConfig {
+                mode: EmbeddingMode::OnnxWithFallback,
+                onnx_threshold: 0.60,
+                tfidf_threshold: 0.45,
+            },
+            continue_threshold: 0.75,
+            reactivate_threshold: 0.90,
+            capacity_suspend_threshold: default_capacity_suspend_threshold(),
+        }
+    }
+}
+
+// ============================================================================
+// DECAY & LIFECYCLE CONFIG
+// ============================================================================
+
+/// Decay & lifecycle parameters — configurable via GUI.
+/// Controls thread weight decay, orphan acceleration, bridge decay, and archival.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecayConfig {
+    /// Thread weight below this triggers auto-suspension. Default: 0.1
+    #[serde(default = "default_thread_suspend_threshold")]
+    pub thread_suspend_threshold: f64,
+    /// Minimum half-life in days (importance=0, disposable). Default: 0.75
+    #[serde(default = "default_thread_min_half_life")]
+    pub thread_min_half_life: f64,
+    /// Maximum half-life in days (importance=1, critical). Default: 7.0
+    #[serde(default = "default_thread_max_half_life")]
+    pub thread_max_half_life: f64,
+    /// Weight boost on re-injection by Engram. Default: 0.1
+    #[serde(default = "default_thread_use_boost")]
+    pub thread_use_boost: f64,
+    /// Hours without injection before orphan half-life halves. Default: 6.0
+    #[serde(default = "default_orphan_halving_hours")]
+    pub orphan_halving_hours: f64,
+    /// Floor for orphan half-life (fraction of base). Default: 0.1
+    #[serde(default = "default_orphan_min_half_life_factor")]
+    pub orphan_min_half_life_factor: f64,
+    /// Bridge half-life in days. Default: 2.0
+    #[serde(default = "default_bridge_half_life")]
+    pub bridge_half_life: f64,
+    /// Bridge weight below this is marked invalid. Default: 0.05
+    #[serde(default = "default_bridge_death_threshold")]
+    pub bridge_death_threshold: f64,
+    /// Bridge weight boost on traversal during recall. Default: 0.1
+    #[serde(default = "default_bridge_use_boost")]
+    pub bridge_use_boost: f64,
+    /// Hours after suspension before archival. Default: 72.0
+    #[serde(default = "default_archive_after_hours")]
+    pub archive_after_hours: f64,
+}
+
+fn default_thread_suspend_threshold() -> f64 { 0.1 }
+fn default_thread_min_half_life() -> f64 { 0.75 }
+fn default_thread_max_half_life() -> f64 { 7.0 }
+fn default_thread_use_boost() -> f64 { 0.1 }
+fn default_orphan_halving_hours() -> f64 { 6.0 }
+fn default_orphan_min_half_life_factor() -> f64 { 0.1 }
+fn default_bridge_half_life() -> f64 { 4.0 }
+fn default_bridge_death_threshold() -> f64 { 0.05 }
+fn default_bridge_use_boost() -> f64 { 0.1 }
+fn default_archive_after_hours() -> f64 { 72.0 }
+
+impl Default for DecayConfig {
+    fn default() -> Self {
+        Self {
+            thread_suspend_threshold: 0.1,
+            thread_min_half_life: 0.75,
+            thread_max_half_life: 7.0,
+            thread_use_boost: 0.1,
+            orphan_halving_hours: 6.0,
+            orphan_min_half_life_factor: 0.1,
+            bridge_half_life: 4.0,
+            bridge_death_threshold: 0.05,
+            bridge_use_boost: 0.1,
+            archive_after_hours: 72.0,
+        }
+    }
+}
+
+// ============================================================================
+// GLOBAL GUARDIAN CONFIG
+// ============================================================================
+
+/// Complete Guardian configuration — all LLM tasks + global settings.
+/// Loaded from config.json section "guardian".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardianConfig {
+    // --- Per-task configs (LLM-based) ---
+    pub extraction: ExtractionConfig,
+    pub coherence: CoherenceConfig,
+    pub reactivation: ReactivationConfig,
+    pub synthesis: SynthesisConfig,
+    pub label_suggestion: LabelSuggestionConfig,
+    pub importance_rating: ImportanceRatingConfig,
+
+    // --- Per-system configs (embedding-based) ---
+    pub thread_matching: ThreadMatchingConfig,
+    pub gossip: GossipConfig,
+    pub recall: RecallConfig,
+
+    // --- Engram retrieval (multi-validator consensus) ---
+    pub engram: EngramConfig,
+
+    // --- Heartbeat (agent liveness thresholds) ---
+    #[serde(default)]
+    pub heartbeat: crate::registry::heartbeat::HeartbeatConfig,
+
+    // --- Hooks (pretool toggles) ---
+    #[serde(default)]
+    pub hooks: HooksConfig,
+
+    // --- Capture (per-tool toggles) ---
+    #[serde(default)]
+    pub capture: CaptureConfig,
+
+    // --- Decay & Lifecycle (thread/bridge decay, archival) ---
+    #[serde(default)]
+    pub decay: DecayConfig,
+
+    // --- Global settings ---
+    pub enabled: bool,
+    /// LLM backend selection: Local, Remote, or Auto.
+    #[serde(default)]
+    pub llm_backend: LlmBackend,
+    /// Local model size for llama.cpp.
+    #[serde(default)]
+    pub local_model_size: LocalModelSize,
+    /// Local LLM hardware overrides (ctx_size, gpu_layers, etc.). 0 = auto.
+    #[serde(default)]
+    pub local_llm: LocalLlmConfig,
+    /// Remote LLM API configuration (provider, model, timeout).
+    #[serde(default)]
+    pub remote_llm: RemoteLlmConfig,
+    /// Hardware device assignment for computation tiers.
+    #[serde(default)]
+    pub hardware: HardwareConfig,
+    pub hook_guard_env: String,
+}
+
+impl Default for GuardianConfig {
+    fn default() -> Self {
+        Self {
+            extraction: ExtractionConfig::default(),
+            coherence: CoherenceConfig::default(),
+            reactivation: ReactivationConfig::default(),
+            synthesis: SynthesisConfig::default(),
+            label_suggestion: LabelSuggestionConfig::default(),
+            importance_rating: ImportanceRatingConfig::default(),
+            thread_matching: ThreadMatchingConfig::default(),
+            gossip: GossipConfig::default(),
+            recall: RecallConfig::default(),
+            engram: EngramConfig::default(),
+            heartbeat: crate::registry::heartbeat::HeartbeatConfig::default(),
+            hooks: HooksConfig::default(),
+            capture: CaptureConfig::default(),
+            decay: DecayConfig::default(),
+            enabled: true,
+            llm_backend: LlmBackend::Local,
+            local_model_size: LocalModelSize::default(),
+            local_llm: LocalLlmConfig::default(),
+            remote_llm: RemoteLlmConfig::default(),
+            hardware: HardwareConfig::default(),
+            hook_guard_env: "AI_SMARTNESS_HOOK_RUNNING".to_string(),
+        }
+    }
+}
+
+// ============================================================================
+// HOOKS CONFIG (pretool toggles)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HooksConfig {
+    /// Auto-allow MCP tool calls without permission prompts.
+    #[serde(default = "default_true")]
+    pub mcp_auto_allow: bool,
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            mcp_auto_allow: true,
+        }
+    }
+}
+
+// ============================================================================
+// CAPTURE CONFIG (per-tool toggles)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureConfig {
+    /// Per-tool capture toggles.
+    #[serde(default)]
+    pub tools: CaptureToolToggles,
+    /// Pool batching configuration.
+    #[serde(default)]
+    pub pool: PoolConfig,
+    /// Minimum user prompt length (chars) for capture. Below = silently skipped.
+    #[serde(default = "default_min_prompt_length")]
+    pub min_prompt_length: usize,
+    /// Minimum agent response length (chars) for capture. Below = silently skipped.
+    #[serde(default = "default_min_response_length")]
+    pub min_response_length: usize,
+}
+
+fn default_min_prompt_length() -> usize { 10 }
+fn default_min_response_length() -> usize { 10 }
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            tools: CaptureToolToggles::default(),
+            pool: PoolConfig::default(),
+            min_prompt_length: default_min_prompt_length(),
+            min_response_length: default_min_response_length(),
+        }
+    }
+}
+
+/// Pool file system configuration — batching captures before processing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolConfig {
+    /// Max lines per pool file before sealing (.pending).
+    pub max_lines_per_file: usize,
+    /// Max bytes per pool file before sealing.
+    pub max_bytes_per_file: usize,
+    /// Max age in seconds before forced seal.
+    pub max_age_secs: u64,
+    /// Interval for .done cleanup (seconds).
+    pub cleanup_interval_secs: u64,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            max_lines_per_file: 20,
+            max_bytes_per_file: 512_000,  // 512 KB
+            max_age_secs: 120,            // 2 min
+            cleanup_interval_secs: 300,   // 5 min
+        }
+    }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureToolToggles {
+    /// Capture user prompts (UserPromptSubmit hook).
+    #[serde(default = "default_true")]
+    pub user_prompt: bool,
+    /// Capture agent responses (Stop hook).
+    #[serde(default = "default_true")]
+    pub agent_response: bool,
+    #[serde(default = "default_true")]
+    pub read: bool,
+    #[serde(default = "default_true")]
+    pub edit: bool,
+    #[serde(default = "default_true")]
+    pub write: bool,
+    #[serde(default = "default_true")]
+    pub bash: bool,
+    #[serde(default = "default_true")]
+    pub web_fetch: bool,
+    #[serde(default = "default_true")]
+    pub web_search: bool,
+    #[serde(default = "default_true")]
+    pub task: bool,
+    #[serde(default = "default_false")]
+    pub notebook_edit: bool,
+}
+
+impl Default for CaptureToolToggles {
+    fn default() -> Self {
+        Self {
+            user_prompt: true,
+            agent_response: true,
+            read: true,
+            edit: true,
+            write: true,
+            bash: true,
+            web_fetch: true,
+            web_search: true,
+            task: true,
+            notebook_edit: false,
+        }
+    }
+}
+
+impl CaptureToolToggles {
+    pub fn is_enabled(&self, tool_name: &str) -> bool {
+        match tool_name {
+            "UserPrompt" => self.user_prompt,
+            "Response" => self.agent_response,
+            "Read" => self.read,
+            "Edit" => self.edit,
+            "Write" => self.write,
+            "Bash" => self.bash,
+            "WebFetch" => self.web_fetch,
+            "WebSearch" => self.web_search,
+            "Task" => self.task,
+            "NotebookEdit" => self.notebook_edit,
+            _ => true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_false() -> bool {
+    false
+}
+
+
+// ============================================================================
+// DAEMON CONFIG (global daemon settings)
+// ============================================================================
+
+/// Configuration for the global daemon process.
+/// Loaded from `{data_dir}/daemon_config.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonConfig {
+    /// Auto-start daemon when GUI opens.
+    pub auto_start: bool,
+    /// Max concurrent agent DB connections in the pool.
+    pub pool_max_connections: usize,
+    /// Evict idle connections after this many seconds.
+    pub pool_max_idle_secs: u64,
+    /// Interval between prune cycles (seconds).
+    pub prune_interval_secs: u64,
+    /// Enable cross-project gossip (bridge discovery across projects).
+    pub gossip_cross_project: bool,
+    /// Number of worker threads for capture processing (LLM extraction).
+    /// Each worker processes one capture at a time. Default: min(cpu_cores, 4).
+    #[serde(default = "default_capture_workers")]
+    pub capture_workers: usize,
+    /// Max buffered capture jobs. If full, new jobs are dropped (non-blocking).
+    #[serde(default = "default_capture_queue_capacity")]
+    pub capture_queue_capacity: usize,
+}
+
+fn default_capture_workers() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get().min(4))
+        .unwrap_or(2)
+}
+
+fn default_capture_queue_capacity() -> usize {
+    100
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            auto_start: false,
+            pool_max_connections: crate::constants::POOL_MAX_CONNECTIONS,
+            pool_max_idle_secs: crate::constants::POOL_MAX_IDLE_SECS,
+            prune_interval_secs: crate::constants::PRUNE_INTERVAL_SECS,
+            gossip_cross_project: false,
+            capture_workers: default_capture_workers(),
+            capture_queue_capacity: default_capture_queue_capacity(),
+        }
+    }
+}
+
+impl DaemonConfig {
+    /// Load daemon config from `{data_dir}/daemon_config.json`.
+    /// Returns defaults if file is missing or invalid.
+    pub fn load() -> Self {
+        let config_path = crate::storage::path_utils::data_dir().join("daemon_config.json");
+        match std::fs::read_to_string(&config_path) {
+            Ok(content) => {
+                serde_json::from_str(&content).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        path = %config_path.display(),
+                        error = %e,
+                        "Invalid daemon config, using defaults"
+                    );
+                    Self::default()
+                })
+            }
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Save daemon config to `{data_dir}/daemon_config.json`.
+    pub fn save(&self) -> Result<(), String> {
+        let config_path = crate::storage::path_utils::data_dir().join("daemon_config.json");
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config dir: {}", e))?;
+        }
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+        std::fs::write(&config_path, json)
+            .map_err(|e| format!("Failed to write config: {}", e))?;
+        Ok(())
+    }
+}
+
+impl GuardianConfig {
+    /// Load from config.json "guardian" section.
+    /// Falls back to legacy "llm" section for backward compat.
+    pub fn from_config(config: &serde_json::Value) -> Self {
+        let mut gc = Self::default();
+
+        // Try "guardian" section first (new format)
+        let section = config.get("guardian")
+            .or_else(|| config.get("llm"));  // legacy compat
+
+        if let Some(s) = section {
+            // Global settings
+            if let Some(v) = s.get("enabled").and_then(|v| v.as_bool()) {
+                gc.enabled = v;
+            }
+            // --- Embedding-based system configs ---
+
+            // Gossip v2 config
+            if let Some(g) = s.get("gossip").and_then(|v| v.as_object()) {
+                if let Some(emb) = g.get("embedding").and_then(|v| v.as_object()) {
+                    parse_embedding_config(emb, &mut gc.gossip.embedding);
+                }
+                // Concept gossip v2
+                if let Some(v) = g.get("concept_overlap_min_shared").and_then(|v| v.as_u64()) {
+                    gc.gossip.concept_overlap_min_shared = v as usize;
+                }
+                if let Some(v) = g.get("concept_min_bridge_weight").and_then(|v| v.as_f64()) {
+                    gc.gossip.concept_min_bridge_weight = v;
+                }
+                if let Some(v) = g.get("merge_evaluation_threshold").and_then(|v| v.as_f64()) {
+                    gc.gossip.merge_evaluation_threshold = v;
+                }
+                if let Some(v) = g.get("merge_auto_threshold").and_then(|v| v.as_f64()) {
+                    gc.gossip.merge_auto_threshold = v;
+                }
+                if let Some(v) = g.get("concept_gossip_enabled").and_then(|v| v.as_bool()) {
+                    gc.gossip.concept_gossip_enabled = v;
+                }
+                // Legacy
+                if let Some(v) = g.get("topic_overlap_enabled").and_then(|v| v.as_bool()) {
+                    gc.gossip.topic_overlap_enabled = v;
+                }
+                if let Some(v) = g.get("topic_overlap_min_shared").and_then(|v| v.as_u64()) {
+                    gc.gossip.topic_overlap_min_shared = v as usize;
+                }
+                // Bridge limits
+                if let Some(v) = g.get("min_bridges").and_then(|v| v.as_u64()) {
+                    gc.gossip.min_bridges = v as usize;
+                }
+                if let Some(v) = g.get("min_bridges_per_thread").and_then(|v| v.as_u64()) {
+                    gc.gossip.min_bridges_per_thread = v as usize;
+                }
+                if let Some(v) = g.get("max_bridges_per_thread").and_then(|v| v.as_u64()) {
+                    gc.gossip.max_bridges_per_thread = v as usize;
+                }
+                if let Some(v) = g.get("target_bridge_ratio").and_then(|v| v.as_f64()) {
+                    gc.gossip.target_bridge_ratio = v;
+                }
+                // Propagation config
+                if let Some(v) = g.get("propagation_enabled").and_then(|v| v.as_bool()) {
+                    gc.gossip.propagation_enabled = v;
+                }
+                if let Some(v) = g.get("propagation_max_depth").and_then(|v| v.as_u64()) {
+                    gc.gossip.propagation_max_depth = v as u32;
+                }
+                if let Some(v) = g.get("propagation_decay_factor").and_then(|v| v.as_f64()) {
+                    gc.gossip.propagation_decay_factor = v;
+                }
+                if let Some(v) = g.get("propagation_min_weight").and_then(|v| v.as_f64()) {
+                    gc.gossip.propagation_min_weight = v;
+                }
+            }
+
+            // Recall config
+            if let Some(r) = s.get("recall").and_then(|v| v.as_object()) {
+                if let Some(emb) = r.get("embedding").and_then(|v| v.as_object()) {
+                    parse_embedding_config(emb, &mut gc.recall.embedding);
+                }
+                if let Some(v) = r.get("max_results").and_then(|v| v.as_u64()) {
+                    gc.recall.max_results = v as usize;
+                }
+                if let Some(v) = r.get("focus_boost").and_then(|v| v.as_f64()) {
+                    gc.recall.focus_boost = v;
+                }
+            }
+
+            // Thread matching config
+            if let Some(tm) = s.get("thread_matching").and_then(|v| v.as_object()) {
+                if let Some(m) = tm.get("mode").and_then(|v| v.as_str()) {
+                    gc.thread_matching.mode = match m {
+                        "EmbeddingPlusLlm" => ThreadMatchingMode::EmbeddingPlusLlm,
+                        _ => ThreadMatchingMode::EmbeddingOnly,
+                    };
+                }
+                if let Some(emb) = tm.get("embedding").and_then(|v| v.as_object()) {
+                    parse_embedding_config(emb, &mut gc.thread_matching.embedding);
+                }
+            }
+
+            // Engram config (multi-validator retrieval)
+            if let Some(eg) = s.get("engram").and_then(|v| v.as_object()) {
+                if let Some(emb) = eg.get("embedding").and_then(|v| v.as_object()) {
+                    parse_embedding_config(emb, &mut gc.engram.embedding);
+                }
+                if let Some(v) = eg.get("strong_inject_min_votes").and_then(|v| v.as_u64()) {
+                    gc.engram.strong_inject_min_votes = v as u8;
+                }
+                if let Some(v) = eg.get("weak_inject_min_votes").and_then(|v| v.as_u64()) {
+                    gc.engram.weak_inject_min_votes = v as u8;
+                }
+                if let Some(v) = eg.get("max_results").and_then(|v| v.as_u64()) {
+                    gc.engram.max_results = v as usize;
+                }
+                if let Some(v) = eg.get("hash_index_enabled").and_then(|v| v.as_bool()) {
+                    gc.engram.hash_index_enabled = v;
+                }
+                if let Some(v) = eg.get("min_bridge_connections").and_then(|v| v.as_u64()) {
+                    gc.engram.min_bridge_connections = v as usize;
+                }
+                // Validator weights
+                if let Some(w) = eg.get("validator_weights").and_then(|v| v.as_object()) {
+                    let vw = &mut gc.engram.validator_weights;
+                    if let Some(v) = w.get("semantic_similarity").and_then(|v| v.as_f64()) { vw.semantic_similarity = v; }
+                    if let Some(v) = w.get("topic_overlap").and_then(|v| v.as_f64()) { vw.topic_overlap = v; }
+                    if let Some(v) = w.get("temporal_proximity").and_then(|v| v.as_f64()) { vw.temporal_proximity = v; }
+                    if let Some(v) = w.get("graph_connectivity").and_then(|v| v.as_f64()) { vw.graph_connectivity = v; }
+                    if let Some(v) = w.get("injection_history").and_then(|v| v.as_f64()) { vw.injection_history = v; }
+                    if let Some(v) = w.get("decayed_relevance").and_then(|v| v.as_f64()) { vw.decayed_relevance = v; }
+                    if let Some(v) = w.get("label_coherence").and_then(|v| v.as_f64()) { vw.label_coherence = v; }
+                    if let Some(v) = w.get("focus_alignment").and_then(|v| v.as_f64()) { vw.focus_alignment = v; }
+                    if let Some(v) = w.get("concept_coherence").and_then(|v| v.as_f64()) { vw.concept_coherence = v; }
+                    if let Some(v) = w.get("truncation_penalty").and_then(|v| v.as_f64()) { vw.truncation_penalty = v; }
+                }
+            }
+
+            // Decay & Lifecycle config
+            if let Some(d) = s.get("decay").and_then(|v| v.as_object()) {
+                if let Some(v) = d.get("thread_suspend_threshold").and_then(|v| v.as_f64()) { gc.decay.thread_suspend_threshold = v; }
+                if let Some(v) = d.get("thread_min_half_life").and_then(|v| v.as_f64()) { gc.decay.thread_min_half_life = v; }
+                if let Some(v) = d.get("thread_max_half_life").and_then(|v| v.as_f64()) { gc.decay.thread_max_half_life = v; }
+                if let Some(v) = d.get("thread_use_boost").and_then(|v| v.as_f64()) { gc.decay.thread_use_boost = v; }
+                if let Some(v) = d.get("orphan_halving_hours").and_then(|v| v.as_f64()) { gc.decay.orphan_halving_hours = v; }
+                if let Some(v) = d.get("orphan_min_half_life_factor").and_then(|v| v.as_f64()) { gc.decay.orphan_min_half_life_factor = v; }
+                if let Some(v) = d.get("bridge_half_life").and_then(|v| v.as_f64()) { gc.decay.bridge_half_life = v; }
+                if let Some(v) = d.get("bridge_death_threshold").and_then(|v| v.as_f64()) { gc.decay.bridge_death_threshold = v; }
+                if let Some(v) = d.get("bridge_use_boost").and_then(|v| v.as_f64()) { gc.decay.bridge_use_boost = v; }
+                if let Some(v) = d.get("archive_after_hours").and_then(|v| v.as_f64()) { gc.decay.archive_after_hours = v; }
+            }
+
+            // Per-task detailed overrides
+            if let Some(ext) = s.get("extraction").and_then(|v| v.as_object()) {
+                if let Some(v) = ext.get("max_content_chars").and_then(|v| v.as_u64()) {
+                    gc.extraction.max_content_chars = v as usize;
+                }
+                if let Some(v) = ext.get("skip_tools").and_then(|v| v.as_array()) {
+                    gc.extraction.skip_tools = v.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect();
+                }
+                if let Some(v) = ext.get("topic_aliases").and_then(|v| v.as_object()) {
+                    for (k, val) in v {
+                        if let Some(alias) = val.as_str() {
+                            gc.extraction.topic_aliases.insert(k.clone(), alias.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        gc.validate();
+        gc
+    }
+
+    /// Validate and clamp all config values to sensible ranges.
+    /// Logs warnings for any out-of-range values.
+    pub fn validate(&mut self) {
+        self.validate_thresholds();
+        self.validate_decay();
+        self.validate_gossip();
+        self.validate_engram();
+        self.validate_thread_matching();
+        self.validate_embeddings();
+    }
+
+    fn validate_thresholds(&mut self) {
+        clamp_01(&mut self.decay.thread_suspend_threshold, "decay.thread_suspend_threshold");
+        clamp_01(&mut self.decay.bridge_death_threshold, "decay.bridge_death_threshold");
+        clamp_01(&mut self.decay.thread_use_boost, "decay.thread_use_boost");
+        clamp_01(&mut self.decay.bridge_use_boost, "decay.bridge_use_boost");
+        clamp_01(&mut self.decay.orphan_min_half_life_factor, "decay.orphan_min_half_life_factor");
+    }
+
+    fn validate_decay(&mut self) {
+        // Positive strict
+        if self.decay.thread_min_half_life <= 0.0 {
+            tracing::warn!(field = "decay.thread_min_half_life", "Must be > 0, resetting to default");
+            self.decay.thread_min_half_life = 0.75;
+        }
+        if self.decay.thread_max_half_life <= 0.0 {
+            tracing::warn!(field = "decay.thread_max_half_life", "Must be > 0, resetting to default");
+            self.decay.thread_max_half_life = 7.0;
+        }
+        if self.decay.bridge_half_life <= 0.0 {
+            tracing::warn!(field = "decay.bridge_half_life", "Must be > 0, resetting to default");
+            self.decay.bridge_half_life = 4.0;
+        }
+        if self.decay.archive_after_hours <= 0.0 {
+            tracing::warn!(field = "decay.archive_after_hours", "Must be > 0, resetting to default");
+            self.decay.archive_after_hours = 72.0;
+        }
+        if self.decay.orphan_halving_hours <= 0.0 {
+            tracing::warn!(field = "decay.orphan_halving_hours", "Must be > 0, resetting to default");
+            self.decay.orphan_halving_hours = 6.0;
+        }
+        // Ordering: min < max
+        if self.decay.thread_min_half_life >= self.decay.thread_max_half_life {
+            tracing::warn!(
+                min = self.decay.thread_min_half_life,
+                max = self.decay.thread_max_half_life,
+                "decay.thread_min_half_life >= thread_max_half_life — swapping"
+            );
+            std::mem::swap(&mut self.decay.thread_min_half_life, &mut self.decay.thread_max_half_life);
+        }
+    }
+
+    fn validate_gossip(&mut self) {
+        clamp_01(&mut self.gossip.concept_min_bridge_weight, "gossip.concept_min_bridge_weight");
+        clamp_01(&mut self.gossip.propagation_decay_factor, "gossip.propagation_decay_factor");
+        clamp_01(&mut self.gossip.propagation_min_weight, "gossip.propagation_min_weight");
+
+        // min_bridges: at least 1
+        if self.gossip.min_bridges == 0 {
+            self.gossip.min_bridges = 1;
+        }
+
+        // Positive strict
+        if self.gossip.min_bridges_per_thread == 0 {
+            tracing::warn!(field = "gossip.min_bridges_per_thread", "Must be > 0, resetting to default");
+            self.gossip.min_bridges_per_thread = 3;
+        }
+
+        // target_bridge_ratio clamp
+        if self.gossip.target_bridge_ratio < 0.5 || self.gossip.target_bridge_ratio > 20.0 {
+            tracing::warn!(
+                value = self.gossip.target_bridge_ratio,
+                "gossip.target_bridge_ratio out of [0.5, 20.0] — clamping"
+            );
+            self.gossip.target_bridge_ratio = self.gossip.target_bridge_ratio.clamp(0.5, 20.0);
+        }
+
+        // Ordering: min_bridges < max_bridges
+        if self.gossip.min_bridges_per_thread >= self.gossip.max_bridges_per_thread {
+            tracing::warn!(
+                min = self.gossip.min_bridges_per_thread,
+                max = self.gossip.max_bridges_per_thread,
+                "gossip.min_bridges >= max_bridges — swapping"
+            );
+            std::mem::swap(&mut self.gossip.min_bridges_per_thread, &mut self.gossip.max_bridges_per_thread);
+        }
+
+    }
+
+    fn validate_engram(&mut self) {
+        // Votes in [1..9]
+        self.engram.strong_inject_min_votes = self.engram.strong_inject_min_votes.clamp(1, 10);
+        self.engram.weak_inject_min_votes = self.engram.weak_inject_min_votes.clamp(1, 10);
+
+        // weak < strong
+        if self.engram.weak_inject_min_votes >= self.engram.strong_inject_min_votes {
+            tracing::warn!(
+                weak = self.engram.weak_inject_min_votes,
+                strong = self.engram.strong_inject_min_votes,
+                "engram.weak_inject >= strong_inject — swapping"
+            );
+            std::mem::swap(&mut self.engram.weak_inject_min_votes, &mut self.engram.strong_inject_min_votes);
+        }
+    }
+
+    fn validate_thread_matching(&mut self) {
+        clamp_01(&mut self.thread_matching.continue_threshold, "thread_matching.continue_threshold");
+        clamp_01(&mut self.thread_matching.reactivate_threshold, "thread_matching.reactivate_threshold");
+        clamp_01(&mut self.thread_matching.capacity_suspend_threshold, "thread_matching.capacity_suspend_threshold");
+
+        // Ordering: continue < reactivate < capacity_suspend
+        if self.thread_matching.continue_threshold >= self.thread_matching.reactivate_threshold {
+            tracing::warn!(
+                cont = self.thread_matching.continue_threshold,
+                react = self.thread_matching.reactivate_threshold,
+                "thread_matching.continue >= reactivate — swapping"
+            );
+            std::mem::swap(
+                &mut self.thread_matching.continue_threshold,
+                &mut self.thread_matching.reactivate_threshold,
+            );
+        }
+        if self.thread_matching.reactivate_threshold >= self.thread_matching.capacity_suspend_threshold {
+            tracing::warn!(
+                react = self.thread_matching.reactivate_threshold,
+                cap = self.thread_matching.capacity_suspend_threshold,
+                "thread_matching.reactivate >= capacity_suspend — swapping"
+            );
+            std::mem::swap(
+                &mut self.thread_matching.reactivate_threshold,
+                &mut self.thread_matching.capacity_suspend_threshold,
+            );
+        }
+    }
+
+    fn validate_embeddings(&mut self) {
+        validate_embedding(&mut self.thread_matching.embedding, "thread_matching");
+        validate_embedding(&mut self.gossip.embedding, "gossip");
+        validate_embedding(&mut self.recall.embedding, "recall");
+        validate_embedding(&mut self.engram.embedding, "engram");
+    }
+}
+
+fn clamp_01(val: &mut f64, name: &str) {
+    if *val < 0.0 || *val > 1.0 {
+        tracing::warn!(field = name, value = *val, "Config out of range [0,1] — clamping");
+        *val = val.clamp(0.0, 1.0);
+    }
+}
+
+fn validate_embedding(cfg: &mut EmbeddingSystemConfig, context: &str) {
+    clamp_01(&mut cfg.onnx_threshold, &format!("{}.onnx_threshold", context));
+    clamp_01(&mut cfg.tfidf_threshold, &format!("{}.tfidf_threshold", context));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_valid_config() {
+        let mut gc = GuardianConfig::default();
+        gc.validate();
+        // Defaults should pass validation unchanged
+        assert_eq!(gc.decay.thread_suspend_threshold, 0.1);
+        assert_eq!(gc.decay.thread_min_half_life, 0.75);
+        assert_eq!(gc.decay.thread_max_half_life, 7.0);
+        assert_eq!(gc.engram.strong_inject_min_votes, 5);
+        assert_eq!(gc.engram.weak_inject_min_votes, 3);
+        assert_eq!(gc.thread_matching.continue_threshold, 0.75);
+    }
+
+    #[test]
+    fn test_validate_threshold_out_of_range() {
+        let mut gc = GuardianConfig::default();
+        gc.decay.thread_suspend_threshold = 1.5;
+        gc.decay.bridge_death_threshold = -0.3;
+        gc.gossip.concept_min_bridge_weight = 2.0;
+        gc.validate();
+        assert_eq!(gc.decay.thread_suspend_threshold, 1.0);
+        assert_eq!(gc.decay.bridge_death_threshold, 0.0);
+        assert_eq!(gc.gossip.concept_min_bridge_weight, 1.0);
+    }
+
+    #[test]
+    fn test_validate_min_greater_than_max() {
+        let mut gc = GuardianConfig::default();
+        // Invert min/max half-life
+        gc.decay.thread_min_half_life = 10.0;
+        gc.decay.thread_max_half_life = 0.5;
+        // Invert continue/reactivate
+        gc.thread_matching.continue_threshold = 0.80;
+        gc.thread_matching.reactivate_threshold = 0.20;
+        gc.validate();
+        // Should be swapped
+        assert!(gc.decay.thread_min_half_life < gc.decay.thread_max_half_life);
+        assert!(gc.thread_matching.continue_threshold < gc.thread_matching.reactivate_threshold);
+    }
+
+    #[test]
+    fn test_validate_engram_votes() {
+        let mut gc = GuardianConfig::default();
+        // Invert weak/strong
+        gc.engram.weak_inject_min_votes = 7;
+        gc.engram.strong_inject_min_votes = 2;
+        gc.validate();
+        assert!(gc.engram.weak_inject_min_votes < gc.engram.strong_inject_min_votes);
+        // Out of range
+        gc.engram.strong_inject_min_votes = 20;
+        gc.validate();
+        assert!(gc.engram.strong_inject_min_votes <= 10);
+    }
+
+    #[test]
+    fn test_guardian_config_default_values() {
+        let gc = GuardianConfig::default();
+        assert!(gc.enabled);
+        assert!(gc.extraction.llm.enabled);
+        assert_eq!(gc.extraction.max_content_chars, 15000);
+        assert_eq!(gc.coherence.child_threshold, 0.3);
+        assert_eq!(gc.decay.thread_suspend_threshold, 0.1);
+        assert_eq!(gc.engram.strong_inject_min_votes, 5);
+        assert_eq!(gc.llm_backend, LlmBackend::Local);
+        assert_eq!(gc.local_model_size, LocalModelSize::SevenB);
+    }
+
+    #[test]
+    fn test_capture_tool_toggles_defaults() {
+        let toggles = CaptureToolToggles::default();
+        // User prompt and agent response enabled by default
+        assert!(toggles.is_enabled("UserPrompt"));
+        assert!(toggles.is_enabled("Response"));
+        // All tool captures enabled by default (except NotebookEdit)
+        assert!(toggles.is_enabled("Read"));
+        assert!(toggles.is_enabled("Edit"));
+        assert!(toggles.is_enabled("Write"));
+        assert!(toggles.is_enabled("Task"));
+        assert!(toggles.is_enabled("Bash"));
+        assert!(toggles.is_enabled("WebFetch"));
+        assert!(toggles.is_enabled("WebSearch"));
+        // NotebookEdit disabled (not yet prepared)
+        assert!(!toggles.is_enabled("NotebookEdit"));
+        // Unknown tools still default to enabled
+        assert!(toggles.is_enabled("UnknownTool"));
+    }
+
+    #[test]
+    fn test_pool_config_defaults() {
+        let cfg = PoolConfig::default();
+        assert_eq!(cfg.max_lines_per_file, 20);
+        assert_eq!(cfg.max_bytes_per_file, 512_000);
+        assert_eq!(cfg.max_age_secs, 120);
+        assert_eq!(cfg.cleanup_interval_secs, 300);
+    }
+
+    #[test]
+    fn test_embedding_system_active_threshold() {
+        let cfg = EmbeddingSystemConfig {
+            mode: EmbeddingMode::OnnxWithFallback,
+            onnx_threshold: 0.75,
+            tfidf_threshold: 0.55,
+        };
+        assert_eq!(cfg.active_threshold(true), 0.75);
+        assert_eq!(cfg.active_threshold(false), 0.55);
+    }
+
+    #[test]
+    fn test_validator_weights_to_vec_returns_10_elements() {
+        let w = ValidatorWeights::default();
+        let v = w.to_vec();
+        assert_eq!(v.len(), 10, "ValidatorWeights::to_vec must return exactly 10 elements");
+        // All defaults should be positive
+        for (i, val) in v.iter().enumerate() {
+            assert!(*val > 0.0, "Validator weight V{} should be > 0, got {}", i + 1, val);
+        }
+    }
+
+    // ========================================================================
+    // LocalModelSize tests
+    // ========================================================================
+
+    #[test]
+    fn test_local_model_size_default_is_seven_b() {
+        assert_eq!(LocalModelSize::default(), LocalModelSize::SevenB);
+    }
+
+    #[test]
+    fn test_local_model_size_filenames() {
+        assert_eq!(LocalModelSize::SevenB.filename(), "qwen2.5-7b-instruct-q4_k_m.gguf");
+        // All must end in .gguf
+        for size in LocalModelSize::all_variants() {
+            assert!(size.filename().ends_with(".gguf"), "{:?} filename must end in .gguf", size);
+        }
+    }
+
+    #[test]
+    fn test_local_model_size_download_urls() {
+        for size in LocalModelSize::all_variants() {
+            let url = size.download_url();
+            assert!(url.starts_with("https://huggingface.co/"), "URL must point to HuggingFace: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_local_model_size_display_names() {
+        assert!(LocalModelSize::SevenB.display_name().contains("7B"));
+        assert!(LocalModelSize::Gemma12B.display_name().contains("12B"));
+        assert!(LocalModelSize::Qwen14B.display_name().contains("14B"));
+        assert!(LocalModelSize::Qwen32B.display_name().contains("32B"));
+        // All mention quantization
+        for size in LocalModelSize::all_variants() {
+            assert!(size.display_name().contains("Q4_K_M"), "{:?} display_name must contain Q4_K_M", size);
+        }
+    }
+
+    #[test]
+    fn test_local_model_size_serde_roundtrip() {
+        for size in LocalModelSize::all_variants() {
+            let json = serde_json::to_string(&size).expect("serialize");
+            let back: LocalModelSize = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, size, "serde roundtrip failed for {:?}", size);
+        }
+    }
+
+    #[test]
+    fn test_local_model_size_threeb_migration() {
+        // Old "ThreeB" configs should deserialize to SevenB via serde alias
+        let back: LocalModelSize = serde_json::from_str("\"ThreeB\"").expect("deserialize ThreeB");
+        assert_eq!(back, LocalModelSize::SevenB);
+    }
+
+    #[test]
+    fn test_local_model_size_cli_names() {
+        for size in LocalModelSize::all_variants() {
+            let name = size.cli_name();
+            let parsed = LocalModelSize::from_cli_name(name);
+            assert_eq!(parsed, Some(size.clone()), "CLI name roundtrip failed for {:?}", size);
+        }
+        assert_eq!(LocalModelSize::from_cli_name("unknown"), None);
+    }
+
+    #[test]
+    fn test_local_model_size_all_variants() {
+        let variants = LocalModelSize::all_variants();
+        assert_eq!(variants.len(), 4);
+        assert!(variants.contains(&LocalModelSize::SevenB));
+        assert!(variants.contains(&LocalModelSize::Gemma12B));
+        assert!(variants.contains(&LocalModelSize::Qwen32B));
+    }
+
+    // ========================================================================
+    // LlmBackend tests
+    // ========================================================================
+
+    #[test]
+    fn test_llm_backend_default_is_local() {
+        assert_eq!(LlmBackend::default(), LlmBackend::Local);
+    }
+
+    #[test]
+    fn test_llm_backend_serde_roundtrip() {
+        let backend = LlmBackend::Local;
+        let json = serde_json::to_string(&backend).expect("serialize");
+        let back: LlmBackend = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, backend);
+    }
+
+    #[test]
+    fn test_llm_backend_equality() {
+        assert_eq!(LlmBackend::Local, LlmBackend::Local);
+    }
+
+    // ========================================================================
+    // GuardianConfig — local LLM fields
+    // ========================================================================
+
+    #[test]
+    fn test_guardian_config_default_llm_backend() {
+        let gc = GuardianConfig::default();
+        assert_eq!(gc.llm_backend, LlmBackend::Local);
+        assert_eq!(gc.local_model_size, LocalModelSize::SevenB);
+    }
+
+    #[test]
+    fn test_guardian_config_serde_with_local_model_fields() {
+        let mut gc = GuardianConfig::default();
+        gc.local_model_size = LocalModelSize::SevenB;
+
+        let json = serde_json::to_string(&gc).expect("serialize");
+        let back: GuardianConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.llm_backend, LlmBackend::Local);
+        assert_eq!(back.local_model_size, LocalModelSize::SevenB);
+    }
+
+    #[test]
+    fn test_guardian_config_serde_missing_local_fields_uses_defaults() {
+        // Serialize default config, strip llm_backend + local_model_size, deserialize
+        // → serde(default) should fill in the defaults for missing fields
+        let gc = GuardianConfig::default();
+        let json = serde_json::to_string(&gc).expect("serialize");
+        let mut v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        v.as_object_mut().unwrap().remove("llm_backend");
+        v.as_object_mut().unwrap().remove("local_model_size");
+        let json_without = serde_json::to_string(&v).expect("reserialize");
+        let gc2: GuardianConfig = serde_json::from_str(&json_without).expect("deserialize");
+        assert_eq!(gc2.llm_backend, LlmBackend::Local);
+        assert_eq!(gc2.local_model_size, LocalModelSize::SevenB);
+    }
+}

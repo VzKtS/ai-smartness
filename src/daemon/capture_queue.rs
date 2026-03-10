@@ -1,0 +1,656 @@
+//! Capture Queue — per-agent FIFO with parallel multi-agent processing.
+//!
+//! Architecture:
+//!   IPC handler → CaptureQueue::submit(job) → per-agent VecDeque (instant)
+//!   N worker threads pick jobs from agents not currently being processed.
+//!   Within each agent, jobs are strictly FIFO — no interleaving.
+//!   Across agents, workers process in parallel for GPU saturation.
+//!
+//! Designed for dozens of parallel agents: each agent's captures are processed
+//! sequentially (preserving continuity chain), while different agents run in
+//! parallel across worker threads.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
+
+use ai_smartness::config::GuardianConfig;
+use ai_smartness::registry::registry::AgentRegistry;
+use ai_smartness::storage::database::{open_connection, ConnectionRole};
+use ai_smartness::storage::path_utils;
+
+use super::connection_pool::{AgentKey, ConnectionPool};
+use super::pool_writer;
+use super::processor;
+
+/// A capture job to be processed asynchronously by a worker.
+pub struct CaptureJob {
+    pub key: AgentKey,
+    pub source_type: String,
+    pub content: String,
+    pub file_path: Option<String>,
+    pub is_prompt: bool,
+    /// Optional session_id for prompt captures.
+    pub session_id: Option<String>,
+    /// If Some, enrich an existing thread instead of creating/processing a new capture.
+    pub enrich_thread_id: Option<String>,
+    /// Retry count for enrichment jobs. Auto-retry on failure up to MAX_ENRICHMENT_RETRIES.
+    pub enrichment_retry: u8,
+}
+
+/// Maximum automatic retries for enrichment jobs.
+/// Beyond this, the failure is logged and left for user/agent to investigate.
+const MAX_ENRICHMENT_RETRIES: u8 = 2;
+
+/// Per-agent FIFO queues with processing exclusion.
+struct ShardedInner {
+    /// Per-agent job queues. Jobs within each agent are strictly FIFO.
+    agent_queues: HashMap<AgentKey, VecDeque<CaptureJob>>,
+    /// Agents currently being processed by a worker. Only one worker per agent.
+    processing: HashSet<AgentKey>,
+    /// Set to true when shutdown is requested.
+    shutdown: bool,
+}
+
+/// Thread-safe sharded queue: per-agent FIFO + cross-agent parallelism.
+struct ShardedQueue {
+    inner: Mutex<ShardedInner>,
+    notify: Condvar,
+    capacity: usize,
+}
+
+impl ShardedQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(ShardedInner {
+                agent_queues: HashMap::new(),
+                processing: HashSet::new(),
+                shutdown: false,
+            }),
+            notify: Condvar::new(),
+            capacity,
+        }
+    }
+
+    /// Submit a job to the per-agent queue. Returns Err if total capacity exceeded.
+    fn submit(&self, job: CaptureJob) -> Result<(), CaptureJob> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let total: usize = inner.agent_queues.values().map(|q| q.len()).sum();
+        if total >= self.capacity {
+            return Err(job);
+        }
+        inner.agent_queues
+            .entry(job.key.clone())
+            .or_default()
+            .push_back(job);
+        self.notify.notify_one();
+        Ok(())
+    }
+
+    /// Block until a job is available from an agent not currently being processed.
+    /// Returns None on shutdown.
+    fn take(&self) -> Option<CaptureJob> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if inner.shutdown {
+                return None;
+            }
+            // Find an agent with pending jobs that's NOT being processed
+            let ready_agent = inner.agent_queues.iter()
+                .find(|(key, queue)| !queue.is_empty() && !inner.processing.contains(*key))
+                .map(|(key, _)| key.clone());
+
+            if let Some(agent_key) = ready_agent {
+                let job = inner.agent_queues
+                    .get_mut(&agent_key)
+                    .and_then(|q| q.pop_front());
+                if let Some(job) = job {
+                    inner.processing.insert(agent_key.clone());
+                    // Clean up empty queues to avoid unbounded HashMap growth
+                    if inner.agent_queues.get(&agent_key).map_or(false, |q| q.is_empty()) {
+                        inner.agent_queues.remove(&agent_key);
+                    }
+                    return Some(job);
+                }
+            }
+            // No ready work — wait for notification
+            inner = self.notify.wait(inner).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// Mark agent as done processing. Wakes workers waiting for this agent.
+    fn done(&self, key: &AgentKey) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.processing.remove(key);
+        self.notify.notify_all();
+    }
+
+    /// Signal shutdown to all waiting workers.
+    fn shutdown(&self) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.shutdown = true;
+        self.notify.notify_all();
+    }
+
+    /// Current total pending jobs across all agents.
+    fn pending_count(&self) -> usize {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.agent_queues.values().map(|q| q.len()).sum::<usize>()
+            + inner.processing.len()
+    }
+}
+
+/// Live stats for the capture queue, shared across workers.
+pub struct QueueStats {
+    pending: AtomicUsize,
+    processed: AtomicU64,
+    errors: AtomicU64,
+    workers: usize,
+}
+
+impl QueueStats {
+    fn new(workers: usize) -> Self {
+        Self {
+            pending: AtomicUsize::new(0),
+            processed: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            workers,
+        }
+    }
+}
+
+/// Thread-safe capture queue with worker pool.
+pub struct CaptureQueue {
+    queue: Arc<ShardedQueue>,
+    stats: Arc<QueueStats>,
+    worker_handles: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl CaptureQueue {
+    /// Create queue and spawn `num_workers` consumer threads.
+    ///
+    /// `capacity`: max total buffered jobs across all agents.
+    pub fn new(
+        pool: Arc<ConnectionPool>,
+        num_workers: usize,
+        capacity: usize,
+    ) -> Self {
+        let queue = Arc::new(ShardedQueue::new(capacity));
+        let stats = Arc::new(QueueStats::new(num_workers));
+        let mut handles = Vec::with_capacity(num_workers);
+
+        tracing::info!(
+            workers = num_workers,
+            capacity = capacity,
+            "Capture queue initialized (per-agent FIFO sharding)"
+        );
+
+        for worker_id in 0..num_workers {
+            let queue = queue.clone();
+            let pool = pool.clone();
+            let stats = stats.clone();
+
+            let handle = match std::thread::Builder::new()
+                .name(format!("capture-worker-{}", worker_id))
+                .spawn(move || {
+                    tracing::info!(worker_id, "Capture worker started");
+                    worker_loop(worker_id, &queue, pool, &stats);
+                    tracing::info!(worker_id, "Capture worker stopped");
+                }) {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::error!(
+                        worker_id,
+                        error = %e,
+                        "Failed to spawn capture worker — continuing with fewer workers"
+                    );
+                    continue;
+                }
+            };
+
+            handles.push(handle);
+        }
+
+        Self {
+            queue,
+            stats,
+            worker_handles: Mutex::new(handles),
+        }
+    }
+
+    /// Submit a capture job. Returns immediately.
+    /// Returns Err if queue is full (job is NOT processed — acceptable under load).
+    pub fn submit(&self, job: CaptureJob) -> Result<(), CaptureJob> {
+        self.stats.pending.fetch_add(1, Ordering::Relaxed);
+        match self.queue.submit(job) {
+            Ok(()) => {
+                tracing::debug!("Capture job queued");
+                Ok(())
+            }
+            Err(job) => {
+                self.stats.pending.fetch_sub(1, Ordering::Relaxed);
+                tracing::warn!(
+                    pending = self.stats.pending.load(Ordering::Relaxed),
+                    "Capture queue full — job dropped"
+                );
+                Err(job)
+            }
+        }
+    }
+
+    /// Get current queue statistics.
+    pub fn queue_stats(&self) -> serde_json::Value {
+        serde_json::json!({
+            "pending": self.stats.pending.load(Ordering::Relaxed),
+            "processed": self.stats.processed.load(Ordering::Relaxed),
+            "errors": self.stats.errors.load(Ordering::Relaxed),
+            "workers": self.stats.workers,
+        })
+    }
+
+    /// Graceful shutdown: signal workers to stop, then join all threads.
+    pub fn shutdown(self) {
+        self.queue.shutdown();
+
+        if let Ok(mut handles) = self.worker_handles.lock() {
+            tracing::info!(count = handles.len(), "Waiting for capture workers to finish");
+            for handle in handles.drain(..) {
+                let _ = handle.join();
+            }
+            tracing::info!("All capture workers stopped");
+        }
+    }
+}
+
+/// Load the thread quota from the registry DB on first access, cache in pool.
+fn ensure_quota_cached(pool: &ConnectionPool, key: &AgentKey) {
+    if pool.is_quota_initialized(key) {
+        return;
+    }
+
+    let reg_path = path_utils::registry_db_path();
+    match open_connection(&reg_path, ConnectionRole::Daemon) {
+        Ok(reg_conn) => {
+            match AgentRegistry::get(&reg_conn, &key.agent_id, &key.project_hash) {
+                Ok(Some(agent)) => {
+                    let quota = agent.thread_mode.quota();
+                    pool.set_thread_quota(key, quota);
+                    tracing::info!(
+                        agent = %key.agent_id,
+                        thread_mode = %agent.thread_mode,
+                        quota = quota,
+                        "Thread quota loaded from registry"
+                    );
+                }
+                Ok(None) => {
+                    pool.set_thread_quota(key, 15);
+                    tracing::warn!(agent = %key.agent_id, "Agent not in registry, using conservative default quota=15 (Light)");
+                }
+                Err(e) => {
+                    pool.set_thread_quota(key, 15);
+                    tracing::warn!(agent = %key.agent_id, error = %e, "Failed to read agent from registry, using default quota=15");
+                }
+            }
+        }
+        Err(e) => {
+            pool.set_thread_quota(key, 15);
+            tracing::warn!(error = %e, "Failed to open registry DB for quota lookup, using default quota=15");
+        }
+    }
+}
+
+/// Worker loop: take jobs from the sharded queue, process each one.
+/// Each agent is processed by at most one worker at a time (FIFO guaranteed).
+fn worker_loop(
+    worker_id: usize,
+    queue: &ShardedQueue,
+    pool: Arc<ConnectionPool>,
+    stats: &QueueStats,
+) {
+    loop {
+        // Block until a job is available from an unoccupied agent
+        let job = match queue.take() {
+            Some(j) => j,
+            None => return, // shutdown
+        };
+
+        stats.pending.fetch_sub(1, Ordering::Relaxed);
+        let start = std::time::Instant::now();
+        let job_key = job.key.clone();
+
+        tracing::info!(
+            worker_id,
+            project = %job.key.project_hash,
+            agent = %job.key.agent_id,
+            source = %job.source_type,
+            content_len = job.content.len(),
+            is_prompt = job.is_prompt,
+            "Worker processing capture"
+        );
+
+        // Ensure thread quota is cached for this agent (lazy load from registry)
+        ensure_quota_cached(&pool, &job.key);
+        let thread_quota = pool.get_thread_quota(&job.key);
+
+        // Sync quota into BeatState so MCP tools can read it
+        {
+            let agent_data = path_utils::agent_data_dir(&job.key.project_hash, &job.key.agent_id);
+            let mut beat_state = ai_smartness::storage::beat::BeatState::load(&agent_data);
+            if beat_state.quota != thread_quota {
+                beat_state.quota = thread_quota;
+                beat_state.save(&agent_data);
+            }
+        }
+
+        // Load GuardianConfig from config.json (reload per-job, ~1ms)
+        let guardian = {
+            let cfg_path = path_utils::data_dir().join("config.json");
+            std::fs::read_to_string(&cfg_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<GuardianConfig>(&s).ok())
+                .unwrap_or_default()
+        };
+
+        // --- Enrichment path: update existing thread via LLM, no new capture ---
+        if let Some(ref thread_id) = job.enrich_thread_id {
+            let conn = match pool.get_or_open(&job.key) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(worker_id, agent = %job.key, error = %e,
+                        "Enrichment: failed to get DB connection");
+                    stats.errors.fetch_add(1, Ordering::Relaxed);
+                    queue.done(&job_key);
+                    continue;
+                }
+            };
+            let conn_guard = match conn.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::error!(worker_id, error = %e,
+                        "Enrichment: failed to lock DB connection");
+                    stats.errors.fetch_add(1, Ordering::Relaxed);
+                    queue.done(&job_key);
+                    continue;
+                }
+            };
+
+            let tid = thread_id.clone();
+            match processor::enrich_existing_thread(
+                &conn_guard, &tid, &job.content, &guardian,
+            ) {
+                Ok(()) => {
+                    stats.processed.fetch_add(1, Ordering::Relaxed);
+                    tracing::info!(
+                        worker_id,
+                        agent = %job.key,
+                        thread_id = %tid,
+                        duration_ms = start.elapsed().as_millis() as u64,
+                        "Thread enrichment complete"
+                    );
+                }
+                Err(e) => {
+                    if job.enrichment_retry < MAX_ENRICHMENT_RETRIES {
+                        let retry_job = CaptureJob {
+                            key: job.key.clone(),
+                            source_type: job.source_type.clone(),
+                            content: job.content.clone(),
+                            file_path: None,
+                            is_prompt: false,
+                            session_id: None,
+                            enrich_thread_id: job.enrich_thread_id.clone(),
+                            enrichment_retry: job.enrichment_retry + 1,
+                        };
+                        // Re-submit through the sharded queue (preserves per-agent FIFO)
+                        match queue.submit(retry_job) {
+                            Ok(()) => {
+                                stats.pending.fetch_add(1, Ordering::Relaxed);
+                                tracing::warn!(
+                                    worker_id,
+                                    agent = %job.key,
+                                    thread_id = %tid,
+                                    error = %e,
+                                    retry = job.enrichment_retry + 1,
+                                    max = MAX_ENRICHMENT_RETRIES,
+                                    "Enrichment failed, re-queued for retry"
+                                );
+                            }
+                            Err(_) => {
+                                stats.errors.fetch_add(1, Ordering::Relaxed);
+                                tracing::error!(
+                                    worker_id,
+                                    thread_id = %tid,
+                                    error = %e,
+                                    "Enrichment retry failed: queue full — ABANDONED"
+                                );
+                            }
+                        }
+                    } else {
+                        stats.errors.fetch_add(1, Ordering::Relaxed);
+                        tracing::error!(
+                            worker_id,
+                            agent = %job.key,
+                            thread_id = %tid,
+                            error = %e,
+                            retries = MAX_ENRICHMENT_RETRIES,
+                            duration_ms = start.elapsed().as_millis() as u64,
+                            "Enrichment ABANDONED after {} retries — user/agent must investigate",
+                            MAX_ENRICHMENT_RETRIES,
+                        );
+                    }
+                }
+            }
+            drop(conn_guard);
+            queue.done(&job_key);
+            continue;
+        }
+
+        // Non-prompt captures: write to pool and continue (fast, non-blocking).
+        // The pool consumer thread processes .pending files at LLM speed.
+        if !job.is_prompt {
+            let agent_data = path_utils::agent_data_dir(&job.key.project_hash, &job.key.agent_id);
+            let pool_dir = agent_data.join("pool");
+            let mut pw = pool_writer::PoolWriter::new(&pool_dir, guardian.capture.pool.clone());
+            match pw.append(&job.source_type, &job.content, job.file_path.as_deref()) {
+                Ok(()) => {
+                    pw.seal_all().ok(); // Seal immediately for consumer pickup
+                    stats.processed.fetch_add(1, Ordering::Relaxed);
+                    tracing::info!(
+                        worker_id,
+                        agent = %job.key,
+                        source = %job.source_type,
+                        content_len = job.content.len(),
+                        duration_ms = start.elapsed().as_millis() as u64,
+                        "Capture written to pool"
+                    );
+                }
+                Err(e) => {
+                    stats.errors.fetch_add(1, Ordering::Relaxed);
+                    tracing::error!(
+                        worker_id,
+                        agent = %job.key,
+                        error = %e,
+                        "Pool write failed — capture dropped"
+                    );
+                }
+            }
+            queue.done(&job_key);
+            continue;
+        }
+
+        // --- Prompt processing (direct, needs DB + pending context) ---
+
+        // Get connection + pending context from pool
+        let conn = match pool.get_or_open(&job.key) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(
+                    worker_id,
+                    agent = %job.key,
+                    error = %e,
+                    "Worker failed to get DB connection"
+                );
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+                queue.done(&job_key);
+                continue;
+            }
+        };
+
+        let pending = match pool.get_pending(&job.key) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    worker_id,
+                    agent = %job.key,
+                    error = %e,
+                    "Worker failed to get pending context"
+                );
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+                queue.done(&job_key);
+                continue;
+            }
+        };
+
+        // If connection mutex is poisoned, evict and reconnect before locking
+        let conn = if conn.is_poisoned() {
+            tracing::warn!(worker_id, agent = %job.key,
+                "DB connection mutex poisoned — evicting and reconnecting");
+            pool.force_evict(&job.key);
+            match pool.get_or_open(&job.key) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(worker_id, error = %e,
+                        "Failed to reconnect after eviction");
+                    stats.errors.fetch_add(1, Ordering::Relaxed);
+                    queue.done(&job_key);
+                    continue;
+                }
+            }
+        } else {
+            conn
+        };
+
+        let conn_guard = match conn.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!(worker_id, error = %e, "Worker failed to lock DB connection");
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+                queue.done(&job_key);
+                continue;
+            }
+        };
+
+        let mut pending_guard = match pending.lock() {
+            Ok(g) => g,
+            Err(poison) => {
+                tracing::warn!(worker_id, agent = %job.key,
+                    "Pending context mutex poisoned — recovering inner value");
+                poison.into_inner()
+            }
+        };
+
+        // Wrap processing in catch_unwind to prevent future Mutex poisoning
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if job.is_prompt {
+                processor::process_prompt(
+                    &conn_guard,
+                    &mut pending_guard,
+                    &job.content,
+                    job.session_id.as_deref(),
+                    thread_quota,
+                    &guardian,
+                )
+            } else {
+                processor::process_capture(
+                    &conn_guard,
+                    &mut pending_guard,
+                    &job.source_type,
+                    &job.content,
+                    job.file_path.as_deref(),
+                    thread_quota,
+                    &guardian,
+                )
+            }
+        }));
+
+        // Explicitly drop guards before handling result
+        drop(conn_guard);
+        drop(pending_guard);
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(Ok(tid)) => {
+                stats.processed.fetch_add(1, Ordering::Relaxed);
+                tracing::info!(
+                    worker_id,
+                    agent = %job_key,
+                    thread_id = ?tid,
+                    duration_ms,
+                    "Worker capture complete"
+                );
+                // Clear backpressure on successful extraction
+                if tid.is_some() {
+                    clear_backpressure(&job_key);
+                }
+            }
+            Ok(Err(e)) => {
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+                tracing::error!(
+                    worker_id,
+                    agent = %job_key,
+                    error = %e,
+                    duration_ms,
+                    "Worker capture failed"
+                );
+                // Signal backpressure on extraction failure
+                set_backpressure(&job_key);
+            }
+            Err(panic_payload) => {
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic (non-string payload)".to_string()
+                };
+                tracing::error!(
+                    worker_id,
+                    agent = %job_key,
+                    panic_message = %panic_msg,
+                    duration_ms,
+                    "Worker capture PANICKED — evicting connection to prevent poison cascade"
+                );
+                pool.force_evict(&job_key);
+            }
+        }
+
+        // Release agent for next job in its queue
+        queue.done(&job_key);
+    }
+}
+
+/// Signal backpressure ON via BeatState when extraction fails.
+fn set_backpressure(key: &AgentKey) {
+    let agent_data = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
+    let mut beat = ai_smartness::storage::beat::BeatState::load(&agent_data);
+    if !beat.processing_backpressure {
+        beat.processing_backpressure = true;
+        beat.backpressure_since = Some(chrono::Utc::now().to_rfc3339());
+        beat.save(&agent_data);
+        tracing::info!(agent = %key.agent_id, "Backpressure ON: extraction failed/slow");
+    }
+}
+
+/// Clear backpressure via BeatState when extraction succeeds.
+fn clear_backpressure(key: &AgentKey) {
+    let agent_data = path_utils::agent_data_dir(&key.project_hash, &key.agent_id);
+    let mut beat = ai_smartness::storage::beat::BeatState::load(&agent_data);
+    if beat.processing_backpressure {
+        beat.processing_backpressure = false;
+        beat.backpressure_since = None;
+        beat.save(&agent_data);
+        tracing::info!(agent = %key.agent_id, "Backpressure OFF: extraction succeeded");
+    }
+}

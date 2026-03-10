@@ -1,0 +1,293 @@
+//! Decayer -- passive weight decay for threads and bridges.
+//!
+//! Does NOT delete or merge anything. Only reduces weights.
+//! Suspends threads below DecayConfig.thread_suspend_threshold.
+//! Cleans orphan bridges (both endpoints missing).
+
+use crate::bridge::BridgeStatus;
+use crate::config::DecayConfig;
+use crate::thread::ThreadStatus;
+use crate::AiResult;
+use crate::storage::bridges::BridgeStorage;
+use crate::storage::threads::ThreadStorage;
+use chrono::Utc;
+use rusqlite::Connection;
+
+pub struct Decayer;
+
+impl Decayer {
+    /// Decay active thread/bridge weights. Returns count of affected threads.
+    pub fn decay_active(conn: &Connection, cfg: &DecayConfig) -> AiResult<u32> {
+        let now = Utc::now();
+        let mut affected = 0u32;
+        let mut suspended_count = 0u32;
+
+        // 1. Decay thread weights
+        let active = ThreadStorage::list_active(conn)?;
+        for thread in &active {
+            // Skip shared threads — protected from decay
+            if thread.tags.contains(&"__shared__".to_string()) {
+                continue;
+            }
+
+            let age_days = (now - thread.last_active).num_hours() as f64 / 24.0;
+            if age_days <= 0.0 {
+                continue;
+            }
+
+            let base_half_life = effective_half_life(thread.importance, cfg);
+            // Orphan acceleration: threads not re-injected decay faster.
+            // Use last_injected_at (if available) instead of last_active for orphan time,
+            // since last_active updates on any interaction but injection is what matters.
+            let orphan_ref = thread.injection_stats.as_ref()
+                .and_then(|s| s.last_injected_at.as_ref())
+                .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            let orphan_since = orphan_ref.unwrap_or(thread.last_active);
+            let orphan_hours = (now - orphan_since).num_hours() as f64;
+            let orphan_factor = 0.5f64
+                .powf(orphan_hours / cfg.orphan_halving_hours)
+                .max(cfg.orphan_min_half_life_factor);
+            let half_life = base_half_life * orphan_factor;
+            let decay_factor = 0.5f64.powf(age_days / half_life);
+            let new_weight = (thread.weight * decay_factor).max(0.0);
+
+            if (new_weight - thread.weight).abs() < 0.001 {
+                continue;
+            }
+
+            ThreadStorage::update_weight(conn, &thread.id, new_weight)?;
+            affected += 1;
+
+            // Auto-suspend when weight reaches near-zero — weight is the sole lifecycle authority
+            // Use epsilon because multiplicative decay never truly reaches 0.0 in floating point
+            if new_weight < 0.001 {
+                ThreadStorage::update_weight(conn, &thread.id, 0.0)?;
+                tracing::warn!(thread_id = %thread.id, "Thread auto-suspended by decay (weight → 0)");
+                ThreadStorage::update_status(conn, &thread.id, ThreadStatus::Suspended)?;
+                suspended_count += 1;
+                continue;
+            }
+        }
+
+        // 2. Decay bridge weights — delta-based (fixes compound decay bug)
+        // Uses last_reinforced as the delta checkpoint: each cycle computes
+        // decay only for the time since last_reinforced, then updates it.
+        let mut bridges = BridgeStorage::list_active(conn)?;
+        bridges.extend(BridgeStorage::list_by_status(conn, BridgeStatus::Weak)?);
+        for bridge in &bridges {
+            let reference = bridge.last_reinforced.unwrap_or(bridge.created_at);
+            let delta_days = (now - reference).num_hours() as f64 / 24.0;
+            if delta_days <= 0.0 {
+                continue;
+            }
+
+            let decay_factor = 0.5f64.powf(delta_days / cfg.bridge_half_life);
+            let new_weight = bridge.weight * decay_factor;
+
+            if new_weight < cfg.bridge_death_threshold {
+                BridgeStorage::update_weight(conn, &bridge.id, 0.0)?;
+                BridgeStorage::update_status(conn, &bridge.id, BridgeStatus::Invalid)?;
+            } else if new_weight < crate::constants::BRIDGE_WEAK_THRESHOLD {
+                BridgeStorage::update_status(conn, &bridge.id, BridgeStatus::Weak)?;
+                BridgeStorage::update_weight(conn, &bridge.id, new_weight)?;
+                BridgeStorage::update_last_reinforced(conn, &bridge.id, now)?;
+            } else {
+                BridgeStorage::update_weight(conn, &bridge.id, new_weight)?;
+                BridgeStorage::update_last_reinforced(conn, &bridge.id, now)?;
+            }
+        }
+
+        // 3. Clean orphan bridges
+        let orphans = BridgeStorage::scan_orphans(conn)?;
+        if !orphans.is_empty() {
+            tracing::debug!(orphan_count = orphans.len(), "Cleaning orphan bridges");
+            let ids: Vec<String> = orphans.iter().map(|b| b.id.clone()).collect();
+            BridgeStorage::delete_batch(conn, &ids)?;
+        }
+
+        // 4. Clean orphan continuity edges
+        let continuity_orphans = ThreadStorage::scan_orphan_continuity(conn)?;
+        if !continuity_orphans.is_empty() {
+            tracing::debug!(orphan_count = continuity_orphans.len(), "Cleaning orphan continuity edges");
+            ThreadStorage::cleanup_orphan_continuity(conn)?;
+        }
+
+        tracing::info!(threads_affected = affected, threads_suspended = suspended_count, orphans_cleaned = orphans.len(), continuity_orphans = continuity_orphans.len(), "Decay cycle complete");
+
+        Ok(affected)
+    }
+}
+
+/// Compute effective half-life based on importance.
+/// Range: min_half_life (disposable, importance=0) to max_half_life (critical, importance=1).
+fn effective_half_life(importance: f64, cfg: &DecayConfig) -> f64 {
+    cfg.thread_min_half_life
+        + (importance.clamp(0.0, 1.0) * (cfg.thread_max_half_life - cfg.thread_min_half_life))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::*;
+
+    fn default_cfg() -> DecayConfig {
+        DecayConfig::default()
+    }
+
+    // ── Pure function tests ──
+
+    #[test]
+    fn test_effective_half_life_zero_importance() {
+        let cfg = default_cfg();
+        let hl = effective_half_life(0.0, &cfg);
+        assert!((hl - 0.75).abs() < 0.001); // min_half_life
+    }
+
+    #[test]
+    fn test_effective_half_life_max_importance() {
+        let cfg = default_cfg();
+        let hl = effective_half_life(1.0, &cfg);
+        assert!((hl - 7.0).abs() < 0.001); // max_half_life
+    }
+
+    #[test]
+    fn test_effective_half_life_mid() {
+        let cfg = default_cfg();
+        let hl = effective_half_life(0.5, &cfg);
+        // 0.75 + 0.5 * (7.0 - 0.75) = 0.75 + 3.125 = 3.875
+        assert!((hl - 3.875).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_effective_half_life_clamped() {
+        let cfg = default_cfg();
+        let hl = effective_half_life(1.5, &cfg);
+        // clamped to 1.0 -> max_half_life = 7.0
+        assert!((hl - 7.0).abs() < 0.001);
+    }
+
+    // ── DB-level decay tests ──
+
+    #[test]
+    fn test_decay_active_empty_db() {
+        let conn = setup_agent_db();
+        let cfg = default_cfg();
+        let affected = Decayer::decay_active(&conn, &cfg).unwrap();
+        assert_eq!(affected, 0);
+    }
+
+    #[test]
+    fn test_decay_reduces_weight() {
+        let conn = setup_agent_db();
+        let cfg = default_cfg();
+        // Thread last active 12 hours ago, importance=0.5 -> base half-life=3.875 days
+        // Orphan acceleration: 0.5^(12/6) = 0.25, clamped to 0.25 (> min 0.1)
+        // Effective half-life = 3.875 * 0.25 ≈ 0.97 days
+        // decay_factor = 0.5^(0.5/0.97) ≈ 0.70 -> weight ~ 0.70, well above 0.1
+        let t = ThreadBuilder::new()
+            .id("t1")
+            .weight(1.0)
+            .importance(0.5)
+            .last_active(hours_ago(12))
+            .build();
+        ThreadStorage::insert(&conn, &t).unwrap();
+
+        let affected = Decayer::decay_active(&conn, &cfg).unwrap();
+        assert_eq!(affected, 1);
+
+        let got = ThreadStorage::get(&conn, "t1").unwrap().unwrap();
+        assert!(got.weight < 1.0, "weight should decrease from decay");
+        assert!(got.weight > 0.1, "should not be suspended at 12 hours");
+        assert_eq!(got.status, ThreadStatus::Active);
+    }
+
+    #[test]
+    fn test_decay_suspends_at_zero_weight() {
+        let conn = setup_agent_db();
+        let cfg = default_cfg();
+        // Thread with very low weight and low importance, last active long ago
+        // importance=0.0 -> half-life=0.75 days, 30 days ago -> extreme decay to ~0
+        let t = ThreadBuilder::new()
+            .id("t1")
+            .weight(0.01)
+            .importance(0.0)
+            .last_active(days_ago(30))
+            .build();
+        ThreadStorage::insert(&conn, &t).unwrap();
+
+        Decayer::decay_active(&conn, &cfg).unwrap();
+
+        let got = ThreadStorage::get(&conn, "t1").unwrap().unwrap();
+        assert_eq!(got.weight, 0.0, "weight should be clamped to zero after extreme decay");
+        assert_eq!(got.status, ThreadStatus::Suspended);
+    }
+
+    #[test]
+    fn test_decay_bridge_death() {
+        let conn = setup_agent_db();
+        let cfg = default_cfg();
+        // Two threads + one bridge. Bridge created 30 days ago, half-life=2 days -> should die.
+        let t1 = ThreadBuilder::new().id("t1").build();
+        let t2 = ThreadBuilder::new().id("t2").build();
+        ThreadStorage::insert(&conn, &t1).unwrap();
+        ThreadStorage::insert(&conn, &t2).unwrap();
+
+        let b = BridgeBuilder::new()
+            .id("b1")
+            .source_id("t1")
+            .target_id("t2")
+            .weight(0.5)
+            .created_at(days_ago(30))
+            .build();
+        BridgeStorage::insert(&conn, &b).unwrap();
+
+        Decayer::decay_active(&conn, &cfg).unwrap();
+
+        let got = BridgeStorage::get(&conn, "b1").unwrap().unwrap();
+        assert_eq!(got.status, BridgeStatus::Invalid, "bridge should be marked invalid after heavy decay");
+    }
+
+    #[test]
+    fn test_decay_cleans_orphan_bridges() {
+        // Use no-FK db so we can create orphan bridges
+        let conn = setup_agent_db_no_fk();
+        let cfg = default_cfg();
+        let t1 = ThreadBuilder::new().id("t1").build();
+        let t2 = ThreadBuilder::new().id("t2").build();
+        ThreadStorage::insert(&conn, &t1).unwrap();
+        ThreadStorage::insert(&conn, &t2).unwrap();
+        let b = BridgeBuilder::new()
+            .id("b-orphan")
+            .source_id("t1")
+            .target_id("t2")
+            .build();
+        BridgeStorage::insert(&conn, &b).unwrap();
+        // Delete t2 to orphan the bridge (no FK cascade)
+        conn.execute("DELETE FROM threads WHERE id = 't2'", []).unwrap();
+
+        Decayer::decay_active(&conn, &cfg).unwrap();
+
+        // Orphan bridge should be deleted
+        assert!(BridgeStorage::get(&conn, "b-orphan").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_decay_cleans_orphan_continuity() {
+        let conn = setup_agent_db_no_fk();
+        let cfg = default_cfg();
+        // t1 exists, t2 has continuity_parent_id pointing to t1
+        let t1 = ThreadBuilder::new().id("t1").build();
+        let t2 = ThreadBuilder::new().id("t2").continuity_parent_id("t1").build();
+        ThreadStorage::insert(&conn, &t1).unwrap();
+        ThreadStorage::insert(&conn, &t2).unwrap();
+        // Delete t1 directly (no FK, simulates orphan)
+        conn.execute("DELETE FROM threads WHERE id = 't1'", []).unwrap();
+
+        Decayer::decay_active(&conn, &cfg).unwrap();
+
+        // t2's continuity_parent_id should be NULL now
+        let got = ThreadStorage::get(&conn, "t2").unwrap().unwrap();
+        assert_eq!(got.continuity_parent_id, None);
+    }
+}

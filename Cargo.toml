@@ -1,0 +1,86 @@
+[package]
+name = "ai-smartness"
+version = "6.11.0-alpha"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+authors = ["VzKtS"]
+repository = "https://github.com/VzKtS/ai-smartness"
+
+[lib]
+name = "ai_smartness"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ai-smartness"
+path = "src/main.rs"
+
+[dependencies]
+# Core
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Parallelism
+rayon = "1.10"
+
+# Storage
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "serde_json", "backup"] }
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+
+# Processing
+regex = "1.0"
+md-5 = "0.10"
+toml = "0.9"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Cross-platform
+dirs = "6.0"
+interprocess = "2.2"
+signal-hook = "0.3"
+libc = "0.2"
+
+# Hashing
+sha2 = "0.10"
+
+# ONNX Runtime (semantic embeddings)
+ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "load-dynamic", "ndarray", "copy-dylibs"] }
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+ndarray = "0.16"
+
+# Local LLM inference (llama.cpp with Vulkan GPU acceleration)
+llama-cpp-2 = { version = "0.1", features = ["vulkan"] }
+encoding_rs = "0.8"
+
+# HTTP client for remote LLM providers (Anthropic, OpenAI, Custom)
+ureq = { version = "3", features = ["json"] }
+
+# System monitoring (CPU, RAM, process metrics)
+sysinfo = "0.33"
+
+# GUI (optional — needs system webkit2gtk-4.1-dev, libgtk-3-dev, libsoup-3.0-dev)
+tauri = { version = "2", features = ["devtools"], optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true }
+
+[features]
+default = []
+gui = ["dep:tauri", "dep:tauri-build"]
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1

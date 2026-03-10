@@ -1,0 +1,34 @@
+[meta]
+version = 3
+max_tokens = 640
+max_context_chars = 1000
+description = "Tool output summarization — optimized for Qwen2.5-7B"
+
+[template]
+prompt = """You are a memory assistant. Summarize a tool action and its result.
+
+## Step 1 — Classification (analyze content below, NO external context)
+
+Tool: {source_type} ({tool_desc})
+{ref_line}
+
+Content (may include the action/command before "---", then the output):
+---
+{content}
+---
+
+- title: max 60 chars. State the ACTION performed (e.g. "Read config.rs — module structure", "Run cargo test — 3 failures", "Edit processor.rs — add junk filter").
+- summary: max 350 chars. Describe WHAT was done and the KEY RESULT. For commands: include the command itself. For files: include notable content or changes. For searches: include key findings.
+- subjects: 2-4 key subjects
+- labels: 1-4 classification labels (e.g. "architecture", "config", "test-output", "dependency", "build", "debug")
+- concepts: associative concepts (synonyms, related domains, hyponyms, technologies). Prefer single words. Good: "rust", "memory", "config". Bad: "database connection pooling". Minimum 5. Scale with content complexity: simple = 5-8, multi-domain = 10-15, cross-cutting = up to 25.
+- confidence: 0.0 to 1.0 — how well you understood the content
+
+## Step 2 — Importance scoring
+
+{context_block}
+
+- importance: 0.0 to 1.0 — how important is this for the agent
+
+Output ONLY a single JSON object, nothing else:
+{{"title":"...","summary":"...","subjects":[...],"labels":[...],"concepts":[...],"confidence":0.0,"importance":0.0}}"""

@@ -1,0 +1,292 @@
+// AI Smartness — Debug Console
+// Polls daemon.log via Tauri command and renders in real-time
+
+const { invoke } = window.__TAURI__.core;
+
+// ─── State ───────────────────────────────────────────────────
+// Start at max so first poll skips history and jumps to end of file (tail mode).
+// Backend returns file_size when offset >= file_size → subsequent polls get only new lines.
+let projectByteOffset = Number.MAX_SAFE_INTEGER;
+let globalByteOffset = Number.MAX_SAFE_INTEGER;
+let paused = false;
+let autoScroll = true;
+let totalLines = 0;
+let projectHash = '';
+let logSource = 'global'; // 'global' or 'project'
+const activeLevels = new Set(['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE']);
+let textFilter = '';
+
+// DOM line cap — prevents memory exhaustion
+const MAX_LINES = 5000;
+const PRUNE_BATCH = 1000;
+
+// Per-level counters
+const levelCounts = { ERROR: 0, WARN: 0, INFO: 0, DEBUG: 0, TRACE: 0 };
+
+// Get projectHash from URL params (passed by parent window)
+const params = new URLSearchParams(window.location.search);
+projectHash = params.get('project') || '';
+
+// ─── DOM refs ────────────────────────────────────────────────
+const container = document.getElementById('log-container');
+const lineCountEl = document.getElementById('line-count');
+const logFileEl = document.getElementById('log-file');
+const statusEl = document.getElementById('stream-status');
+const textFilterInput = document.getElementById('text-filter');
+const logSourceSelect = document.getElementById('log-source');
+const queueStatsEl = document.getElementById('queue-stats');
+
+// ─── Log source toggle ─────────────────────────────────────
+if (logSourceSelect) {
+    logSourceSelect.addEventListener('change', (e) => {
+        logSource = e.target.value;
+        // Clear log view when switching sources
+        container.innerHTML = '';
+        totalLines = 0;
+        logFileEl.textContent = '-';
+        // Reset offsets to tail mode (skip history)
+        projectByteOffset = Number.MAX_SAFE_INTEGER;
+        globalByteOffset = Number.MAX_SAFE_INTEGER;
+        // Reset counters
+        for (const k of Object.keys(levelCounts)) levelCounts[k] = 0;
+        updateLevelCounters();
+        updateFooter();
+        // Immediately poll the new source
+        pollLogs();
+    });
+}
+
+// ─── Level filter buttons ────────────────────────────────────
+document.querySelectorAll('.level-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const level = btn.dataset.level;
+        btn.classList.toggle('active');
+        if (activeLevels.has(level)) {
+            activeLevels.delete(level);
+        } else {
+            activeLevels.add(level);
+        }
+        scheduleRefilter();
+    });
+});
+
+// ─── Text filter ─────────────────────────────────────────────
+textFilterInput.addEventListener('input', (e) => {
+    textFilter = e.target.value.toLowerCase();
+    scheduleRefilter();
+});
+
+// ─── Control buttons ─────────────────────────────────────────
+document.getElementById('btn-pause').addEventListener('click', () => {
+    paused = !paused;
+    document.getElementById('btn-pause').textContent = paused ? 'Resume' : 'Pause';
+    statusEl.textContent = paused ? 'PAUSED' : 'LIVE';
+    statusEl.className = 'status ' + (paused ? '' : 'live');
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+    container.innerHTML = '';
+    totalLines = 0;
+    for (const k of Object.keys(levelCounts)) levelCounts[k] = 0;
+    updateLevelCounters();
+    updateFooter();
+});
+
+document.getElementById('btn-export').addEventListener('click', () => {
+    const visible = container.querySelectorAll('.log-line:not(.log-hidden)');
+    const text = Array.from(visible).map(el => el.dataset.raw).join('\n');
+    navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById('btn-export');
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+    }).catch(() => {});
+});
+
+document.getElementById('btn-scroll-bottom').addEventListener('click', () => {
+    autoScroll = true;
+    container.scrollTop = container.scrollHeight;
+});
+
+// Detect manual scroll up = disable auto-scroll
+container.addEventListener('scroll', () => {
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 40;
+    autoScroll = atBottom;
+});
+
+// ─── Log parsing ─────────────────────────────────────────────
+function detectLevel(line) {
+    if (line.includes(' ERROR ') || line.includes('[ERROR]')) return 'ERROR';
+    if (line.includes(' WARN ') || line.includes('[WARN]')) return 'WARN';
+    if (line.includes(' INFO ') || line.includes('[INFO]')) return 'INFO';
+    if (line.includes(' DEBUG ') || line.includes('[DEBUG]')) return 'DEBUG';
+    if (line.includes(' TRACE ') || line.includes('[TRACE]')) return 'TRACE';
+    return 'INFO'; // default
+}
+
+function levelClass(level) {
+    return level.toLowerCase();
+}
+
+function shouldShow(line, level) {
+    if (!activeLevels.has(level)) return false;
+    if (textFilter && !line.toLowerCase().includes(textFilter)) return false;
+    return true;
+}
+
+function formatLine(raw) {
+    // Highlight timestamp at start (e.g. 2026-02-15T10:30:00.123Z)
+    const tsMatch = raw.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*)/);
+    let formatted = raw;
+    if (tsMatch) {
+        formatted = `<span class="ts">${esc(tsMatch[1])}</span>${esc(raw.slice(tsMatch[1].length))}`;
+    } else {
+        formatted = esc(raw);
+    }
+
+    // Highlight text filter matches
+    if (textFilter && textFilter.length > 1) {
+        const escaped = textFilter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(`(${escaped})`, 'gi');
+        formatted = formatted.replace(re, '<mark style="background:var(--accent);color:var(--bg);padding:0 2px;border-radius:2px">$1</mark>');
+    }
+
+    return formatted;
+}
+
+function appendLine(raw) {
+    const level = detectLevel(raw);
+    const div = document.createElement('div');
+    div.className = `log-line ${levelClass(level)}`;
+    div.dataset.level = level;
+    div.dataset.raw = raw;
+    div.innerHTML = formatLine(raw);
+
+    if (!shouldShow(raw, level)) {
+        div.classList.add('log-hidden');
+    }
+
+    container.appendChild(div);
+    totalLines++;
+
+    // Update level counter
+    levelCounts[level] = (levelCounts[level] || 0) + 1;
+}
+
+// Prune oldest DOM nodes when cap exceeded
+function pruneOldLines() {
+    if (totalLines <= MAX_LINES) return;
+    const children = container.children;
+    const removeCount = Math.min(PRUNE_BATCH, children.length);
+    for (let i = 0; i < removeCount; i++) {
+        children[0].remove();
+    }
+    totalLines -= removeCount;
+}
+
+// Debounced refilter — avoids layout thrashing on rapid filter changes
+let refilterTimer = null;
+function scheduleRefilter() {
+    clearTimeout(refilterTimer);
+    refilterTimer = setTimeout(refilterAll, 300);
+}
+
+function refilterAll() {
+    requestAnimationFrame(() => {
+        container.querySelectorAll('.log-line').forEach(div => {
+            const level = div.dataset.level;
+            const raw = div.dataset.raw || '';
+            div.classList.toggle('log-hidden', !shouldShow(raw, level));
+            // Re-render with highlight if text filter changed
+            if (textFilter !== undefined) {
+                div.innerHTML = formatLine(raw);
+            }
+        });
+        updateFooter();
+    });
+}
+
+function updateLevelCounters() {
+    for (const level of ['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE']) {
+        const el = document.getElementById(`count-${level}`);
+        if (el) el.textContent = levelCounts[level] || 0;
+    }
+}
+
+function updateFooter() {
+    const visible = container.querySelectorAll('.log-line:not(.log-hidden)').length;
+    lineCountEl.textContent = `${visible} / ${totalLines} lines`;
+}
+
+// ─── Polling loop ────────────────────────────────────────────
+async function pollLogs() {
+    if (paused) return;
+
+    try {
+        let data;
+        if (logSource === 'global') {
+            data = await invoke('get_global_debug_logs', { byteOffset: globalByteOffset });
+        } else {
+            if (!projectHash) return;
+            data = await invoke('get_debug_logs', { projectHash, byteOffset: projectByteOffset });
+        }
+
+        if (data.file && logFileEl.textContent === '-') {
+            logFileEl.textContent = data.file;
+        }
+
+        // Always update byte offset (even when no new lines) so tail mode
+        // transitions from MAX_SAFE_INTEGER to actual file_size on first poll.
+        if (data.byte_offset !== undefined) {
+            if (logSource === 'global') {
+                globalByteOffset = data.byte_offset;
+            } else {
+                projectByteOffset = data.byte_offset;
+            }
+        }
+
+        if (data.lines && data.lines.length > 0) {
+            for (const line of data.lines) {
+                appendLine(line);
+            }
+            updateLevelCounters();
+            updateFooter();
+            pruneOldLines();
+
+            if (autoScroll) {
+                container.scrollTop = container.scrollHeight;
+            }
+        }
+    } catch (e) {
+        // silently retry
+    }
+}
+
+// ─── Queue stats polling ─────────────────────────────────────
+async function pollQueueStats() {
+    try {
+        const res = await invoke('get_system_resources');
+        const q = res?.daemon?.capture_queue;
+        if (q && queueStatsEl) {
+            queueStatsEl.textContent = `Queue: ${q.pending}/${q.workers}w | Done: ${q.processed} | Err: ${q.errors}`;
+        } else if (queueStatsEl) {
+            queueStatsEl.textContent = '';
+        }
+    } catch (e) {
+        if (queueStatsEl) queueStatsEl.textContent = '';
+    }
+}
+
+// Poll logs every 2s (was 500ms — caused OOM on large logs), queue stats every 3s
+setInterval(pollLogs, 2000);
+setInterval(pollQueueStats, 3000);
+// Initial fetch
+pollLogs();
+pollQueueStats();
+
+// ─── Utility ─────────────────────────────────────────────────
+function esc(str) {
+    const d = document.createElement('div');
+    d.textContent = str || '';
+    return d.innerHTML;
+}

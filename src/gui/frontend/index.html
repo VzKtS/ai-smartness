@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Smartness</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>AI Smartness</h1>
+        <nav>
+            <button class="tab active" data-tab="dashboard" data-i18n="tab.dashboard">Dashboard</button>
+            <button class="tab" data-tab="agents" data-i18n="tab.agents">Agents</button>
+            <button class="tab" data-tab="threads" data-i18n="tab.threads">Threads</button>
+            <button class="tab" data-tab="graph" data-i18n="tab.graph">Graph</button>
+            <button class="tab" data-tab="settings" data-i18n="tab.settings">Settings</button>
+            <button id="btn-debug" class="tab tab-debug" data-i18n="btn.debug">Debug</button>
+        </nav>
+        <div class="header-right">
+            <button id="btn-add-project" class="btn-sm btn-success" data-i18n="btn.addproject">+</button>
+            <select id="project-select" title="Select project">
+                <option value="">No project</option>
+            </select>
+            <button id="btn-edit-project" class="btn-sm" title="Edit project">&#9881;</button>
+        </div>
+    </header>
+
+    <main>
+        <!-- ═══ Dashboard ═══ -->
+        <section id="dashboard" class="panel active">
+            <div class="cards">
+                <div class="card">
+                    <h3 data-i18n="dash.daemon">Daemon</h3>
+                    <div id="daemon-status" class="status" data-i18n="status.checking">checking...</div>
+                    <div class="card-actions">
+                        <button id="btn-daemon-start" class="btn-sm btn-success" data-i18n="btn.start">Start</button>
+                        <button id="btn-daemon-stop" class="btn-sm btn-danger" data-i18n="btn.stop">Stop</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.active">Active Threads</h3>
+                    <div id="thread-active" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.suspended">Suspended</h3>
+                    <div id="thread-suspended" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.archived">Archived</h3>
+                    <div id="thread-archived" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.bridges">Bridges</h3>
+                    <div id="bridge-count" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.version">Version</h3>
+                    <div id="daemon-version" class="status">-</div>
+                    <div class="card-actions">
+                        <button id="btn-pool-flush" class="btn-sm" data-i18n="btn.flush" title="Clear pending pool files (daemon must be stopped)">Flush</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.cpu">CPU / Memory</h3>
+                    <div id="resource-cpu" class="metric metric-sm">-</div>
+                    <div id="resource-mem" class="metric-sub">-</div>
+                </div>
+                <div class="card">
+                    <h3>GPU</h3>
+                    <div id="resource-gpu" class="metric metric-sm">-</div>
+                    <div id="resource-gpu-vram" class="metric-sub">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.pool">Pool</h3>
+                    <div id="resource-pool" class="metric">-</div>
+                </div>
+                <div class="card">
+                    <h3 data-i18n="dash.queue">Queue</h3>
+                    <div id="resource-queue" class="metric">-</div>
+                </div>
+            </div>
+
+            <!-- Agent Role Tree -->
+            <div class="dashboard-tree-section">
+                <h3 data-i18n="dash.roletree">Team Role Tree</h3>
+                <div id="dashboard-hierarchy"></div>
+            </div>
+
+            <!-- Agent Memory Detail Panel -->
+            <div id="agent-detail-panel" class="agent-detail-panel" style="display:none">
+                <div class="agent-detail-header">
+                    <h4 id="agent-detail-title"></h4>
+                    <div class="agent-detail-stats" id="agent-detail-stats"></div>
+                </div>
+                <div class="agent-detail-tabs">
+                    <button class="agent-tab active" data-agent-tab="threads">Threads</button>
+                    <button class="agent-tab" data-agent-tab="bridges">Bridges</button>
+                </div>
+                <div id="agent-threads-content">
+                    <table class="table">
+                        <thead><tr>
+                            <th>Title</th><th>Status</th><th>Weight</th><th>Importance</th><th>Topics</th>
+                        </tr></thead>
+                        <tbody id="agent-threads-body"></tbody>
+                    </table>
+                </div>
+                <div id="agent-bridges-content" style="display:none">
+                    <table class="table">
+                        <thead><tr>
+                            <th>Source</th><th>Target</th><th>Relation</th><th>Weight</th>
+                        </tr></thead>
+                        <tbody id="agent-bridges-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ Threads ═══ -->
+        <section id="threads" class="panel">
+            <div id="thread-agent-tabs" style="display:flex;gap:0;margin-bottom:6px;border-bottom:2px solid var(--border,#333);padding:0 4px"></div>
+            <div class="search-tabs" style="display:flex;gap:0;margin-bottom:8px;border-bottom:1px solid var(--border,#333)">
+                <button class="search-tab active" data-search-tab="text" style="padding:6px 14px;background:none;border:none;border-bottom:2px solid var(--accent,#6cf);color:var(--text,#eee);cursor:pointer;font-size:13px">Text</button>
+                <button class="search-tab" data-search-tab="labels" style="padding:6px 14px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim,#888);cursor:pointer;font-size:13px">Labels</button>
+                <button class="search-tab" data-search-tab="topics" style="padding:6px 14px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-dim,#888);cursor:pointer;font-size:13px">Topics</button>
+            </div>
+            <div id="search-text" class="search-panel">
+                <div class="toolbar">
+                    <select id="thread-filter">
+                        <option value="active" data-i18n="dash.active">Active</option>
+                        <option value="suspended" data-i18n="dash.suspended">Suspended</option>
+                        <option value="archived" data-i18n="dash.archived">Archived</option>
+                    </select>
+                    <select id="origin-filter">
+                        <option value="">All origins</option>
+                        <option value="Prompt">Prompt</option>
+                        <option value="File">File</option>
+                        <option value="Response">Response</option>
+                        <option value="Task">Task</option>
+                        <option value="Fetch">Fetch</option>
+                        <option value="Command">Command</option>
+                        <option value="Split">Split</option>
+                        <option value="Reactivation">Reactivation</option>
+                        <option value="Agent">Agent</option>
+                        <option value="__mind__">Mind</option>
+                    </select>
+                    <input type="text" id="thread-search" data-i18n-placeholder="ph.search" placeholder="Search threads...">
+                    <button id="btn-search" data-i18n="btn.search">Search</button>
+                    <button id="btn-reindex" class="btn-sm" title="Recalculate all thread embeddings for improved search quality. Check 'Reset weights' to also reset thread weights to 1.0.">Reindex</button>
+                    <label style="font-size:12px; margin-left:4px" title="Reset all thread weights to 1.0 during reindex"><input type="checkbox" id="reindex-reset-weights"> Reset weights</label>
+                </div>
+            </div>
+            <div id="search-labels" class="search-panel" style="display:none">
+                <div class="toolbar">
+                    <select id="label-select" multiple style="min-width:250px;height:80px"></select>
+                    <button id="btn-search-labels">Filter by Labels</button>
+                    <button id="btn-load-labels" class="btn-sm">Refresh</button>
+                </div>
+            </div>
+            <div id="search-topics" class="search-panel" style="display:none">
+                <div class="toolbar">
+                    <select id="topic-select" multiple style="min-width:250px;height:80px"></select>
+                    <button id="btn-search-topics">Filter by Topics</button>
+                    <button id="btn-load-topics" class="btn-sm">Refresh</button>
+                </div>
+            </div>
+            <table id="thread-table">
+                <thead>
+                    <tr>
+                        <th data-i18n="th.title">Title</th>
+                        <th>Origin</th>
+                        <th data-i18n="th.status">Status</th>
+                        <th data-i18n="th.weight">Weight</th>
+                        <th data-i18n="th.importance">Importance</th>
+                        <th data-i18n="th.topics">Topics</th>
+                        <th data-i18n="th.activations">Activations</th>
+                    </tr>
+                </thead>
+                <tbody id="thread-body"></tbody>
+            </table>
+        </section>
+
+        <!-- ═══ Agents ═══ -->
+        <section id="agents" class="panel">
+            <div class="agent-toolbar">
+                <h3 data-i18n="agents.list">Registered Agents</h3>
+                <button id="btn-add-agent" class="btn-sm btn-success" data-i18n="btn.addagent">+ Add Agent</button>
+            </div>
+            <table id="agent-table">
+                <thead>
+                    <tr>
+                        <th style="width:28px"></th>
+                        <th data-i18n="th.id">ID</th>
+                        <th data-i18n="th.name">Name</th>
+                        <th data-i18n="th.role">Role</th>
+                        <th data-i18n="th.status">Status</th>
+                        <th data-i18n="th.supervisor">Supervisor</th>
+                        <th data-i18n="th.team">Team</th>
+                        <th data-i18n="th.mode">Mode</th>
+                        <th>Threads</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="agent-body"></tbody>
+            </table>
+            <div class="hierarchy-tree">
+                <h3 data-i18n="agents.hierarchy">Hierarchy</h3>
+                <div id="hierarchy-view"></div>
+            </div>
+        </section>
+
+        <!-- ═══ Graph (DAG Visualization) ═══ -->
+        <section id="graph" class="panel">
+            <div class="graph-toolbar">
+                <h2>Memory Graph</h2>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                    <select id="graph-agent-select" title="Select agent"></select>
+                    <input id="graph-search" type="text" placeholder="Search threads… (Esc clear)" style="width:170px;padding:3px 8px;border-radius:4px;border:1px solid var(--border,#333);background:var(--bg-alt,#1a1a2e);color:var(--text,#ddd);font-size:12px">
+                    <button id="btn-graph-reorganise" class="btn-sm">Reorganise</button>
+                    <span style="font-size:11px;color:var(--text-dim,#888)">Spacing:</span>
+                    <input id="graph-spacing" type="range" min="500" max="50000" value="3000" step="500" style="width:80px;height:14px" title="Node spacing (repulsion force)">
+                    <span id="graph-spacing-label" style="font-size:11px;min-width:20px;color:var(--text-dim,#888)">3k</span>
+                    <label style="font-size:12px"><input type="checkbox" id="graph-show-labels" checked> Labels</label>
+                    <label style="font-size:12px"><input type="checkbox" id="graph-show-weights"> Weights</label>
+                    <label style="font-size:12px"><input type="checkbox" id="graph-show-legend" checked> Legend</label>
+                </div>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;padding:2px 12px;font-size:11px;color:var(--text-dim,#888);flex-wrap:wrap;border-bottom:1px solid var(--border,#222)">
+                <span>Status:</span>
+                <label><input type="checkbox" id="graph-f-active" checked> Active</label>
+                <label><input type="checkbox" id="graph-f-suspended" checked> Suspended</label>
+                <label><input type="checkbox" id="graph-f-archived" checked> Archived</label>
+                <span style="margin-left:8px">Min importance:</span>
+                <input id="graph-f-imp" type="range" min="0" max="100" value="0" style="width:60px;height:14px" title="Min importance">
+                <span id="graph-f-imp-label" style="min-width:28px">0.00</span>
+                <label><input type="checkbox" id="graph-f-continuity" checked> Continuity</label>
+                <span style="margin-left:8px">Origin:</span>
+                <select id="graph-f-origin" style="padding:1px 4px;border-radius:3px;border:1px solid var(--border,#333);background:var(--bg-alt,#1a1a2e);color:var(--text,#ddd);font-size:11px">
+                    <option value="">All</option>
+                    <option value="File">File</option>
+                    <option value="Prompt">Prompt</option>
+                    <option value="Response">Response</option>
+                    <option value="Command">Command</option>
+                    <option value="Task">Task</option>
+                    <option value="Fetch">Fetch</option>
+                    <option value="__mind__">Mind</option>
+                </select>
+                <span style="margin-left:8px">Min bridges:</span>
+                <input id="graph-f-bridges" type="number" min="0" max="99" value="0" style="width:36px;padding:1px 4px;border-radius:3px;border:1px solid var(--border,#333);background:var(--bg-alt,#1a1a2e);color:var(--text,#ddd);font-size:11px;text-align:center">
+                <button id="btn-graph-filter-reset" class="btn-sm" style="font-size:10px;padding:1px 8px">Reset</button>
+            </div>
+            <div id="graph-container" style="width:100%;height:calc(100vh - 180px);border:1px solid var(--border,#333);border-radius:4px;background:#000;position:relative;overflow:hidden">
+                <canvas id="graph-canvas" style="width:100%;height:100%"></canvas>
+                <!-- F0: Tooltip -->
+                <div id="graph-tooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(15,15,30,0.95);border:1px solid rgba(100,200,255,0.3);border-radius:6px;padding:8px 12px;font-size:12px;color:#ddd;max-width:280px;z-index:20;line-height:1.5;box-shadow:0 4px 12px rgba(0,0,0,0.5)"></div>
+                <!-- F4: Zoom controls -->
+                <div id="graph-zoom-controls" style="position:absolute;bottom:12px;left:12px;display:flex;flex-direction:column;gap:4px;z-index:15">
+                    <button id="btn-graph-zoom-in" class="btn-sm" style="width:32px;height:32px;font-size:18px;padding:0;line-height:32px;text-align:center" title="Zoom in">+</button>
+                    <button id="btn-graph-zoom-out" class="btn-sm" style="width:32px;height:32px;font-size:18px;padding:0;line-height:32px;text-align:center" title="Zoom out">−</button>
+                    <button id="btn-graph-zoom-fit" class="btn-sm" style="width:32px;height:32px;font-size:12px;padding:0;line-height:32px;text-align:center" title="Fit to view">⊞</button>
+                </div>
+                <!-- F2: Legend -->
+                <div id="graph-legend" style="position:absolute;top:12px;left:12px;background:rgba(15,15,30,0.9);border:1px solid var(--border,#333);border-radius:6px;padding:8px 12px;font-size:11px;color:#bbb;z-index:15;line-height:1.8"></div>
+            </div>
+            <div id="graph-info" style="font-size:12px;color:var(--text-dim,#888);margin-top:4px">
+                <span id="graph-stats">Select a project and agent to view the memory graph.</span>
+            </div>
+            <div id="graph-detail" class="graph-detail-panel" style="display:none;position:absolute;right:16px;top:120px;width:300px;max-height:400px;overflow-y:auto;background:var(--bg,#0f0f23);border:1px solid var(--border,#333);border-radius:6px;padding:12px;z-index:10">
+                <h4 id="graph-detail-title" style="margin:0 0 8px"></h4>
+                <div id="graph-detail-meta" style="font-size:12px;color:var(--text-dim)"></div>
+                <div id="graph-detail-bridges" style="font-size:12px;margin-top:8px"></div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+                    <button id="btn-graph-detail-delete" class="btn-sm" style="background:rgba(255,60,60,0.2);color:#ff6b6b">Delete</button>
+                    <a id="btn-graph-detail-seemore" href="#" style="font-size:11px;color:var(--accent,#4fc3f7);text-decoration:none">See more →</a>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ Settings ═══ -->
+        <section id="settings" class="panel">
+            <div class="settings-header">
+                <h2 data-i18n="settings.title">Settings</h2>
+                <div class="settings-actions">
+                    <button id="btn-reset-defaults" class="btn-sm" data-i18n="btn.reset">Reset Defaults</button>
+                    <button id="btn-save-settings" class="btn-sm btn-success" data-i18n="btn.save">Save</button>
+                </div>
+            </div>
+            <div id="save-status" class="save-status"></div>
+
+            <!-- Sub-tabs -->
+            <div class="sub-tabs">
+                <button class="sub-tab active" data-stab="stab-general" data-i18n="stab.general">General</button>
+                <button class="sub-tab" data-stab="stab-guardian" data-i18n="stab.guardian">Guardian LLM</button>
+                <button class="sub-tab" data-stab="stab-matching" data-i18n="stab.matching">Thread Matching</button>
+                <button class="sub-tab" data-stab="stab-gossip" data-i18n="stab.gossip">Gossip</button>
+                <button class="sub-tab" data-stab="stab-engram" data-i18n="stab.engram">Engram</button>
+                <button class="sub-tab" data-stab="stab-decay">Decay & Lifecycle</button>
+                <button class="sub-tab" data-stab="stab-heartbeat">Heartbeat</button>
+                <button class="sub-tab" data-stab="stab-hooks">Hooks</button>
+                <button class="sub-tab" data-stab="stab-capture">Capture</button>
+                <button class="sub-tab" data-stab="stab-profile">Profile</button>
+                <button class="sub-tab" data-stab="stab-backup">Backup</button>
+                <button class="sub-tab" data-stab="stab-hardware" data-i18n="stab.hardware">Hardware</button>
+            </div>
+
+            <!-- ── General ── -->
+            <div id="stab-general" class="sub-panel active">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="gen-lang" data-i18n="sec.langdisplay">Language & Display</h3>
+                    <div id="section-gen-lang" class="section-body open">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.language" title="Language used for LLM synthesis outputs (thread summaries, labels). The GUI interface language also changes. Default: English.">Language <select id="lang-select" data-path="synthesis.language">
+                                <option value="en">English</option>
+                                <option value="fr">Francais</option>
+                                <option value="es">Espanol</option>
+                            </select></label>
+                            <label data-i18n="cfg.mode" title="GUI display mode. Dark mode is easier on the eyes in low-light environments. Light mode provides better contrast in bright environments.">Mode <select id="mode-select">
+                                <option value="dark">Dark</option>
+                                <option value="light">Light</option>
+                            </select></label>
+                            <label data-i18n="cfg.theme" title="Accent color theme for the GUI. Affects buttons, highlights, badges, and status indicators. Pure aesthetic preference.">Theme <select id="theme-select">
+                                <option value="green">Emerald</option>
+                                <option value="blue">Azure</option>
+                                <option value="yellow">Teal</option>
+                                <option value="orange">Deep</option>
+                                <option value="red">Gradient</option>
+                            </select></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="daemon-pool" data-i18n="sec.daemonpool">Connection Pool</h3>
+                    <div id="section-daemon-pool" class="section-body">
+                        <div class="form-grid">
+                            <label data-i18n="daemon.autostart" title="Automatically start the daemon process when the GUI opens. If disabled, you must start it manually from the Dashboard.">Auto-start Daemon <input type="checkbox" id="daemon-auto-start"></label>
+                            <label data-i18n="daemon.maxconn" title="Maximum simultaneous SQLite database connections the daemon keeps open (one per active agent). Higher values use more RAM but support more concurrent agents. Default: 50.">Max Connections <input type="number" id="daemon-max-conn" min="1" max="200"></label>
+                            <label data-i18n="daemon.idletimeout" title="Seconds before an idle agent connection is evicted from the pool. Lower values free RAM faster but cause more reconnections. Default: 1800 (30 min).">Idle Timeout (secs) <input type="number" id="daemon-idle-timeout" min="60"></label>
+                            <label data-i18n="daemon.pruneinterval" title="Interval in seconds between periodic maintenance tasks: gossip bridge discovery, thread weight decay, archive old suspended threads, orphan cleanup, and WAL checkpoint. Lower = fresher memory but more CPU usage. Default: 300 (5 min).">Prune Interval (secs) <input type="number" id="daemon-prune-interval" min="60"></label>
+                            <label title="Number of worker threads for processing captures (LLM extraction). Each worker handles one capture at a time. Default: min(CPU cores, 4).">Capture Workers <input type="number" id="daemon-capture-workers" min="1" max="16"></label>
+                            <label title="Maximum buffered capture jobs. If the queue is full, new captures are dropped (non-blocking). Default: 100.">Capture Queue Capacity <input type="number" id="daemon-capture-queue" min="10" max="1000"></label>
+                            <label data-i18n="daemon.crossgossip" title="Enable bridge discovery between threads from different projects. Experimental feature: useful for cross-project knowledge transfer but may create noisy connections. Default: off.">Cross-project Gossip <input type="checkbox" id="daemon-cross-gossip"></label>
+                        </div>
+                        <div class="settings-actions" style="margin-top:12px">
+                            <button id="btn-save-daemon-settings" class="btn-sm btn-success" data-i18n="btn.save">Save</button>
+                            <span id="daemon-save-status" class="save-status"></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="gen-network" data-i18n="ph.network.title">Agent Network</h3>
+                    <div id="section-gen-network" class="section-body">
+                        <p class="hint" data-i18n="ph.network">Multi-agent communication and remote team collaboration settings.</p>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="gen-updates" data-i18n="ph.updates.title">Updates</h3>
+                    <div id="section-gen-updates" class="section-body">
+                        <div class="form-grid">
+                            <label title="Current installed version of AI Smartness.">Current Version <span id="current-version">-</span></label>
+                            <label title="Latest available version from GitHub releases.">Latest Version <span id="latest-version">-</span></label>
+                        </div>
+                        <div style="margin-top:12px; display:flex; gap:8px">
+                            <button class="btn-sm" id="btn-check-update" title="Check for new versions on GitHub.">Check for Updates</button>
+                        </div>
+                        <div id="update-status" style="font-size:12px; min-height:18px; margin-top:8px; color: var(--text-secondary)"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Guardian LLM ── -->
+            <div id="stab-guardian" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="global" data-i18n="sec.global">Global Settings</h3>
+                    <div id="section-global" class="section-body open">
+                        <div class="form-grid">
+                            <label data-i18n="cfg.enabled" title="Master switch for the entire Guardian cognitive system. When disabled, no LLM calls are made — hooks pass through without memory processing.">Guardian Enabled <input type="checkbox" data-path="enabled"></label>
+                            <label class="model-select-label" title="Local GGUF model for runtime processing. Larger models = better extraction quality but more VRAM. Daemon restarts on change.">Local Model <select data-path="local_model_size">
+                                <option value="SevenB">Qwen 7B (~4.7 GB)</option>
+                                <option value="Gemma12B">Gemma-3 12B (~7.3 GB)</option>
+                                <option value="Qwen14B">Qwen 14B (~9.0 GB)</option>
+                                <option value="Qwen32B">Qwen 32B (~19 GB)</option>
+                            </select></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="llm-tasks">LLM Tasks</h3>
+                    <div id="section-llm-tasks" class="section-body open">
+                        <table class="task-table">
+                            <thead>
+                                <tr><th>Task</th><th>Enabled</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr title="Extracts title, topics, and summary from tool outputs. Called on every capture (high frequency).">
+                                    <td data-i18n="sec.extraction">Extraction</td>
+                                    <td><input type="checkbox" data-path="extraction.llm.enabled"></td>
+                                </tr>
+                                <tr title="Scores thematic coherence between consecutive captures. Determines if content continues an existing thread.">
+                                    <td data-i18n="sec.coherence">Coherence</td>
+                                    <td><input type="checkbox" data-path="coherence.llm.enabled"></td>
+                                </tr>
+                                <tr title="Decides whether to reactivate suspended threads when similar content appears (low frequency).">
+                                    <td data-i18n="sec.reactivation">Reactivation</td>
+                                    <td><input type="checkbox" data-path="reactivation.llm.enabled"></td>
+                                </tr>
+                                <tr title="Summarizes threads when they reach context capacity or are archived (medium frequency).">
+                                    <td data-i18n="sec.synthesis">Synthesis</td>
+                                    <td><input type="checkbox" data-path="synthesis.llm.enabled"></td>
+                                </tr>
+                                <tr title="Suggests semantic labels on threads (action, idea, question, issue). Low frequency.">
+                                    <td data-i18n="sec.labels">Labels</td>
+                                    <td><input type="checkbox" data-path="label_suggestion.llm.enabled"></td>
+                                </tr>
+                                <tr title="Rates thread importance (critical/high/normal/low/disposable). Usually piggybacked on extraction.">
+                                    <td data-i18n="sec.importance">Importance</td>
+                                    <td><input type="checkbox" data-path="importance_rating.llm.enabled"></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="advanced-llm">Advanced</h3>
+                    <div id="section-advanced-llm" class="section-body">
+                        <div class="form-grid">
+                            <label title="Maximum characters of content sent to extraction LLM. Default: 15000.">Extraction Max Chars <input type="number" data-path="extraction.max_content_chars" min="100"></label>
+                            <label title="Maximum characters of tool output sent to extraction LLM. Default: 3000. Limited by LLM VRAM.">Tool Max Chars <input type="number" data-path="extraction.max_tool_content_chars" min="500" max="8000" step="500"></label>
+                            <label title="Detect skip markers in tool output. Default: on.">Skip Signal <input type="checkbox" data-path="extraction.enable_skip_signal"></label>
+                            <label title="Enable coherence gate. When off, all captures proceed without coherence check. Default: on.">Coherence Gate <input type="checkbox" data-path="coherence.enabled" checked></label>
+                            <label title="Coherence score threshold to continue an existing thread. Default: 0.6.">Coherence Child Threshold <input type="number" data-path="coherence.child_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Score below which content is dropped. Default: 0.2.">Coherence Orphan Threshold <input type="number" data-path="coherence.orphan_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Default coherence score when LLM fails. Default: 0.5.">Coherence Fallback Score <input type="number" data-path="coherence.fallback_score" min="0" max="1" step="0.05"></label>
+                            <label title="Similarity above this = auto-reactivate without LLM. Default: 0.35.">Reactivation Auto Threshold <input type="number" data-path="reactivation.auto_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Below this = skip reactivation entirely. Default: 0.15.">Reactivation Borderline <input type="number" data-path="reactivation.borderline_threshold" min="0" max="1" step="0.05"></label>
+                            <label title="Piggyback importance on extraction prompt (zero extra cost). Default: on.">Importance Piggyback <input type="checkbox" data-path="importance_rating.piggyback_on_extraction"></label>
+                            <label title="Auto suggest labels on extraction. Default: on.">Labels Auto Suggest <input type="checkbox" data-path="label_suggestion.auto_suggest_on_extraction"></label>
+                            <label title="Hook recursion guard env var. Default: AI_SMARTNESS_HOOK_RUNNING.">Hook Guard Env <input type="text" data-path="hook_guard_env"></label>
+                            <label title="Tool names to skip extraction for (one per line).">
+                                <span>Skip Tools</span>
+                                <textarea data-path="extraction.skip_tools" data-array="lines" rows="3" placeholder="tool_name_1&#10;tool_name_2"></textarea>
+                            </label>
+                            <label title="Noise words filtered from topics (one per line).">
+                                <span>Topic Noise Words</span>
+                                <textarea data-path="extraction.topic_noise_words" data-array="lines" rows="3" placeholder="message&#10;function&#10;code"></textarea>
+                            </label>
+                            <label title="Topic aliases (one per line: alias=canonical).">
+                                <span>Topic Aliases</span>
+                                <textarea data-path="extraction.topic_aliases" data-array="keyval" rows="3" placeholder="js=javascript&#10;ts=typescript"></textarea>
+                            </label>
+                            <label title="Seconds before PendingContext expires. Controls how long consecutive captures are linked for coherence chaining. Default: 600 (10 min).">Pending Context TTL (secs) <input type="number" data-path="extraction.pending_context_ttl_secs" min="30" max="3600" step="30"></label>
+                            <label title="Maximum characters sent to coherence gate LLM. Longer content is truncated. Default: 1500.">Coherence Max Chars <input type="number" data-path="coherence.max_context_chars" min="200" max="5000" step="100"></label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Thread Matching ── -->
+            <div id="stab-matching" class="sub-panel">
+                <div class="form-grid">
+                    <label title="Thread matching strategy. EmbeddingOnly: fast cosine similarity (~80% precision, no LLM cost). EmbeddingPlusLlm: hybrid with LLM confirmation for borderline matches (~95% precision, higher cost). Default: EmbeddingOnly.">Mode <select data-path="thread_matching.mode"><option value="EmbeddingOnly">EmbeddingOnly</option><option value="EmbeddingPlusLlm">EmbeddingPlusLlm</option></select></label>
+                    <label title="Embedding backend for thread matching. OnnxWithFallback: ONNX neural model with TF-IDF fallback if ONNX unavailable. OnnxOnly: skip if ONNX missing. TfidfOnly: lightweight keyword-based (offline, no model needed). Disabled: always create new threads.">Embedding Mode <select data-path="thread_matching.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
+                    <label title="Cosine similarity threshold for ONNX (all-MiniLM-L6-v2 neural model). Content with similarity >= threshold continues the existing thread. Higher = more separate threads, lower = more merging. Default: 0.60.">ONNX Threshold <input type="number" data-path="thread_matching.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Cosine similarity threshold for TF-IDF keyword-based fallback. Typically lower than ONNX since TF-IDF scores are less discriminative. Default: 0.45.">TF-IDF Threshold <input type="number" data-path="thread_matching.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Cosine similarity threshold for continuing in an existing thread (coherent + similar). Higher = more separate threads. Default: 0.75.">Continue Threshold <input type="number" data-path="thread_matching.continue_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Similarity threshold for reactivating a suspended/archived thread. Very high by default to avoid false reactivations. Default: 0.90.">Reactivate Threshold <input type="number" data-path="thread_matching.reactivate_threshold" min="0" max="1" step="0.05"></label>
+                </div>
+            </div>
+
+            <!-- ── Gossip ── -->
+            <div id="stab-gossip" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="gossip-concept">Bridge Discovery</h3>
+                    <div id="section-gossip-concept" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Enable concept-based bridge discovery between threads. When off, no new bridges are created by gossip. Default: on.">Gossip Enabled <input type="checkbox" data-path="gossip.concept_gossip_enabled"></label>
+                            <label title="Minimum shared concepts between two threads to create shard-bridges. Higher = fewer but stronger connections. Default: 1.">Min Shared Concepts <input type="number" data-path="gossip.concept_overlap_min_shared" min="1" max="10"></label>
+                            <label title="Minimum shard-bridges between two threads to validate the connection. Pairs with fewer bridges are not created. Default: 5.">Min Bridges <input type="number" data-path="gossip.min_bridges" min="1" max="20"></label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Engram ── -->
+            <div id="stab-engram" class="sub-panel">
+                <div class="form-grid">
+                    <label title="Embedding backend for the Engram V1 validator (semantic similarity). Used in the 8-validator consensus pipeline for memory injection. OnnxWithFallback recommended.">Embedding Mode <select data-path="engram.embedding.mode"><option value="OnnxWithFallback">OnnxWithFallback</option><option value="OnnxOnly">OnnxOnly</option><option value="TfidfOnly">TfidfOnly</option><option value="Disabled">Disabled</option></select></label>
+                    <label title="ONNX similarity threshold for Engram V1 validator. Threads above this pass the semantic similarity vote. Default: 0.30.">ONNX Threshold <input type="number" data-path="engram.embedding.onnx_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="TF-IDF similarity threshold for Engram V1 validator fallback. Default: 0.20.">TF-IDF Threshold <input type="number" data-path="engram.embedding.tfidf_threshold" min="0" max="1" step="0.05"></label>
+                    <label title="Minimum validator votes (out of 9) for StrongInject — thread is injected with high confidence into the agent's prompt. Lower = more injections but potentially noisy. Default: 5.">Strong Inject Min Votes <input type="number" data-path="engram.strong_inject_min_votes" min="1" max="9"></label>
+                    <label title="Minimum validator votes (out of 9) for WeakInject — thread is injected with lower confidence (may be summarized). Below this threshold = skip. Default: 3.">Weak Inject Min Votes <input type="number" data-path="engram.weak_inject_min_votes" min="1" max="9"></label>
+                    <label title="Maximum threads returned for prompt injection after the 8-validator consensus pipeline. More = richer context but longer prompts. Default: 5.">Max Results <input type="number" data-path="engram.max_results" min="1"></label>
+                    <label title="Maximum threads fetched from the topic hash index for the validator pipeline. Higher = better recall but slower. Default: 50.">Max Candidates <input type="number" data-path="engram.max_candidates" min="1"></label>
+                    <label title="Maximum archived threads scanned in addition to active/suspended. Archived threads may contain valuable historical knowledge. 0 = skip archived. Default: 50.">Max Archived Scan <input type="number" data-path="engram.max_archived_scan" min="0"></label>
+                    <label title="Use the TopicIndex hash pre-filter for O(1) candidate lookup. When disabled, falls back to full table scan (legacy behavior, much slower with many threads). Default: on.">Hash Index Enabled <input type="checkbox" data-path="engram.hash_index_enabled"></label>
+                    <label title="Minimum bridge connections for a thread to be eligible for injection. Threads with fewer bridges are filtered out. Aligns with the graph 'Min Bridges' display filter. 0 = disabled. Default: 5.">Min Bridge Connections <input type="number" data-path="engram.min_bridge_connections" min="0" max="99"></label>
+                </div>
+                <h4 data-i18n="sec.validatorweights">Validator Weights (0.0 = disabled, 1.0 = full)</h4>
+                <div class="form-grid">
+                    <label title="V1: Cosine similarity between prompt and thread embedding (ONNX or TF-IDF). Core relevance signal. 0.0 = disabled, 1.0 = full weight. Default: 1.0.">V1: Semantic Similarity <input type="number" data-path="engram.validator_weights.semantic_similarity" min="0" max="1" step="0.1"></label>
+                    <label title="V2: Number of shared topics between prompt and thread. Zero-cost heuristic. Good for catching keyword-level matches that embeddings might miss. Default: 0.8.">V2: Topic Overlap <input type="number" data-path="engram.validator_weights.topic_overlap" min="0" max="1" step="0.1"></label>
+                    <label title="V3: How recently the thread was updated (WorkContext freshness). Favors threads from the current session. Prevents stale threads from dominating recall. Default: 0.7.">V3: Temporal Proximity <input type="number" data-path="engram.validator_weights.temporal_proximity" min="0" max="1" step="0.1"></label>
+                    <label title="V4: Bridge connectivity — threads connected via bridges to already-injected threads get a boost. Enables associative memory chains. Default: 0.9.">V4: Graph Connectivity <input type="number" data-path="engram.validator_weights.graph_connectivity" min="0" max="1" step="0.1"></label>
+                    <label title="V5: Injection history feedback — threads that were previously injected and used (high usage_ratio) are favored. Learns from agent behavior. Default: 0.6.">V5: Injection History <input type="number" data-path="engram.validator_weights.injection_history" min="0" max="1" step="0.1"></label>
+                    <label title="V6: Thread weight * importance after temporal decay. Combines quality (importance) with freshness (decay). Naturally deprioritizes old, low-quality threads. Default: 0.5.">V6: Decayed Relevance <input type="number" data-path="engram.validator_weights.decayed_relevance" min="0" max="1" step="0.1"></label>
+                    <label title="V7: Label coherence — threads whose labels match the prompt context score higher. Requires label_suggestion to be active. Default: 0.4.">V7: Label Coherence <input type="number" data-path="engram.validator_weights.label_coherence" min="0" max="1" step="0.1"></label>
+                    <label title="V8: Alignment with the current ai_focus directive. Strong boost for threads matching the declared project focus. Default: 0.8.">V8: Focus Alignment <input type="number" data-path="engram.validator_weights.focus_alignment" min="0" max="1" step="0.1"></label>
+                    <label title="V9: Concept coherence — shared concepts via ConceptIndex. Wider semantic surface than topic overlap. Catches related threads even without shared topics. Default: 0.7.">V9: Concept Coherence <input type="number" data-path="engram.validator_weights.concept_coherence" min="0" max="1" step="0.1"></label>
+                </div>
+            </div>
+
+            <!-- ── Decay & Lifecycle ── -->
+            <div id="stab-decay" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="decay-threads">Thread Decay</h3>
+                    <div id="section-decay-threads" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Thread weight below this threshold triggers auto-suspension. Lower = threads survive longer. Default: 0.1.">Suspend Threshold <input type="number" data-path="decay.thread_suspend_threshold" min="0" max="1" step="0.01"></label>
+                            <label title="Minimum half-life in days (importance=0, disposable threads). These decay fastest. Default: 0.75 days (18h).">Min Half-Life (days) <input type="number" data-path="decay.thread_min_half_life" min="0.1" max="30" step="0.25"></label>
+                            <label title="Maximum half-life in days (importance=1, critical threads). These decay slowest. Default: 7.0 days.">Max Half-Life (days) <input type="number" data-path="decay.thread_max_half_life" min="1" max="90" step="0.5"></label>
+                            <label title="Weight boost applied when a thread is re-injected by the Engram. Prevents actively-used threads from decaying. Default: 0.1.">Use Boost <input type="number" data-path="decay.thread_use_boost" min="0" max="1" step="0.05"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="decay-orphan">Orphan Acceleration</h3>
+                    <div id="section-decay-orphan" class="section-body">
+                        <div class="form-grid">
+                            <label title="Hours without re-injection before the effective half-life is halved. Threads that are never recalled decay exponentially faster. Default: 6.0 hours.">Halving Hours <input type="number" data-path="decay.orphan_halving_hours" min="1" max="48" step="1"></label>
+                            <label title="Floor for orphan half-life reduction (fraction of base half-life). Prevents half-life from reaching zero. Default: 0.1 (10% of base).">Min Half-Life Factor <input type="number" data-path="decay.orphan_min_half_life_factor" min="0.01" max="1" step="0.05"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="decay-bridges">Bridge Decay</h3>
+                    <div id="section-decay-bridges" class="section-body">
+                        <div class="form-grid">
+                            <label title="Bridge half-life in days. Bridges lose weight over time unless reinforced by gossip. Default: 2.0 days.">Bridge Half-Life (days) <input type="number" data-path="decay.bridge_half_life" min="0.5" max="30" step="0.5"></label>
+                            <label title="Bridge weight below this is marked invalid (deleted). Default: 0.05.">Bridge Death Threshold <input type="number" data-path="decay.bridge_death_threshold" min="0" max="0.5" step="0.01"></label>
+                            <label title="Weight boost when a bridge is used (traversed during recall). Default: 0.1.">Bridge Use Boost <input type="number" data-path="decay.bridge_use_boost" min="0" max="1" step="0.05"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="decay-archive">Archival</h3>
+                    <div id="section-decay-archive" class="section-body">
+                        <div class="form-grid">
+                            <label title="Hours after suspension before a thread is archived. Archived threads retain data but are lower priority for recall. Default: 72 hours (3 days).">Archive After (hours) <input type="number" data-path="decay.archive_after_hours" min="1" max="720" step="1"></label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Heartbeat ── -->
+            <div id="stab-heartbeat" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hb-toggle">Heartbeat</h3>
+                    <div id="section-hb-toggle" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Disabling the heartbeat disables agent activity tracking, self-wake scheduling, and proactive inter-agent communication. Essential features will be lost if disabled.">Heartbeat Active
+                                <input type="checkbox" data-path="heartbeat.enabled" checked></label>
+                            <label title="Seconds since last seen before an agent transitions from 'active' to 'idle'. Default: 300 (5 min).">Alive Threshold (secs)
+                                <input type="number" data-path="heartbeat.alive_threshold_secs" min="60"></label>
+                            <label title="Seconds since last seen before an agent transitions from 'idle' to offline warning. Default: 300 (5 min).">Idle Threshold (secs)
+                                <input type="number" data-path="heartbeat.idle_threshold_secs" min="60"></label>
+                            <label title="Seconds since last seen before mark_stale triggers and agent is set offline. Default: 1800 (30 min).">Offline Threshold (secs)
+                                <input type="number" data-path="heartbeat.offline_threshold_secs" min="300"></label>
+                        </div>
+                        <p class="hint" style="color: var(--warning, #e8a317);">If disabled: loss of activity tracking, self-wake, and proactive inter-agent communication.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Hooks ── -->
+            <div id="stab-hooks" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hooks-mcpperm">MCP Permissions</h3>
+                    <div id="section-hooks-mcpperm" class="section-body open">
+                        <p class="hint" title="When enabled, MCP tool calls (ai_recall, ai_thread_create, etc.) are automatically allowed without prompting. When disabled, each MCP tool call requires manual approval.">Auto-allow all AI Smartness MCP tools without permission prompts.</p>
+                        <div class="form-grid">
+                            <label title="Automatically allow MCP tool calls. Adds mcp__ai-smartness__* wildcard to .claude/settings.json permissions.">MCP Auto-Allow
+                                <input type="checkbox" data-path="hooks.mcp_auto_allow" checked></label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Capture ── -->
+            <div id="stab-capture" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="cap-tools">Tool Capture Toggles</h3>
+                    <div id="section-cap-tools" class="section-body open">
+                        <p class="hint" title="Control which tool outputs are sent to the daemon for LLM extraction and memory processing. Disabled tools are silently skipped.">Select which tools have their outputs captured and processed into memory threads.</p>
+                        <div class="form-grid">
+                            <label title="Capture user prompts submitted to the agent. Primary source of high-quality memory threads."><b>User Prompt</b>
+                                <input type="checkbox" data-path="capture.tools.user_prompt" checked></label>
+                            <label title="Capture agent responses. Useful for tracking what the agent produces."><b>Agent Response</b>
+                                <input type="checkbox" data-path="capture.tools.agent_response" checked></label>
+                            <label title="Capture file contents when the agent reads files. High volume but provides context about what the agent is looking at.">Read
+                                <input type="checkbox" data-path="capture.tools.read"></label>
+                            <label title="Capture edit diffs when the agent modifies files. Important for tracking code changes.">Edit
+                                <input type="checkbox" data-path="capture.tools.edit"></label>
+                            <label title="Capture file creation content. Important for tracking new files.">Write
+                                <input type="checkbox" data-path="capture.tools.write"></label>
+                            <label title="Capture command output (stdout/stderr). Can be noisy for build commands but valuable for debugging context.">Bash
+                                <input type="checkbox" data-path="capture.tools.bash"></label>
+                            <label title="Capture web page fetches. Useful for research tasks.">WebFetch
+                                <input type="checkbox" data-path="capture.tools.web_fetch"></label>
+                            <label title="Capture web search results. Useful for research context.">WebSearch
+                                <input type="checkbox" data-path="capture.tools.web_search"></label>
+                            <label title="Capture sub-agent task results. Can be verbose.">Task
+                                <input type="checkbox" data-path="capture.tools.task"></label>
+                            <label title="Capture Jupyter notebook edits.">NotebookEdit
+                                <input type="checkbox" data-path="capture.tools.notebook_edit"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle" data-section="cap-filters">Capture Filters</h3>
+                    <div id="section-cap-filters" class="section-body">
+                        <p class="hint">Minimum content length (in characters) required before a capture is sent to the daemon.</p>
+                        <div class="form-grid">
+                            <label title="Minimum user prompt length for capture. Shorter prompts are silently skipped. Default: 50.">
+                                Min Prompt Length
+                                <input type="number" data-path="capture.min_prompt_length" min="0" max="500" step="10">
+                            </label>
+                            <label title="Minimum agent response length for capture. Shorter responses are silently skipped. Default: 50.">
+                                Min Response Length
+                                <input type="number" data-path="capture.min_response_length" min="0" max="500" step="10">
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Profile ── -->
+            <div id="stab-profile" class="sub-panel">
+                <div style="margin-bottom:12px">
+                    <label style="font-size:13px;color:var(--text-dim);display:flex;align-items:center;gap:8px">Agent
+                        <select id="profile-agent-select" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-size:13px"></select>
+                    </label>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="prof-identity">Identity</h3>
+                    <div id="section-prof-identity" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Your name (optional). Used for personalized interactions.">Name
+                                <input type="text" id="profile-name" placeholder="(optional)"></label>
+                            <label title="Your role. 'developer' for coding tasks, 'user' for general use, 'owner' for project management.">Role
+                                <select id="profile-role">
+                                    <option value="user">User</option>
+                                    <option value="developer">Developer</option>
+                                    <option value="owner">Owner</option>
+                                </select></label>
+                            <label title="Your relationship to the project. Affects how the agent talks about the codebase.">Relationship
+                                <select id="profile-relationship">
+                                    <option value="user">User</option>
+                                    <option value="contributor">Contributor</option>
+                                    <option value="owner">Owner</option>
+                                </select></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="prof-prefs">Preferences</h3>
+                    <div id="section-prof-prefs" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Preferred language (ISO 639-1: en, fr, es, de, etc.)">Language
+                                <input type="text" id="profile-language" placeholder="en" style="max-width:80px"></label>
+                            <label title="Response verbosity. 'concise' for brief answers, 'detailed' for thorough explanations.">Verbosity
+                                <select id="profile-verbosity">
+                                    <option value="concise">Concise</option>
+                                    <option value="normal" selected>Normal</option>
+                                    <option value="detailed">Detailed</option>
+                                </select></label>
+                            <label title="Your technical level. Affects terminology and explanation depth.">Technical Level
+                                <select id="profile-technical">
+                                    <option value="beginner">Beginner</option>
+                                    <option value="intermediate">Intermediate</option>
+                                    <option value="expert">Expert</option>
+                                </select></label>
+                            <label title="Allow emojis in agent responses. Default: off.">Emoji Usage
+                                <input type="checkbox" id="profile-emoji"></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="prof-rules">Custom Rules</h3>
+                    <div id="section-prof-rules" class="section-body open">
+                        <p class="hint" title="Rules the agent should always follow. Auto-detected from phrases like 'always...', 'never...', 'remember:'. Can also be added manually here.">Rules the agent should always follow (e.g., "always use TypeScript", "never commit directly to main").</p>
+                        <div id="profile-rules-list" class="pattern-list"></div>
+                        <div style="display:flex; gap:8px; margin-top:8px">
+                            <input type="text" id="profile-new-rule" placeholder="Add a rule..." style="flex:1">
+                            <button class="btn-sm btn-success" id="btn-add-rule" title="Add a custom rule for the agent to follow">+ Add</button>
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top:12px; display:flex; gap:8px">
+                    <button class="btn-sm btn-success" id="btn-save-profile" title="Save user profile changes">Save Profile</button>
+                    <span id="profile-status" style="font-size:12px; color: var(--text-secondary); line-height:28px"></span>
+                </div>
+            </div>
+
+            <!-- ── Backup ── -->
+            <div id="stab-backup" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="bk-settings">Backup Settings</h3>
+                    <div id="section-bk-settings" class="section-body open">
+                        <div class="form-grid">
+                            <label title="Directory where backups are stored. Supports ~ for home directory. Default: ~/.config/ai-smartness/backups/">Backup Path
+                                <input type="text" id="backup-path" placeholder="~/.config/ai-smartness/backups/"></label>
+                            <label title="Backup frequency. 'manual' = only on demand. 'daily' = once per day at the configured hour. 'weekly' = once per week.">Schedule
+                                <select id="backup-schedule">
+                                    <option value="manual">Manual only</option>
+                                    <option value="daily">Daily</option>
+                                    <option value="weekly">Weekly</option>
+                                </select></label>
+                            <label title="Maximum number of backups to keep. Oldest backups are deleted when this limit is exceeded. Default: 5.">Retention Count
+                                <input type="number" id="backup-retention" min="1" max="50" value="5"></label>
+                            <label title="Hour of day (0-23) for automatic backups when schedule is 'daily' or 'weekly'. Default: 3 (3 AM).">Auto-backup Hour
+                                <input type="number" id="backup-hour" min="0" max="23" value="3"></label>
+                        </div>
+                        <div style="margin-top:12px">
+                            <button class="btn-sm btn-success" id="btn-save-backup-settings" title="Save backup configuration">Save Settings</button>
+                            <span id="backup-settings-status" style="font-size:12px; color: var(--text-secondary); margin-left:8px"></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="bk-actions">Actions</h3>
+                    <div id="section-bk-actions" class="section-body open">
+                        <div style="display:flex; gap:8px; margin-bottom:12px; align-items:center">
+                            <select id="backup-agent-select" title="Select which agent to backup, or 'All' for global backup">
+                                <option value="__all__">All Agents</option>
+                            </select>
+                            <button class="btn-sm btn-success" id="btn-trigger-backup" title="Create a backup now">Backup Now</button>
+                        </div>
+                        <div id="backup-status" style="font-size:12px; color: var(--text-secondary); min-height:18px"></div>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="bk-history">Backup History</h3>
+                    <div id="section-bk-history" class="section-body open">
+                        <table class="data-table">
+                            <thead><tr>
+                                <th>Date</th><th>Agent</th><th>Size</th><th>Actions</th>
+                            </tr></thead>
+                            <tbody id="backup-history-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Hardware ── -->
+            <div id="stab-hardware" class="sub-panel">
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hw-detected">Detected Hardware</h3>
+                    <div id="section-hw-detected" class="section-body open">
+                        <div class="hw-info-block">
+                            <strong>CPU:</strong> <span id="hw-cpu-model">Detecting...</span>
+                            (<span id="hw-cpu-cores">-</span> cores / <span id="hw-cpu-threads">-</span> threads)
+                        </div>
+                        <div class="hw-info-block">
+                            <strong>RAM:</strong> <span id="hw-ram-total">-</span> MB total,
+                            <span id="hw-ram-available">-</span> MB available
+                        </div>
+                        <div id="hw-gpu-list"></div>
+                        <button class="btn-sm" id="btn-hw-refresh" style="margin-top:8px" title="Re-detect hardware">Refresh</button>
+                    </div>
+                </div>
+                <div class="config-section">
+                    <h3 class="section-toggle open" data-section="hw-assign">Device Assignment</h3>
+                    <div id="section-hw-assign" class="section-body open">
+                        <div class="form-grid">
+                            <label title="GPU (or CPU) for ai-smartness internal processing: LLM extraction, coherence, synthesis, ONNX embeddings.">
+                                Runtime Device
+                                <select id="hw-runtime-device" data-path="hardware.runtime_device">
+                                    <option value="auto">Auto</option>
+                                    <option value="cpu">CPU Only</option>
+                                </select>
+                            </label>
+                            <label title="GPU (or CPU) for future local agent inference. Not yet implemented.">
+                                Provider Device
+                                <select id="hw-provider-device" data-path="hardware.provider_device">
+                                    <option value="disabled">Disabled</option>
+                                    <option value="auto">Auto</option>
+                                    <option value="cpu">CPU Only</option>
+                                </select>
+                            </label>
+                        </div>
+                        <p style="font-size:11px; color:var(--text-dim); margin-top:8px">
+                            Changes take effect after daemon restart. Runtime and Provider can use different GPUs.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+    </main>
+
+    <footer>
+        <span id="version">AI Smartness v0.1.0-alpha</span>
+    </footer>
+
+    <!-- ═══ Add Project Modal ═══ -->
+    <div id="modal-add-project" class="modal-overlay">
+        <div class="modal">
+            <h3 data-i18n="modal.addproject">Add Project</h3>
+            <div class="modal-field">
+                <label for="new-project-path" data-i18n="modal.projectpath">Project Path</label>
+                <input type="text" id="new-project-path" placeholder="/home/user/my-project">
+            </div>
+            <div class="modal-field">
+                <label for="new-project-name" data-i18n="modal.projectname">Name (optional)</label>
+                <input type="text" id="new-project-name" placeholder="My Project">
+            </div>
+            <div id="add-project-error" style="color: var(--danger); font-size: 12px; min-height: 18px;"></div>
+            <div class="modal-actions">
+                <button id="btn-cancel-project" class="btn-sm" data-i18n="btn.cancel">Cancel</button>
+                <button id="btn-confirm-project" class="btn-sm btn-success" data-i18n="btn.add">Add</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Add Agent Modal ═══ -->
+    <div id="modal-add-agent" class="modal-overlay">
+        <div class="modal">
+            <h3 data-i18n="modal.addagent">Add Agent</h3>
+            <div class="modal-field">
+                <label for="new-agent-id" data-i18n="modal.agentid" title="Unique identifier for this agent. Used in hooks (project_hash + agent_id). Must be unique within the project. Examples: 'claude-code', 'reviewer-1', 'arch-lead'.">Agent ID</label>
+                <input type="text" id="new-agent-id">
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-name" data-i18n="modal.agentname" title="Human-readable display name shown in the dashboard, hierarchy tree, and logs.">Name</label>
+                <input type="text" id="new-agent-name">
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-role" data-i18n="modal.agentrole" title="Agent role in the team. Affects hierarchy display and future coordination features. Programmer: writes code. Coordinator: orchestrates tasks. Reviewer: reviews code/decisions. Researcher: gathers information. Architect: designs systems.">Role</label>
+                <select id="new-agent-role">
+                    <option value="programmer">programmer</option>
+                    <option value="coordinator">coordinator</option>
+                    <option value="reviewer">reviewer</option>
+                    <option value="researcher">researcher</option>
+                    <option value="architect">architect</option>
+                    <option value="custom">custom</option>
+                </select>
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-supervisor" data-i18n="modal.agentsupervisor" title="Parent agent in the hierarchy tree. The supervisor can coordinate this agent's work. Leave empty for top-level agents.">Supervisor (optional)</label>
+                <select id="new-agent-supervisor">
+                    <option value="">— None —</option>
+                </select>
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-team" data-i18n="modal.agentteam" title="Team name for grouping agents. Agents in the same team share visibility in the hierarchy tree. Optional — useful for multi-team projects.">Team (optional)</label>
+                <input type="text" id="new-agent-team">
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-thread-mode" title="Controls the maximum number of active memory threads for this agent. Light (15): minimal memory, fast. Normal (50): balanced. Heavy (100): deep memory. Max (200): maximum capacity. Lowering the mode suspends excess threads by importance (least important first).">Thread Mode</label>
+                <select id="new-agent-thread-mode">
+                    <option value="light">Light (15 threads)</option>
+                    <option value="normal" selected>Normal (50 threads)</option>
+                    <option value="heavy">Heavy (100 threads)</option>
+                    <option value="max">Max (200 threads)</option>
+                </select>
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-model" title="Expected Claude model for this agent. Used for mismatch detection when the agent runs on a different model than configured.">Expected Model</label>
+                <select id="new-agent-model">
+                    <option value="">— Default —</option>
+                    <option value="sonnet">Sonnet</option>
+                    <option value="opus">Opus</option>
+                </select>
+            </div>
+            <div class="modal-field modal-field-inline">
+                <input type="checkbox" id="new-agent-supervisor-flag">
+                <label for="new-agent-supervisor-flag" data-i18n="modal.issupervisor" title="Mark this agent as a supervisor node in the hierarchy. Supervisors appear as parent nodes in the team tree and can coordinate subordinate agents.">Is Supervisor</label>
+            </div>
+            <div class="modal-field" id="new-agent-custom-role-field" style="display:none">
+                <label for="new-agent-custom-role" data-i18n="modal.customrole" title="Free-text role description beyond the fixed role list. Injected into the agent's system prompt for behavioral context. Examples: 'quality reviewer for frontend', 'auditor under cor authority'.">Custom Role</label>
+                <input type="text" id="new-agent-custom-role" placeholder="e.g. auditor/researcher under cor authority">
+            </div>
+            <div class="modal-field">
+                <label for="new-agent-report-to" data-i18n="modal.reportto" title="Agent to whom this agent sends completed work. Different from Supervisor (who assigns tasks). Example: dev has supervisor=cor but report_to=pub (reviewer).">Report To (optional)</label>
+                <select id="new-agent-report-to">
+                    <option value="">— None —</option>
+                </select>
+            </div>
+            <div class="modal-field modal-field-inline">
+                <input type="checkbox" id="new-agent-full-permissions">
+                <label for="new-agent-full-permissions" title="Grant Bash(*), Edit(*), Write(*) permissions to this agent via settings.local.json. Allows the agent to operate without tool-approval prompts.">Full Permissions</label>
+            </div>
+            <div id="add-agent-error" style="color: var(--danger); font-size: 12px; min-height: 18px;"></div>
+            <div class="modal-actions">
+                <button id="btn-cancel-agent" class="btn-sm" data-i18n="btn.cancel">Cancel</button>
+                <button id="btn-confirm-agent" class="btn-sm btn-success" data-i18n="btn.add">Add</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Thread Detail Modal ═══ -->
+    <div id="modal-thread-detail" class="modal-overlay">
+        <div class="modal" style="max-width:750px; max-height:80vh; overflow-y:auto">
+            <h3 id="thread-detail-title">Thread Detail</h3>
+            <div id="thread-detail-meta" style="font-size:13px; color:var(--text-dim); margin-bottom:12px"></div>
+            <h4 style="margin:8px 0 4px">Messages</h4>
+            <div id="thread-detail-messages" style="max-height:300px; overflow-y:auto; border:1px solid var(--border); border-radius:4px; padding:8px; font-size:12px; background:var(--bg-alt)"></div>
+            <h4 style="margin:8px 0 4px">Bridges</h4>
+            <div id="thread-detail-bridges" style="font-size:12px"></div>
+            <div class="modal-actions" style="margin-top:12px">
+                <button id="btn-delete-thread" class="btn-sm btn-danger">Delete Thread</button>
+                <a id="btn-see-in-graph" href="#" style="font-size:12px;color:var(--accent,#4fc3f7);text-decoration:none;margin-left:auto">See in Graph →</a>
+                <button id="btn-close-thread-detail" class="btn-sm">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

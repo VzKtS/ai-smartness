@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+*.swp
+*.swo
+.DS_Store
+node_modules/
+*.vsix
+libonnxruntime.*
+
+# Claude Code (local only)
+.claude/
+
+# Personal scripts
+ai-smartness-stats.sh
+
+# Work in progress / doc deliverables
+docs/

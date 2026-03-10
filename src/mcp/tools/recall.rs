@@ -1,0 +1,175 @@
+use ai_smartness::AiResult;
+use ai_smartness::config::EngramConfig;
+use ai_smartness::intelligence::engram_retriever::EngramRetriever;
+use ai_smartness::storage::beat::BeatState;
+use ai_smartness::storage::bridges::BridgeStorage;
+use ai_smartness::storage::path_utils;
+use ai_smartness::storage::threads::ThreadStorage;
+use ai_smartness::thread::Thread;
+use chrono::Utc;
+
+use super::{optional_str, required_str, ToolContext};
+
+pub fn handle_recall(
+    params: &serde_json::Value,
+    ctx: &ToolContext,
+) -> AiResult<serde_json::Value> {
+    let query = required_str(params, "query")?;
+    let label_filter = optional_str(params, "label");
+    let include_bridges = optional_str(params, "include_bridges")
+        .map(|s| s == "true")
+        .unwrap_or(false);
+    let deep = optional_str(params, "depth")
+        .map(|s| s == "deep")
+        .unwrap_or(false);
+
+    let engram = EngramRetriever::new(ctx.agent_conn, EngramConfig::default())?;
+    let mut threads = engram.search(ctx.agent_conn, &query, 10)?;
+
+    if let Some(ref label) = label_filter {
+        threads.retain(|t| t.labels.iter().any(|l| l.contains(label.as_str())));
+    }
+
+    threads.truncate(10);
+
+    let bridges_out = if include_bridges {
+        let mut out = Vec::new();
+        for t in &threads {
+            if let Ok(bs) = BridgeStorage::list_for_thread(ctx.agent_conn, &t.id) {
+                for b in bs.into_iter().take(3) {
+                    out.push(serde_json::json!({
+                        "id": b.id,
+                        "source_id": b.source_id,
+                        "target_id": b.target_id,
+                        "relation": b.relation_type.as_str(),
+                        "weight": b.weight,
+                    }));
+                }
+            }
+        }
+        out
+    } else {
+        Vec::new()
+    };
+
+    // Batch-resolve continuity parent titles
+    let parent_titles: std::collections::HashMap<String, String> = {
+        let mut map = std::collections::HashMap::new();
+        for t in &threads {
+            if let Some(ref pid) = t.continuity_parent_id {
+                if !map.contains_key(pid) {
+                    if let Ok(Some(parent)) = ThreadStorage::get(ctx.agent_conn, pid) {
+                        map.insert(pid.clone(), parent.title);
+                    }
+                }
+            }
+        }
+        map
+    };
+
+    let threads_json: Vec<serde_json::Value> = threads
+        .iter()
+        .map(|t| {
+            let parent_title = t.continuity_parent_id.as_ref()
+                .and_then(|pid| parent_titles.get(pid).cloned());
+            let freshness = compute_freshness(t);
+            let mut entry = serde_json::json!({
+                "id": t.id,
+                "title": t.title,
+                "status": t.status.as_str(),
+                "weight": t.weight,
+                "importance": t.importance,
+                "freshness": (freshness * 100.0).round() / 100.0,
+                "topics": t.topics,
+                "labels": t.labels,
+                "summary": t.summary,
+                "last_active": t.last_active.to_rfc3339(),
+                "continuity_parent_id": t.continuity_parent_id,
+                "continuity_parent_title": parent_title,
+            });
+            // Deep Recall: include first 3 messages (capped at 500 chars each)
+            if deep {
+                if let Ok(msgs) = ThreadStorage::get_messages(ctx.agent_conn, &t.id) {
+                    let previews: Vec<serde_json::Value> = msgs.iter()
+                        .take(3)
+                        .map(|m| {
+                            let content = if m.content.len() > 500 {
+                                // Safe truncation: find char boundary at or before 500
+                                let end = m.content.char_indices()
+                                    .take_while(|&(i, _)| i <= 500)
+                                    .last()
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(0);
+                                format!("{}...", &m.content[..end])
+                            } else {
+                                m.content.clone()
+                            };
+                            serde_json::json!({
+                                "source": m.source_type,
+                                "timestamp": m.timestamp.to_rfc3339(),
+                                "content": content,
+                            })
+                        })
+                        .collect();
+                    entry["messages"] = serde_json::json!(previews);
+                }
+            }
+            entry
+        })
+        .collect();
+
+    // Update last_recall_beat in beat state
+    let agent_data = path_utils::agent_data_dir(ctx.project_hash, ctx.agent_id);
+    let mut beat_state = BeatState::load(&agent_data);
+    beat_state.last_recall_beat = beat_state.beat;
+    beat_state.save(&agent_data);
+
+    Ok(serde_json::json!({
+        "threads": threads_json,
+        "bridges": bridges_out,
+        "count": threads_json.len(),
+    }))
+}
+
+/// Freshness Score (#7): compute how "fresh" a thread's information is.
+///
+/// Score: 1.0 = just updated, 0.0 = very stale (30+ days).
+///
+/// Components:
+/// - Time decay: linear decay over 30 days from last_active
+/// - File staleness: if thread tracks files, check if any were modified
+///   after the thread's last_active (indicates stale information)
+fn compute_freshness(thread: &Thread) -> f64 {
+    let now = Utc::now();
+    let age_hours = (now - thread.last_active).num_hours().max(0) as f64;
+
+    // Time decay: 1.0 at 0h, 0.0 at 720h (30 days)
+    let time_freshness = (1.0 - age_hours / 720.0).clamp(0.0, 1.0);
+
+    // File staleness check: if thread tracks files, penalize if files changed since capture
+    let file_penalty = if let Some(ref wc) = thread.work_context {
+        let mut stale_count = 0u32;
+        let mut checked = 0u32;
+        for file_path in &wc.files {
+            if let Ok(metadata) = std::fs::metadata(file_path) {
+                checked += 1;
+                if let Ok(modified) = metadata.modified() {
+                    let mod_time: chrono::DateTime<Utc> = modified.into();
+                    if mod_time > thread.last_active {
+                        stale_count += 1;
+                    }
+                }
+            }
+        }
+        if checked > 0 {
+            // Penalty proportional to stale files: 0.3 max penalty
+            (stale_count as f64 / checked as f64) * 0.3
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    (time_freshness - file_penalty).clamp(0.0, 1.0)
+}
